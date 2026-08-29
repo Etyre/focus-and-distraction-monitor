@@ -1,0 +1,132 @@
+"""Local dashboard: timeline, daily metrics, review queue, model accuracy."""
+from __future__ import annotations
+
+import datetime as dt
+import time
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+
+from . import LABEL_HELP, LABEL_NAMES, LABELS, db, ensemble, stats, toggl
+from .config import DATA_DIR, load_config
+
+app = FastAPI(title="Focus Monitor")
+cfg = load_config()
+HTML = (Path(__file__).parent / "dashboard.html").read_text()
+
+
+def conn():
+    return db.connect()
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return HTML
+
+
+@app.get("/api/day")
+def api_day(day: str | None = None):
+    d = dt.date.fromisoformat(day) if day else dt.date.today()
+    c = conn()
+    t0, t1 = stats.day_bounds(d)
+    segs = stats.labelled_segments(c, t0, t1)
+    se = stats.spans_and_events(segs)
+    slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
+                                   "state", "label", "switch_id", "uncertain", "source", "probs", "neutral")} for s in segs]
+    return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
+            "short_breaks": stats.short_breaks(c, t0, t1),
+            "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
+                       "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
+            "count_events": cfg.count_events, "min_focus_span_min": cfg.min_focus_span_min,
+            "focus_spans": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "ended_by": r["ended_by"],
+                             "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
+                             "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
+                             "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
+                             "apps": sorted({s["app"] for s in r["segments"]}),
+                             "toggl": sorted({e["description"] for e in toggl.entries_between(c, r["start"], r["end"]) if e["description"]})}
+                            for r in se["focus_spans"]],
+            "distractions": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "is_event": r["is_event"],
+                              "where": sorted({s["domain"] or s["app"] for s in r["segments"]})} for r in se["distractions"]]}
+
+
+@app.get("/api/metrics")
+def api_metrics(days: int = 30):
+    return {"count_events": cfg.count_events, "days": stats.metrics_range(conn(), days)}
+
+
+@app.get("/api/accuracy")
+def api_accuracy(days: int = 60):
+    c = conn()
+    return {"daily": stats.accuracy_over_time(c, days), "scores": ensemble.model_scores(c),
+            "spend_today": db.spend_today(c), "budget": cfg.daily_budget_usd,
+            "reviews": c.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]}
+
+
+@app.get("/api/review/queue")
+def api_review_queue(limit: int = 30, all: bool = False):
+    c = conn()
+    where = "" if all else "AND e.uncertain=1"
+    rows = c.execute(f"""
+        SELECT s.id FROM switches s JOIN ensemble e ON e.switch_id=s.id
+        LEFT JOIN reviews r ON r.switch_id=s.id
+        WHERE r.switch_id IS NULL {where} ORDER BY e.importance DESC, s.ts DESC LIMIT ?""", (limit,)).fetchall()
+    return [db.switch_full(c, r[0]) for r in rows]
+
+
+@app.get("/api/switch/{switch_id}")
+def api_switch(switch_id: int):
+    c = conn()
+    full = db.switch_full(c, switch_id)
+    if not full:
+        raise HTTPException(404)
+    full["before"] = [dict(r) for r in db.segments_before(c, (full["from"] or full["to"])["start"], 5)]
+    full["after"] = [dict(r) for r in db.segments_after(c, full["to"]["start"], 4)]
+    return full
+
+
+class Review(BaseModel):
+    label: str
+    note: str | None = None
+
+
+@app.post("/api/switch/{switch_id}/review")
+def api_review(switch_id: int, review: Review):
+    if review.label not in LABELS:
+        raise HTTPException(400, "bad label")
+    c = conn()
+    if not c.execute("SELECT 1 FROM switches WHERE id=?", (switch_id,)).fetchone():
+        raise HTTPException(404)
+    with db.tx(c):
+        c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
+                  (switch_id, review.label, review.note, time.time()))
+        c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (switch_id,))
+    return {"ok": True}
+
+
+@app.delete("/api/switch/{switch_id}/review")
+def api_unreview(switch_id: int):
+    c = conn()
+    with db.tx(c):
+        c.execute("DELETE FROM reviews WHERE switch_id=?", (switch_id,))
+        c.execute("UPDATE switches SET status='classified' WHERE id=?", (switch_id,))
+    return {"ok": True}
+
+
+@app.get("/api/labels")
+def api_labels():
+    return {k: {"name": LABEL_NAMES[k], "help": LABEL_HELP[k]} for k in LABELS}
+
+
+@app.get("/shot/{name}")
+def shot(name: str):
+    p = DATA_DIR / "screenshots" / Path(name).name
+    if not p.exists():
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/jpeg")
+
+
+def serve():
+    import uvicorn
+    uvicorn.run(app, host=cfg.web_host, port=cfg.web_port, log_level="warning")

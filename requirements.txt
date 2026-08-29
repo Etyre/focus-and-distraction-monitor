@@ -1,0 +1,9 @@
+anthropic>=1.0
+fastapi
+uvicorn[standard]
+pillow
+scikit-learn
+pydantic
+rumps
+pyobjc-framework-WebKit
+pyobjc-framework-Quartz

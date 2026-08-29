@@ -1,0 +1,75 @@
+# Focus monitor configuration. Edit freely; the classifier re-reads it on start.
+
+[collector]
+poll_interval = 2.0            # seconds between active-window polls
+min_segment_seconds = 3.0      # flickers shorter than this are merged away
+idle_seconds = 600             # no keyboard/mouse input for 10 min = away; the span ends when the inactivity began
+                               # (also catches system sleep: a wall-clock gap between polls counts as inactivity)
+short_inactivity_seconds = 60  # pauses between 1 and 8 min are logged as short breaks (bathroom etc.), spans survive
+refresh_screenshot_seconds = 60
+screenshot_max_width = 1280
+screenshot_quality = 60
+screenshot_retention_days = 14
+
+[classifier]
+lookahead_seconds = 120        # wait so the model can see what you did AFTER the switch
+transit_seconds = 20           # a chain of windows each held < 20 s is ONE transition, judged once (origin -> where you settle)
+claude_model = "claude-opus-5"
+claude_effort = "medium"       # low | medium | high
+daily_budget_usd = 15.0
+# Frugality kicks in once the local models beat this accuracy on your last N reviews.
+frugal_accuracy_threshold = 0.85
+frugal_confidence_threshold = 0.85
+frugal_min_reviews = 40
+audit_sample_rate = 0.10       # fraction still sent to Claude for calibration once frugal
+count_events = false           # phase 1: measure focus spans only. Set true later to surface event counts.
+break_min = 5                  # detours shorter than this are events INSIDE a span; 5+ min breaks the span
+min_focus_span_min = 15        # a span must contain >= 15 min of focus; leaving one is what counts as an event
+max_reviews_per_day = 8        # the review queue shows at most this many switches per day (highest-stakes first)
+working_pair_window_min = 30   # A<->B bounced 3+ times within this window = a working pair, never questioned
+uncertain_threshold = 0.65     # ensemble max-probability below this => flagged for review
+uncertain_threshold_focus = 0.75  # stricter for switches that leave an ongoing focus span (the ones that matter)
+low_priority_budget_fraction = 0.6  # switches made while already distracted/interrupted only get Claude while
+                                    # today's spend is below this fraction of the budget
+few_shot_reviews = 40          # recent human reviews shown to Claude as examples
+
+[profile]
+# Free text shown to the Claude classifier. Describe your work, habits, tools,
+# what tends to be a distraction for you vs. an intentional choice.
+about_me = """
+I read, take notes, and write essays. Flipping between a reading window and my notes is
+normal focused work. Asking Claude a question that branches off what I'm reading/writing is
+still focus; asking about a random unrelated thought is an interruption. Email is sometimes
+a deliberate choice and sometimes a distraction. LessWrong, Amazon, Bumble and blocked URLs
+are usually distractions - unless I settle in and start taking notes on something.
+"""
+
+# Domains that are usually stimulation-seeking for you.
+distraction_domains = ["lesswrong.com", "amazon.com", "bumble.com", "twitter.com", "x.com",
+                       "reddit.com", "youtube.com", "news.ycombinator.com"]
+# Substrings that appear in the title/URL of your blocker's block page.
+blocked_page_patterns = ["blocked", "Freedom", "Cold Turkey", "StayFocusd", "chrome-extension://"]
+work_apps = ["Obsidian", "Code", "Cursor", "Terminal", "iTerm2", "Pages", "Google Docs", "Kindle", "Preview"]
+notes_apps = ["Obsidian", "Notes", "Roam Research", "Logseq", "Bear"]
+# Quick-capture: adding a spare thought to your daily notes is never an interruption or distraction -
+# it is part of staying focused. Matches a Roam/Logseq daily-notes / journal page.
+daily_notes_apps = ["Roam Research", "Logseq"]
+daily_notes_domains = ["roamresearch.com", "logseq.com"]
+# Web apps that are focus/notes/writing surfaces - returning to one after a glance resumes focus.
+focus_domains = ["roamresearch.com", "logseq.com", "notion.so", "docs.google.com", "obsidian.md"]
+# Span subtype heuristics
+authoring_apps = ["Typora", "Code", "Cursor", "Visual Studio Code", "Xcode", "Pages", "Keynote", "Final Cut Pro", "iMovie", "Figma", "Sketch"]
+authoring_domains = ["docs.google.com", "overleaf.com"]
+creative_frac = 0.40           # >= this share of focus time on authoring surfaces => creative-work span
+task_toggl_frac = 0.60         # Toggl running for >= this share of the span, plus...
+task_min_apps = 5              # ...this many distinct apps/sites (task-churn) => focused-task span
+daily_notes_regex = "(?i)daily note|^\\w+ \\d+(st|nd|rd|th)?,? \\d{4}|^\\d{4}-\\d{2}-\\d{2}"
+# Neutral windows: logged, but never an interruption/distraction and don't break a focus span.
+# Substrings matched (case-insensitive) against app name, window title and URL.
+neutral_patterns = ["presence check"]
+# Apps to ignore entirely (never create segments), e.g. password managers.
+ignore_apps = ["1Password", "loginwindow", "ScreenSaverEngine", "Python"]  # "Python" = Focus Monitor's own windows
+
+[web]
+web_host = "127.0.0.1"
+web_port = 8790

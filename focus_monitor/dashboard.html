@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Focus Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
+  --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#c3c2b7;--taskchange:#1baf7a;
+  --f-creative:#2a78d6;--f-task:#12a594;--f-general:#7a86e8;
+  --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
+  --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#383835;--taskchange:#199e70;
+  --f-creative:#3987e5;--f-task:#1cb8a6;--f-general:#8f99ee;
+  --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,system-ui,sans-serif}
+header{display:flex;gap:18px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--grid)}
+header h1{font-size:16px;margin:0 12px 0 0}
+nav a{color:var(--ink2);text-decoration:none;margin-right:14px;padding:4px 0;border-bottom:2px solid transparent}
+nav a.active{color:var(--ink);border-color:var(--focus)}
+main{padding:16px 20px;max-width:1280px;margin:0 auto}
+.card{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:14px 16px;margin-bottom:16px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.tile .v{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.tile .l{color:var(--muted);font-size:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button,select,input[type=date]{font:inherit;padding:5px 10px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--ink);cursor:pointer}
+button.primary{background:var(--focus);color:#fff;border-color:var(--focus)}
+button.lbl-continuation{border-color:var(--focus)} button.lbl-interruption{border-color:var(--interrupted)}
+button.lbl-distraction{border-color:var(--distracted)} button.lbl-task_change{border-color:var(--taskchange)}
+.legend span{display:inline-flex;align-items:center;gap:6px;margin-right:14px;color:var(--ink2);font-size:12px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px}
+svg text{fill:var(--muted);font-size:11px}
+.tt{position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--axis);border-radius:6px;padding:8px 10px;font-size:12px;max-width:420px;box-shadow:0 4px 14px rgba(0,0,0,.15);display:none;z-index:10}
+table{border-collapse:collapse;width:100%} td,th{padding:6px 8px;border-bottom:1px solid var(--grid);text-align:left;vertical-align:top} th{color:var(--muted);font-weight:500;font-size:12px}
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:10px} .shots img{width:100%;border:1px solid var(--grid);border-radius:6px}
+.shots .cap{font-size:12px;color:var(--muted);margin-bottom:4px}
+.prob{display:flex;gap:4px;height:8px;border-radius:4px;overflow:hidden;background:var(--grid);margin:4px 0}
+.prob i{display:block;height:100%}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink2);white-space:pre-wrap}
+.muted{color:var(--muted)} .small{font-size:12px}
+textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--ink)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Focus Monitor</h1>
+  <nav><a href="#day" data-view="day">Day</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a></nav>
+  <span id="status" class="muted small"></span>
+</header>
+<main>
+<section id="view-day">
+  <div class="row" style="margin-bottom:12px">
+    <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
+    <button onclick="setToday()">Today</button>
+    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-general)"></i>focus (reading/planning)</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>short break</span></span>
+  </div>
+  <div class="tiles" id="tiles"></div>
+  <div class="card"><div class="muted small" style="margin-bottom:6px">Timeline — pinch to zoom · two-finger scroll to pan · double-click to reset · click a ● to resolve</div><div id="timeline"></div></div>
+  <div class="card"><b>Focus spans</b><table id="spans"></table></div>
+  <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
+</section>
+
+<section id="view-trends" class="hidden">
+  <div class="row" style="margin-bottom:12px">Range: <select id="trendDays" onchange="loadTrends()"><option value="14">14 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></div>
+  <div class="card"><b>Longest full-absorption block (min)</b><div id="c-longest"></div></div>
+  <div class="card"><b>Total full-absorption time (min)</b><div id="c-total"></div></div>
+  <div class="card"><b>Attention interruptions (count)</b><div id="c-int"></div></div>
+  <div class="card"><b>Self-distraction events (count)</b><div id="c-dis"></div></div>
+  <div class="card"><b>Time self-distracted (min)</b><div id="c-dismin"></div></div>
+  <div class="card"><b>Claude spend (USD)</b><div id="c-spend"></div></div>
+</section>
+
+<section id="view-review" class="hidden">
+  <div class="row" style="margin-bottom:12px">
+    <label><input type="checkbox" id="reviewAll" onchange="loadQueue()"> show all unreviewed (not just uncertain)</label>
+    <span id="queueCount" class="muted small"></span>
+    <span class="muted small">Keys: 1 continuation · 2 interruption · 3 distraction · 4 focus start · s skip</span>
+  </div>
+  <div id="reviewCard" class="card"></div>
+</section>
+
+<section id="view-accuracy" class="hidden">
+  <div class="tiles" id="modelTiles"></div>
+  <div class="card"><b>Accuracy vs. your reviews, by review day</b>
+    <div class="legend" style="margin:6px 0"><span><i class="sw" style="background:var(--m-claude)"></i>claude</span><span><i class="sw" style="background:var(--m-heuristic)"></i>heuristic</span><span><i class="sw" style="background:var(--m-learned)"></i>learned</span><span><i class="sw" style="background:var(--m-ensemble)"></i>ensemble</span></div>
+    <div id="c-acc"></div></div>
+  <div class="card"><b>Current ensemble weights</b> <span class="muted small">(from log-loss on the last 200 reviewed switches; defaults until ≥8 scored)</span><table id="weights"></table></div>
+</section>
+</main>
+<div class="tt" id="tt"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+const fmtMin=m=>m>=60?`${Math.floor(m/60)}h ${Math.round(m%60)}m`:`${Math.round(m)}m`;
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
+const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',focus:'var(--f-general)'};
+const subName={creative_work:'creative work',focused_task:'focused task',focus:'focus (reading/planning)'};
+const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
+let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={};
+async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}
+
+// ---- routing
+function show(v){document.querySelectorAll('section').forEach(s=>s.classList.toggle('hidden',s.id!=='view-'+v));
+  document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
+  ({day:loadDay,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
+window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
+
+// ---- tooltip
+const tt=$('#tt');
+function showTT(e,html){tt.innerHTML=html;tt.style.display='block';moveTT(e);}
+function moveTT(e){const x=Math.min(e.clientX+14,innerWidth-440),y=Math.min(e.clientY+14,innerHeight-160);tt.style.left=x+'px';tt.style.top=y+'px';}
+function hideTT(){tt.style.display='none';}
+
+// ---- day view
+function setToday(){$('#daypick').value=new Date().toLocaleDateString('en-CA');loadDay();}
+function shiftDay(n){const d=new Date($('#daypick').value+'T12:00:00');d.setDate(d.getDate()+n);$('#daypick').value=d.toLocaleDateString('en-CA');loadDay();}
+async function loadDay(){
+  if(!$('#daypick').value)setToday();
+  const d=await api('/api/day?day='+$('#daypick').value);
+  const m=d.metrics;
+  const tiles=[['Longest span',fmtMin(m.longest_focus_min)],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)],['Total focus',fmtMin(m.total_focus_min)],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`]];
+  if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Self-distractions',m.distraction_count],['Time distracted',fmtMin(m.distracted_min)]);
+  tiles.push(['Active time',fmtMin(m.active_min)],['Short breaks',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${m.uncertain} / ${m.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
+  $('#tiles').innerHTML=tiles.map(([l,v])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
+  COUNT_EVENTS=d.count_events; MIN_SPAN=d.min_focus_span_min;
+  drawTimeline(d);
+  $('#spans').innerHTML='<tr><th>Type</th><th>Start</th><th>End</th><th>Length</th><th>Interruptions</th><th>Ended by</th><th>Toggl</th><th>Apps</th></tr>'+d.focus_spans.slice().sort((a,b)=>a.start-b.start)
+    .map(s=>`<tr><td title="${subName[s.subtype]}"><span class="sw" style="background:${subColor[s.subtype]}"></span>${s.fully_absorbed?' <span title="fully absorbed (0 interruptions)">◆</span>':''}</td><td>${fmtT(s.start)}</td><td>${fmtT(s.end)}</td><td><b>${fmtMin(s.duration/60)}</b>${s.detour_min>0.5?` <span class="muted small">(${fmtMin(s.focus_min)} focused)</span>`:''}</td><td class="small">${s.detours?s.detours+' ('+fmtMin(s.detour_min)+')':'–'}</td><td class="small" style="color:${s.ended_by==='distracted'?'var(--distracted)':s.ended_by==='interrupted'?'var(--interrupted)':'var(--muted)'}">${esc(s.ended_by)}</td><td class="small">${esc(s.toggl.join(' · '))}</td><td class="small muted">${esc(s.apps.join(', '))}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
+  $('#distractions').innerHTML='<tr><th>Start</th><th>Length</th><th>Where</th><th></th></tr>'+d.distractions
+    .map(s=>`<tr${s.is_event?'':' style="opacity:.55"'}><td>${fmtT(s.start)}</td><td>${fmtMin(s.duration/60)}</td><td class="small">${esc(s.where.join(', '))}</td><td class="muted small">${s.is_event?'':'not an event (no 5-min focus before it)'}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
+}
+function drawTimeline(d){
+  if(!d.segments.length){$('#timeline').innerHTML='<div class="muted">No data for this day.</div>';TL.d=null;return;}
+  TL.d=d; TL.def0=d.t0+9*3600; TL.def1=d.t0+24.5*3600; TL.B0=d.t0; TL.B1=d.t0+24.5*3600;
+  if(TL.day!==d.day){TL.day=d.day; TL.view0=TL.def0; TL.view1=TL.def1;}
+  const el=$('#timeline');
+  if(!TL.wired){
+    let raf=null; const rerender=()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=null;renderTimeline();});};
+    el.addEventListener('wheel',e=>{
+      if(!TL.d)return; e.preventDefault();
+      const W=1200,L=8,R=8, rect=el.getBoundingClientRect();
+      const xv=Math.max(L,Math.min(W-R,(e.clientX-rect.left)/rect.width*W));
+      const tc=TL.view0+(xv-L)/(W-L-R)*(TL.view1-TL.view0);
+      if(e.ctrlKey){                                  // trackpad pinch = wheel + ctrlKey
+        const f=Math.exp(e.deltaY*0.01), lf=(tc-TL.view0)/(TL.view1-TL.view0);
+        let w=(TL.view1-TL.view0)*f; TL.view0=tc-lf*w; TL.view1=TL.view0+w;
+      } else {                                        // two-finger scroll = pan
+        const dp=(Math.abs(e.deltaX)>=Math.abs(e.deltaY)?e.deltaX:e.deltaY)/rect.width*(TL.view1-TL.view0);
+        TL.view0+=dp; TL.view1+=dp;
+      }
+      clampView(); rerender();
+    },{passive:false});
+    el.addEventListener('dblclick',()=>{if(!TL.d)return; TL.view0=TL.def0; TL.view1=TL.def1; renderTimeline();});
+    TL.wired=true;
+  }
+  renderTimeline();
+}
+function clampView(){
+  const minW=180, maxW=TL.B1-TL.B0;
+  let w=Math.max(minW,Math.min(maxW,TL.view1-TL.view0)), v0=TL.view0;
+  if(v0<TL.B0)v0=TL.B0; if(v0+w>TL.B1)v0=TL.B1-w;
+  TL.view0=v0; TL.view1=v0+w;
+}
+function renderTimeline(){
+  const d=TL.d; if(!d)return;
+  const W=1200,H=120,L=8,R=8,segs=d.segments, first=TL.view0,last=TL.view1;
+  const x=t=>L+(t-first)/(last-first)*(W-L-R), xc=t=>Math.max(L,Math.min(W-R,x(t)));
+  const vis=(a,b)=>b>first&&a<last;
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">`;
+  // ticks: pick a "nice" step aiming for ~8 gridlines
+  const span=last-first, steps=[60,120,300,600,900,1800,3600,7200,10800,21600,43200];
+  const step=steps.reduce((a,b)=>Math.abs(b-span/8)<Math.abs(a-span/8)?b:a);
+  for(let t=Math.ceil(first/step)*step;t<=last;t+=step){const anchor=x(t)<L+22?'start':(x(t)>W-R-22?'end':'middle');s+=`<line x1="${x(t)}" x2="${x(t)}" y1="12" y2="62" stroke="var(--grid)"/><text x="${x(t)}" y="76" text-anchor="${anchor}">${fmtT(t)}</text>`;}
+  s+=`<line x1="${L}" x2="${W-R}" y1="62" y2="62" stroke="var(--axis)"/>`;
+  s+=`<text x="${L}" y="94">Toggl</text>`;
+  (d.toggl||[]).forEach((e,i)=>{if(!vis(e.start,e.end))return;const x0=xc(e.start),w=Math.max(1,xc(e.end)-x0-1);s+=`<rect data-t="${i}" x="${x0}" y="86" width="${w}" height="10" rx="2" fill="var(--m-ensemble)" opacity="0.7"/>`;});
+  const spanOf=t=>d.focus_spans.find(sp=>t>=sp.start-1&&t<sp.end+1), inSpan=g=>!!spanOf(g.clip_start);
+  s+=`<defs><pattern id="hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1.5" height="4" fill="var(--ink)" opacity="0.55"/></pattern></defs>`;
+  segs.forEach((g,i)=>{if(!vis(g.clip_start,g.clip_end))return;const x0=xc(g.clip_start),w=Math.max(1,xc(g.clip_end)-x0-1);
+    const sp0=spanOf(g.clip_start); let fill=stateColor[g.state]; const shortFocus=g.state==='focus'&&!sp0;
+    if(g.state==='focus'&&sp0)fill=subColor[sp0.subtype]||'var(--focus)';
+    if(!COUNT_EVENTS&&(g.state==='interrupted'||g.state==='distracted'))fill='var(--interrupted)';
+    const detourInSpan=(g.state==='interrupted'||g.state==='distracted')&&inSpan(g);
+    s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':'')} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;
+    if(g.label==='task_change')s+=`<rect x="${x0}" y="8" width="3" height="6" fill="var(--taskchange)"/>`;});
+  (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
+  d.focus_spans.forEach(sp=>{if(!vis(sp.start,sp.end))return;s+=`<rect x="${xc(sp.start)}" y="4" width="${Math.max(2,xc(sp.end)-xc(sp.start))}" height="5" rx="2" fill="var(--focus)"><title>span ${fmtMin(sp.duration/60)} — ${sp.detours} interruption(s) inside</title></rect>`;
+    (sp.events||[]).forEach(e=>{if(!vis(e.start,e.end))return;const cx=xc((e.start+e.end)/2);s+=`<path d="M${cx-4},2 L${cx+4},2 L${cx},10 Z" fill="var(--interrupted)"><title>${e.kind} ${fmtMin((e.end-e.start)/60)} (inside the span)</title></path>`;});});
+  // oversight flags: uncertain, unresolved switches — click to resolve
+  const flags=[],seen=new Set();
+  segs.forEach(g=>{if(g.uncertain&&g.switch_id&&g.source!=='review'&&!seen.has(g.switch_id)&&vis(g.clip_start,g.clip_start+1)){seen.add(g.switch_id);flags.push(g);}});
+  s+=`<text x="${L}" y="114" fill="var(--distracted)">Needs review</text>`;
+  flags.forEach((g,i)=>{const cx=xc(g.clip_start);s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="0.5"/><circle data-flag="${g.switch_id}" cx="${cx}" cy="108" r="5" fill="var(--distracted)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"/>`;});
+  s+='</svg>';
+  el_render(el_get(),s,d,segs,flags);
+}
+function el_get(){return $('#timeline');}
+function el_render(el,s,d,segs,flags){
+  el.innerHTML=s;
+  el.querySelectorAll('rect[data-i]').forEach(r=>{const g=segs[+r.dataset.i];
+    r.addEventListener('mousemove',e=>showTT(e,`<b>${esc(g.app)}</b> ${g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(spanOf(g.clip_start)?subName[spanOf(g.clip_start).subtype]:'focus'):(g.state==='idle'?'idle':'unfocused')}${g.uncertain?' · <i>uncertain</i>':''}<br>${fmtT(g.clip_start)}–${fmtT(g.clip_end)} (${fmtMin(g.duration/60)})<br><span class="muted">${esc(g.title)}</span>${g.url?'<br><span class="muted">'+esc(g.url.slice(0,100))+'</span>':''}${g.source==='transit'?'<br><i>transit - part of one transition</i>':(g.label?'<br>label: '+g.label+' ('+g.source+')':'')}`));
+    r.addEventListener('mouseleave',hideTT);
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();location.hash='review';openSwitch(g.switch_id);});});
+  el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
+    c.addEventListener('mousemove',e=>showTT(e,'<b>Needs review</b><br>uncertain — click to resolve'));
+    c.addEventListener('mouseleave',hideTT);
+    c.addEventListener('click',()=>{hideTT();location.hash='review';openSwitch(id);});});
+  el.querySelectorAll('rect[data-t]').forEach(r=>{const e=d.toggl[+r.dataset.t];r.addEventListener('mousemove',ev=>showTT(ev,`<b>Toggl:</b> ${esc(e.description)||'(untitled)'}<br>${fmtT(e.start)}–${fmtT(e.end)}${e.project?'<br>project: '+esc(e.project):''}${e.tags?'<br>tags: '+esc(e.tags):''}`));r.addEventListener('mouseleave',hideTT);});
+}
+
+// ---- trends (bar per day)
+function barChart(el,data,key,color,fmt=v=>Math.round(v)){
+  const W=1200,H=160,L=40,B=26,T=10;const vals=data.map(d=>d[key]);const max=Math.max(1,...vals);
+  const bw=(W-L-8)/data.length;const y=v=>T+(H-T-B)*(1-v/max);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">`;
+  [0,0.5,1].forEach(f=>{s+=`<line x1="${L}" x2="${W-8}" y1="${y(max*f)}" y2="${y(max*f)}" stroke="var(--grid)"/><text x="${L-6}" y="${y(max*f)+4}" text-anchor="end">${fmt(max*f)}</text>`;});
+  data.forEach((d,i)=>{const v=d[key];const x0=L+i*bw+1,w=Math.max(2,bw-3);
+    s+=`<rect data-i="${i}" x="${x0}" y="${y(v)}" width="${w}" height="${Math.max(0,H-B-y(v))}" fill="${color}" rx="3"/>`;
+    if(data.length<=31||i%7===0)s+=`<text x="${x0+w/2}" y="${H-8}" text-anchor="middle">${d.day.slice(5)}</text>`;});
+  s+='</svg>';el.innerHTML=s;
+  el.querySelectorAll('rect').forEach(r=>{const d=data[+r.dataset.i];r.addEventListener('mousemove',e=>showTT(e,`<b>${d.day}</b><br>${fmt(d[key])}`));r.addEventListener('mouseleave',hideTT);});
+}
+async function loadTrends(){
+  const res=await api('/api/metrics?days='+$('#trendDays').value);const data=res.days;
+  ['#c-int','#c-dis','#c-dismin'].forEach(id=>$(id).closest('.card').style.display=res.count_events?'':'none');
+  barChart($('#c-longest'),data,'longest_focus_min','var(--focus)');
+  barChart($('#c-total'),data,'total_focus_min','var(--focus)');
+  barChart($('#c-int'),data,'interruption_count','var(--interrupted)');
+  barChart($('#c-dis'),data,'distraction_count','var(--distracted)');
+  barChart($('#c-dismin'),data,'distracted_min','var(--distracted)');
+  barChart($('#c-spend'),data,'spend_usd','var(--m-ensemble)',v=>'$'+v.toFixed(2));
+}
+
+// ---- review
+let queue=[],qi=0,current=null;
+async function loadQueue(){
+  if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
+  queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;
+  $('#queueCount').textContent=queue.length?`${queue.length} in queue`:'queue empty';
+  if(queue.length)renderSwitch(queue[0].switch.id);else $('#reviewCard').innerHTML='<div class="muted">Nothing to review. Toggle "show all" to review any unreviewed switch, or click a block on the timeline.</div>';
+}
+async function openSwitch(id){await renderSwitch(id);}
+function probBar(p){return `<div class="prob">${Object.entries(p).map(([k,v])=>`<i style="width:${(v*100).toFixed(1)}%;background:${labelColor[k]}"></i>`).join('')}</div>`;}
+function segLine(s){if(!s)return '<span class="muted">(none)</span>';const dur=((s.end||Date.now()/1000)-s.start)/60;
+  return `<b>${esc(s.app)}</b> <span class="muted">${fmtT(s.start)} · ${dur.toFixed(1)} min</span><br>${esc(s.title)}${s.url?'<br><span class="muted small">'+esc(s.url.slice(0,140))+'</span>':''}`;}
+async function renderSwitch(id){
+  const f=await api('/api/switch/'+id);current=f;
+  const P=k=>({continuation:f.ensemble?.p_continuation,interruption:f.ensemble?.p_interruption,distraction:f.ensemble?.p_distraction,task_change:f.ensemble?.p_task_change});
+  const ctxLine=f.ensemble?(f.ensemble.importance>=1?`<div style="margin:6px 0"><b style="color:var(--focus)">Leaving a ${Math.round(f.ensemble.focus_run_min)}-min focus span</b> <span class="muted small">— high priority</span></div>`:`<div class="muted small" style="margin:6px 0">Not in a focus span before this switch — low priority</div>`):'';
+  const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
+  const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
+    return `<tr><td><b>${p.model}</b></td><td style="width:160px">${top} ${Math.round(pr[top]*100)}%${probBar(pr)}</td><td class="small">${esc(p.rationale)}${p.cost_usd?` <span class="muted">($${p.cost_usd.toFixed(3)})</span>`:''}</td></tr>`;}).join('');
+  const rev=f.review?`<div style="margin-top:8px"><b>Your review:</b> ${f.review.label}${f.review.note?' – '+esc(f.review.note):''} <button onclick="unreview(${id})">undo</button></div>`:'';
+  $('#reviewCard').innerHTML=`
+    <div class="row" style="justify-content:space-between"><div><b>Switch #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${queue.length?`${qi+1}/${queue.length} <button onclick="skip()">skip (s)</button>`:''}</div></div>
+    <div class="shots" style="margin:10px 0">
+      <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
+      <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
+    </div>
+    <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
+    ${ens}<table style="margin:8px 0">${preds}</table>${rev}
+    <div style="margin-top:10px"><b>What was this switch?</b>
+      <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
+      <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>`;
+}
+async function review(label){if(!current)return;await api(`/api/switch/${current.switch.id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note:$('#note').value||null})});next();}
+async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
+function skip(){next();}
+function next(){qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
+document.addEventListener('keydown',e=>{if(location.hash!=='#review'||e.target.tagName==='TEXTAREA')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(e.key==='s')skip();});
+
+// ---- accuracy
+async function loadAccuracy(){
+  const a=await api('/api/accuracy?days=60');
+  const tiles=[['Reviews so far',a.reviews],['Claude spend today',`$${a.spend_today.toFixed(2)} <span class="muted small">/ $${a.budget}</span>`]];
+  for(const [m,s] of Object.entries(a.scores))tiles.push([`${m} accuracy`,`${Math.round(100*s.accuracy)}% <span class="muted small">weighted, n=${s.n}</span>`,s.accuracy_focus==null?'':`on focus-span switches: ${Math.round(100*s.accuracy_focus)}% (n=${s.n_focus})`]);
+  $('#modelTiles').innerHTML=tiles.map(([l,v,sub])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div>${sub?`<div class="l" style="color:var(--focus)">${sub}</div>`:''}</div>`).join('');
+  const models=['claude','heuristic','learned','ensemble'];const days=[...new Set(a.daily.map(d=>d.day))].sort();
+  const W=1200,H=200,L=40,B=26,T=10;const x=i=>L+(days.length>1?i/(days.length-1):0.5)*(W-L-16);const y=v=>T+(H-T-B)*(1-v);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">`;
+  [0,0.5,1].forEach(f=>{s+=`<line x1="${L}" x2="${W-8}" y1="${y(f)}" y2="${y(f)}" stroke="var(--grid)"/><text x="${L-6}" y="${y(f)+4}" text-anchor="end">${f*100}%</text>`;});
+  days.forEach((d,i)=>{if(days.length<=20||i%5===0)s+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle">${d.slice(5)}</text>`;});
+  models.forEach(m=>{const pts=days.map((d,i)=>{const r=a.daily.find(e=>e.day===d&&e.model===m);return r?[x(i),y(r.accuracy),r]:null;}).filter(Boolean);
+    if(!pts.length)return;s+=`<polyline fill="none" stroke="var(--m-${m})" stroke-width="2" points="${pts.map(p=>p[0]+','+p[1]).join(' ')}"/>`;
+    pts.forEach(p=>s+=`<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="var(--m-${m})" stroke="var(--surface)" stroke-width="2"><title>${m} ${p[2].day}: ${Math.round(p[2].accuracy*100)}% (n=${p[2].n})</title></circle>`);});
+  s+='</svg>';$('#c-acc').innerHTML=days.length?s:'<div class="muted">No reviewed predictions yet. Review some switches first.</div>';
+  const w=Object.entries(a.scores).length?a.scores:{};
+  $('#weights').innerHTML='<tr><th>model</th><th>scored</th><th>accuracy (importance-weighted)</th><th>on focus-span switches</th><th>log-loss</th></tr>'+Object.entries(w).map(([m,s])=>`<tr><td>${m}</td><td>${s.n}</td><td>${Math.round(100*s.accuracy)}%</td><td>${s.accuracy_focus==null?'–':Math.round(100*s.accuracy_focus)+'% (n='+s.n_focus+')'}</td><td>${s.logloss.toFixed(3)}</td></tr>`).join('');
+}
+
+show(location.hash.slice(1)||'day');
+setInterval(()=>{if((location.hash||'#day')==='#day')loadDay();},60000);
+</script>
+</body>
+</html>
