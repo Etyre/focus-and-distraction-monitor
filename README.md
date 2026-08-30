@@ -49,8 +49,16 @@ Quit. The dashboard is also reachable in a browser at http://127.0.0.1:8790.
 
 Headless alternative: `run` (same three services, no icon). Pieces can also run separately:
 `collect`, `classify [--once] [--no-claude]`, `web`, `stats --days 14`.
-Start at login: System Settings → General → Login Items → add `Focus Monitor.app`. (A launchd
-plist is also in `launchd/` for the headless variant.)
+Start at login: it's registered as a **Login Item** (System Settings → General → Login Items). Add or
+remove it there, or from the terminal:
+
+```bash
+# add
+osascript -e 'tell application "System Events" to make login item at end with properties {path:"'"$PWD"'/dist/Focus Monitor.app", hidden:false}'
+# remove
+osascript -e 'tell application "System Events" to delete login item "Focus Monitor"'
+```
+(A launchd plist is also in `launchd/` for the headless variant.)
 
 ## How it works
 
