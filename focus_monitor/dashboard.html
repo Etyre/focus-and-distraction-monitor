@@ -57,7 +57,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 <body>
 <header>
   <h1>Focus Monitor</h1>
-  <nav><a href="#day" data-view="day">Day</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a></nav>
+  <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a></nav>
   <span id="status" class="muted small"></span>
 </header>
 <main>
@@ -71,6 +71,14 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="card"><div class="muted small" style="margin-bottom:6px">Timeline — pinch to zoom · two-finger scroll to pan · double-click to reset · click a ● to resolve</div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
+</section>
+
+<section id="view-segments" class="hidden">
+  <div class="row" style="margin-bottom:12px">
+    <button onclick="segNav('prev')">◀ Prev</button><button onclick="segNav('next')">Next ▶</button>
+    <span class="muted small">← / → to step through activity captures · click any box on the Day timeline to jump here · edit the label or ask Claude, same as Review</span>
+  </div>
+  <div id="segCard" class="card"></div>
 </section>
 
 <section id="view-trends" class="hidden">
@@ -117,7 +125,7 @@ async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await 
 // ---- routing
 function show(v){document.querySelectorAll('section').forEach(s=>s.classList.toggle('hidden',s.id!=='view-'+v));
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
-  ({day:loadDay,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
+  ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
 
 // ---- tooltip
@@ -216,7 +224,7 @@ function el_render(el,s,d,segs,flags){
   el.querySelectorAll('rect[data-i]').forEach(r=>{const g=segs[+r.dataset.i];
     r.addEventListener('mousemove',e=>showTT(e,`<b>${esc(g.app)}</b> ${g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(spanOf(g.clip_start)?subName[spanOf(g.clip_start).subtype]:'focus'):(g.state==='idle'?'idle':'unfocused')}${g.uncertain?' · <i>uncertain</i>':''}<br>${fmtT(g.clip_start)}–${fmtT(g.clip_end)} (${fmtMin(g.duration/60)})<br><span class="muted">${esc(g.title)}</span>${g.url?'<br><span class="muted">'+esc(g.url.slice(0,100))+'</span>':''}${g.source==='transit'?'<br><i>transit - part of one transition</i>':(g.label?'<br>label: '+g.label+' ('+g.source+')':'')}`));
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSwitch(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
     c.addEventListener('mousemove',e=>showTT(e,'<b>Needs review</b><br>uncertain — click to resolve'));
     c.addEventListener('mouseleave',hideTT);
@@ -250,14 +258,23 @@ async function loadTrends(){
 // ---- review
 let queue=[],qi=0,current=null;
 async function loadQueue(){
+  detailTarget='#reviewCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
   queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;
   if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;$('#queueCount').textContent='viewing selected switch';renderSwitch(id);return;}
   $('#queueCount').textContent=queue.length?`${queue.length} in queue`:'queue empty';
   if(queue.length)renderSwitch(queue[0].switch.id);else $('#reviewCard').innerHTML='<div class="muted">Nothing to review. Toggle "show all" to review any unreviewed switch, or click a block on the timeline.</div>';
 }
-let pendingSwitch=null;
+let pendingSwitch=null,detailTarget='#reviewCard';
 function openSwitch(id){pendingSwitch=id; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
+function openSegment(id){pendingSwitch=id; if((location.hash||'#day')==='#segments')loadSegments(); else location.hash='segments';}
+async function loadSegments(){detailTarget='#segCard';
+  if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
+  let id=pendingSwitch;pendingSwitch=null;
+  if(id==null){try{id=(await api('/api/switch/latest')).id;}catch(e){}}
+  if(id==null){$('#segCard').innerHTML='<div class="muted">No activity captured yet.</div>';return;}
+  renderSwitch(id);}
+async function segNav(dir){if(!current)return;const r=await api(`/api/switch/${current.switch.id}/adjacent?dir=${dir}`);if(r.id!=null){pendingSwitch=r.id;detailTarget='#segCard';renderSwitch(r.id);}else{const c=$(detailTarget+' .navmsg');}}
 function probBar(p){return `<div class="prob">${Object.entries(p).map(([k,v])=>`<i style="width:${(v*100).toFixed(1)}%;background:${labelColor[k]}"></i>`).join('')}</div>`;}
 function segLine(s){if(!s)return '<span class="muted">(none)</span>';const dur=((s.end||Date.now()/1000)-s.start)/60;
   return `<b>${esc(s.app)}</b> <span class="muted">${fmtT(s.start)} · ${dur.toFixed(1)} min</span><br>${esc(s.title)}${s.url?'<br><span class="muted small">'+esc(s.url.slice(0,140))+'</span>':''}`;}
@@ -269,8 +286,10 @@ async function renderSwitch(id){
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
     return `<tr><td><b>${p.model}</b></td><td style="width:160px">${top} ${Math.round(pr[top]*100)}%${probBar(pr)}</td><td class="small">${esc(p.rationale)}${p.cost_usd?` <span class="muted">($${p.cost_usd.toFixed(3)})</span>`:''}</td></tr>`;}).join('');
   const rev=f.review?`<div style="margin-top:8px"><b>Your review:</b> ${f.review.label}${f.review.note?' – '+esc(f.review.note):''} <button onclick="unreview(${id})">undo</button></div>`:'';
-  $('#reviewCard').innerHTML=`
-    <div class="row" style="justify-content:space-between"><div><b>Switch #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${queue.length?`${qi+1}/${queue.length} <button onclick="skip()">skip (s)</button>`:''}</div></div>
+  const nav=detailTarget==='#segCard'?`<button onclick="segNav('prev')">◀</button> <button onclick="segNav('next')">▶</button>`:(queue.length?`${qi+1}/${queue.length} <button onclick="skip()">skip (s)</button>`:'');
+  const other=$(detailTarget==='#reviewCard'?'#segCard':'#reviewCard'); if(other)other.innerHTML='';
+  $(detailTarget).innerHTML=`
+    <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
       <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
@@ -287,7 +306,7 @@ async function renderSwitch(id){
     </div>`;
   renderChat(id);
 }
-async function review(label){if(!current)return;await api(`/api/switch/${current.switch.id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note:$('#note').value||null})});next();}
+async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});if(detailTarget==='#segCard')renderSwitch(id);else next();}
 async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
 function skip(){next();}
 function next(){qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
@@ -300,7 +319,7 @@ async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#
   try{const r=await api(`/api/switch/${id}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
   catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderChat(id);}
-document.addEventListener('keydown',e=>{if(location.hash!=='#review'||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(e.key==='s')skip();});
+document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(h==='#review'&&e.key==='s')skip();if(h==='#segments'&&e.key==='ArrowLeft')segNav('prev');if(h==='#segments'&&e.key==='ArrowRight')segNav('next');});
 
 // ---- accuracy
 async function loadAccuracy(){

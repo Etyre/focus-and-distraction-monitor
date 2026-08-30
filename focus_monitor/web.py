@@ -92,6 +92,25 @@ def api_review_queue(limit: int = 30, all: bool = False):
     return [db.switch_full(c, i) for i in ids]
 
 
+@app.get("/api/switch/latest")
+def api_latest():
+    r = conn().execute("SELECT id FROM switches WHERE status!='transit' ORDER BY ts DESC LIMIT 1").fetchone()
+    return {"id": r[0] if r else None}
+
+
+@app.get("/api/switch/{switch_id}/adjacent")
+def api_adjacent(switch_id: int, dir: str = "next"):
+    c = conn()
+    sw = c.execute("SELECT ts FROM switches WHERE id=?", (switch_id,)).fetchone()
+    if not sw:
+        raise HTTPException(404)
+    if dir == "prev":
+        r = c.execute("SELECT id FROM switches WHERE ts<? AND status!='transit' ORDER BY ts DESC LIMIT 1", (sw["ts"],)).fetchone()
+    else:
+        r = c.execute("SELECT id FROM switches WHERE ts>? AND status!='transit' ORDER BY ts ASC LIMIT 1", (sw["ts"],)).fetchone()
+    return {"id": r[0] if r else None}
+
+
 @app.get("/api/switch/{switch_id}")
 def api_switch(switch_id: int):
     c = conn()
