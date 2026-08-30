@@ -142,7 +142,8 @@ function moveTT(e){const x=Math.min(e.clientX+14,innerWidth-440),y=Math.min(e.cl
 function hideTT(){tt.style.display='none';}
 
 // ---- day view
-function setToday(){$('#daypick').value=new Date().toLocaleDateString('en-CA');loadDay();}
+const DAY_START_HOUR=4;
+function setToday(){$('#daypick').value=new Date(Date.now()-DAY_START_HOUR*3600*1000).toLocaleDateString('en-CA');loadDay();}
 function shiftDay(n){const d=new Date($('#daypick').value+'T12:00:00');d.setDate(d.getDate()+n);$('#daypick').value=d.toLocaleDateString('en-CA');loadDay();}
 async function loadDay(){
   if(!$('#daypick').value)setToday();
@@ -162,7 +163,7 @@ async function loadDay(){
 }
 function drawTimeline(d){
   if(!d.segments.length){$('#timeline').innerHTML='<div class="muted">No data for this day.</div>';TL.d=null;return;}
-  TL.d=d; TL.def0=d.t0+9*3600; TL.def1=d.t0+24.5*3600; TL.B0=d.t0; TL.B1=d.t0+24.5*3600;
+  TL.d=d; TL.B0=d.t0; TL.B1=d.t1; TL.def0=d.t0+5*3600; TL.def1=d.t0+22*3600;  // day = 4am->4am; default view ~9am-2am
   if(TL.day!==d.day){TL.day=d.day; TL.view0=TL.tv0=TL.def0; TL.view1=TL.tv1=TL.def1;}
   const el=$('#timeline');
   if(!TL.wired){

@@ -19,7 +19,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 from . import db, stats
 from .classify import ClassifierService
 from .collector import Collector
-from .config import DATA_DIR, Config, keychain_set, load_config
+from .config import DATA_DIR, Config, keychain_set, load_config, logical_date
 from .icons import menu_icons
 
 log = logging.getLogger("menubar")
@@ -179,7 +179,7 @@ class FocusMenuBar(rumps.App):
                 status += " · Claude off (no API key)"
             self.status_item.title = status
             conn = db.connect()
-            m = stats.daily_metrics(conn, dt.date.today())
+            m = stats.daily_metrics(conn, logical_date())
             pending = conn.execute("SELECT COUNT(*) FROM switches WHERE status='pending'").fetchone()[0]
             uncertain = conn.execute("""SELECT COUNT(*) FROM ensemble e LEFT JOIN reviews r ON r.switch_id=e.switch_id
                                         WHERE e.uncertain=1 AND r.switch_id IS NULL""").fetchone()[0]
@@ -188,7 +188,7 @@ class FocusMenuBar(rumps.App):
                 self.events_item.title = (f"{m['interruption_count']} interruptions · {m['distraction_count']} distractions "
                                           f"({_fmt_min(m['distracted_min'])})")
             else:
-                self.events_item.title = f"{len(stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(dt.date.today())))['focus_spans'])} focus spans today"
+                self.events_item.title = f"{len(stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())))['focus_spans'])} focus spans today"
             self.queue_item.title = f"{uncertain} awaiting review · {pending} unclassified"
             self.spend_item.title = f"Claude spend today ${m['spend_usd']:.2f} / ${self.cfg.daily_budget_usd:.0f}"
             conn.close()

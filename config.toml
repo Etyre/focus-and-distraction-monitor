@@ -71,6 +71,9 @@ neutral_patterns = ["presence check"]
 # Apps to ignore entirely (never create segments), e.g. password managers.
 ignore_apps = ["1Password", "loginwindow", "ScreenSaverEngine", "Python"]  # "Python" = Focus Monitor's own windows
 
+[day]
+day_start_hour = 4             # a "day" runs 4am-4am; work at 1am on the 12th counts as the 11th
+
 [web]
 web_host = "127.0.0.1"
 web_port = 8790

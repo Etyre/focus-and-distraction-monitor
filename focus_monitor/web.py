@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import LABEL_HELP, LABEL_NAMES, LABELS, db, ensemble, stats, toggl
-from .config import DATA_DIR, load_config
+from .config import DATA_DIR, load_config, logical_date
 
 app = FastAPI(title="Focus Monitor")
 cfg = load_config()
@@ -28,7 +28,7 @@ def index():
 
 @app.get("/api/day")
 def api_day(day: str | None = None):
-    d = dt.date.fromisoformat(day) if day else dt.date.today()
+    d = dt.date.fromisoformat(day) if day else logical_date()
     c = conn()
     t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
@@ -82,7 +82,7 @@ def api_review_queue(limit: int = 30, all: bool = False):
     else:
         # The ranked selection: top-N per day (highest stakes x uncertainty), most recent day first.
         ids = []
-        today = dt.date.today()
+        today = logical_date()
         for i in range(14):
             t0, t1 = stats.day_bounds(today - dt.timedelta(days=i))
             ids += stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day)

@@ -23,9 +23,11 @@ def _has_toggl(conn) -> bool:
     return bool(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='toggl_entries'").fetchone())
 
 
-def day_bounds(day: dt.date) -> tuple[float, float]:
-    start = dt.datetime.combine(day, dt.time()).timestamp()
-    return start, start + 86400
+from .config import day_bounds, logical_date  # day boundary lives in config (default 4am-4am)
+
+
+def logical_today() -> dt.date:
+    return logical_date()
 
 
 def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
@@ -368,13 +370,13 @@ def daily_metrics(conn, day: dt.date) -> dict:
 
 
 def metrics_range(conn, days: int) -> list[dict]:
-    today = dt.date.today()
+    today = logical_today()
     return [daily_metrics(conn, today - dt.timedelta(days=i)) for i in range(days - 1, -1, -1)]
 
 
 def accuracy_over_time(conn, days: int) -> list[dict]:
     """Per day (by review date): accuracy of each model + ensemble vs. human labels."""
-    t0, _ = day_bounds(dt.date.today() - dt.timedelta(days=days - 1))
+    t0, _ = day_bounds(logical_today() - dt.timedelta(days=days - 1))
     rows = conn.execute("""
         SELECT r.created, r.label, p.model,
                p.p_continuation, p.p_interruption, p.p_distraction, p.p_task_change
@@ -387,7 +389,7 @@ def accuracy_over_time(conn, days: int) -> list[dict]:
         WHERE r.created >= ? AND e.created < r.created""", (t0,)).fetchall()
     per: dict[tuple[str, str], list[int]] = {}
     for r in rows:
-        day = dt.date.fromtimestamp(r["created"]).isoformat()
+        day = logical_date(r["created"]).isoformat()
         probs = {"continuation": r["p_continuation"], "interruption": r["p_interruption"],
                  "distraction": r["p_distraction"], "task_change": r["p_task_change"]}
         per.setdefault((day, r["model"]), []).append(int(max(probs, key=probs.get) == r["label"]))

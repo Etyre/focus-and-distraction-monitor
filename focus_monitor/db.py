@@ -5,7 +5,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import DATA_DIR, ensure_dirs
+from .config import DATA_DIR, day_bounds, ensure_dirs, logical_date
 
 DB_PATH = DATA_DIR / "focus.db"
 
@@ -174,9 +174,7 @@ def reviews_with_context(conn, limit: int | None = None) -> list[dict]:
 
 
 def spend_today(conn) -> float:
-    day_start = time.time() - (time.time() % 86400)  # UTC-ish; refined in stats via local tz
-    import datetime as _dt
-    local_midnight = _dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    start = day_bounds(logical_date())[0]
     row = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM predictions WHERE created >= ?",
-                       (local_midnight,)).fetchone()
+                       (start,)).fetchone()
     return float(row[0])

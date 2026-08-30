@@ -23,6 +23,12 @@ events, total time self-distracted.
 
 ---
 
+## 1b. The day boundary
+
+A **day runs 4am → 4am** (`day_start_hour`, default 4), not midnight → midnight: work at 1am on the
+12th counts toward the 11th. Every daily metric, the day picker's "today", the review-per-day cap, and
+Claude spend-today use this logical day.
+
 ## 2. Raw capture (collector)
 
 - Poll every **2s**: frontmost app + window title, and the active tab URL for

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime as _dt
 import os
+import time as _time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,6 +109,8 @@ class Config:
         hay = f"{app}\n{title}\n{url}".lower()
         return any(pat.lower() in hay for pat in self.neutral_patterns if pat)
 
+    day_start_hour: int = 4    # a "day" runs from this hour to the same hour next day (4 => 4am-4am)
+
     web_host: str = "127.0.0.1"
     web_port: int = 8790
 
@@ -165,3 +169,27 @@ def load_api_key() -> bool:
 
 def ensure_dirs() -> None:
     (DATA_DIR / "screenshots").mkdir(parents=True, exist_ok=True)
+
+
+_DAY_HOUR = None
+
+
+def day_start_hour() -> int:
+    """Cached day-start hour (loaded once; restart to change)."""
+    global _DAY_HOUR
+    if _DAY_HOUR is None:
+        _DAY_HOUR = int(load_config().day_start_hour)
+    return _DAY_HOUR
+
+
+def logical_date(ts: float | None = None) -> _dt.date:
+    """The logical day a timestamp belongs to, where days run from day_start_hour to the same hour
+    next day. 1am on May 12 (with a 4am start) belongs to May 11."""
+    ts = _time.time() if ts is None else ts
+    return (_dt.datetime.fromtimestamp(ts) - _dt.timedelta(hours=day_start_hour())).date()
+
+
+def day_bounds(day: _dt.date) -> tuple[float, float]:
+    """[start, start+24h) for a logical day, starting at day_start_hour."""
+    start = _dt.datetime.combine(day, _dt.time(hour=day_start_hour())).timestamp()
+    return start, start + 86400

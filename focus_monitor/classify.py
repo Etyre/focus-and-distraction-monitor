@@ -81,8 +81,8 @@ class ClassifierService:
         return None
 
     def flags_today(self) -> int:
-        import datetime as _dt
-        t0 = _dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        from .config import day_bounds, logical_date
+        t0 = day_bounds(logical_date())[0]
         return self.conn.execute("SELECT COUNT(*) FROM ensemble e JOIN switches s ON s.id=e.switch_id "
                                  "WHERE e.uncertain=1 AND s.ts>=?", (t0,)).fetchone()[0]
 
