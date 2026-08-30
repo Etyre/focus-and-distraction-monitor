@@ -39,7 +39,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral")} for s in segs]
+                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot")} for s in segs]
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
             "to_review": len(selected), "reviewed": reviewed,
             "short_breaks": stats.short_breaks(c, t0, t1),

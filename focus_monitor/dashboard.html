@@ -65,12 +65,12 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="row" style="margin-bottom:12px">
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
-    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>short break</span></span>
+    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></span>
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
-    <span><button onclick="zoomView(0.4)" title="Zoom in (+)">＋</button> <button onclick="zoomView(2.5)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
+    <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
   </div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
@@ -131,8 +131,8 @@ function show(v){document.querySelectorAll('section').forEach(s=>s.classList.tog
   ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
 document.addEventListener('keydown',e=>{if((location.hash||'#day')!=='#day'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
-  if(e.key==='+'||e.key==='='){zoomView(0.4);e.preventDefault();}
-  else if(e.key==='-'||e.key==='_'){zoomView(2.5);e.preventDefault();}
+  if(e.key==='+'||e.key==='='){zoomView(0.33);e.preventDefault();}
+  else if(e.key==='-'||e.key==='_'){zoomView(3);e.preventDefault();}
   else if(e.key==='0'){resetZoom();e.preventDefault();}});
 
 // ---- tooltip
@@ -150,7 +150,7 @@ async function loadDay(){
   const m=d.metrics;
   const tiles=[['Longest span',fmtMin(m.longest_focus_min)],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)],['Total focus',fmtMin(m.total_focus_min)],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`]];
   if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Self-distractions',m.distraction_count],['Time distracted',fmtMin(m.distracted_min)]);
-  tiles.push(['Active time',fmtMin(m.active_min)],['Short breaks',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
+  tiles.push(['Active time',fmtMin(m.active_min)],['Computer inactivity',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
   $('#tiles').innerHTML=tiles.map(([l,v])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
   COUNT_EVENTS=d.count_events; MIN_SPAN=d.min_focus_span_min;
@@ -163,7 +163,7 @@ async function loadDay(){
 function drawTimeline(d){
   if(!d.segments.length){$('#timeline').innerHTML='<div class="muted">No data for this day.</div>';TL.d=null;return;}
   TL.d=d; TL.def0=d.t0+9*3600; TL.def1=d.t0+24.5*3600; TL.B0=d.t0; TL.B1=d.t0+24.5*3600;
-  if(TL.day!==d.day){TL.day=d.day; TL.view0=TL.def0; TL.view1=TL.def1;}
+  if(TL.day!==d.day){TL.day=d.day; TL.view0=TL.tv0=TL.def0; TL.view1=TL.tv1=TL.def1;}
   const el=$('#timeline');
   if(!TL.wired){
     let raf=null; const rerender=()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=null;renderTimeline();});};
@@ -172,33 +172,39 @@ function drawTimeline(d){
       const W=1200,L=8,R=8, rect=el.getBoundingClientRect();
       const xv=Math.max(L,Math.min(W-R,(e.clientX-rect.left)/rect.width*W));
       const tc=TL.view0+(xv-L)/(W-L-R)*(TL.view1-TL.view0);
-      if(e.ctrlKey){                                  // trackpad pinch = wheel + ctrlKey
-        const f=Math.exp(e.deltaY*0.1), lf=(tc-TL.view0)/(TL.view1-TL.view0);
-        let w=(TL.view1-TL.view0)*f; TL.view0=tc-lf*w; TL.view1=TL.view0+w;
-      } else {                                        // two-finger scroll = pan
+      if(e.ctrlKey){ zoomTo(Math.exp(e.deltaY*0.4), tc); }   // trackpad pinch (animated)
+      else {                                                  // two-finger scroll = pan (immediate)
         const dp=(Math.abs(e.deltaX)>=Math.abs(e.deltaY)?e.deltaX:e.deltaY)/rect.width*(TL.view1-TL.view0);
-        TL.view0+=dp; TL.view1+=dp;
+        TL.view0+=dp; TL.view1+=dp; TL.tv0+=dp; TL.tv1+=dp; clampView(); rerender();
       }
-      clampView(); rerender();
     },{passive:false});
-    el.addEventListener('dblclick',()=>{if(!TL.d)return; TL.view0=TL.def0; TL.view1=TL.def1; renderTimeline();});
+    el.addEventListener('dblclick',()=>resetZoom());
     TL.wired=true;
   }
   renderTimeline();
 }
-function zoomView(factor, tc){
+function clampWin(v0,v1){const minW=20,maxW=TL.B1-TL.B0;let w=Math.max(minW,Math.min(maxW,v1-v0));if(v0+w>TL.B1)v0=TL.B1-w;if(v0<TL.B0)v0=TL.B0;return [v0,v0+w];}
+function clampView(){[TL.view0,TL.view1]=clampWin(TL.view0,TL.view1);}
+function animateZoom(){
+  if(TL._raf)cancelAnimationFrame(TL._raf);
+  const step=()=>{
+    TL.view0+=(TL.tv0-TL.view0)*0.3; TL.view1+=(TL.tv1-TL.view1)*0.3;
+    const done=Math.abs(TL.view0-TL.tv0)<0.5&&Math.abs(TL.view1-TL.tv1)<0.5;
+    if(done){TL.view0=TL.tv0; TL.view1=TL.tv1;}
+    renderTimeline();
+    TL._raf=done?null:requestAnimationFrame(step);
+  };
+  TL._raf=requestAnimationFrame(step);
+}
+function zoomTo(factor, tc){
   if(!TL.d)return;
   tc=(tc==null)?(TL.view0+TL.view1)/2:tc;
   const lf=(tc-TL.view0)/(TL.view1-TL.view0), w=(TL.view1-TL.view0)*factor;
-  TL.view0=tc-lf*w; TL.view1=TL.view0+w; clampView(); renderTimeline();
+  [TL.tv0,TL.tv1]=clampWin(tc-lf*w, tc-lf*w+w);
+  animateZoom();
 }
-function resetZoom(){if(!TL.d)return;TL.view0=TL.def0;TL.view1=TL.def1;renderTimeline();}
-function clampView(){
-  const minW=20, maxW=TL.B1-TL.B0;
-  let w=Math.max(minW,Math.min(maxW,TL.view1-TL.view0)), v0=TL.view0;
-  if(v0<TL.B0)v0=TL.B0; if(v0+w>TL.B1)v0=TL.B1-w;
-  TL.view0=v0; TL.view1=v0+w;
-}
+function zoomView(f,tc){zoomTo(f,tc);}
+function resetZoom(){if(!TL.d)return;[TL.tv0,TL.tv1]=[TL.def0,TL.def1];animateZoom();}
 function renderTimeline(){
   const d=TL.d; if(!d)return;
   const W=1200,H=120,L=8,R=8,segs=d.segments, first=TL.view0,last=TL.view1;
@@ -235,8 +241,10 @@ function renderTimeline(){
 function el_get(){return $('#timeline');}
 function el_render(el,s,d,segs,flags){
   el.innerHTML=s;
+  const spanOf=t=>d.focus_spans.find(sp=>t>=sp.start-1&&t<sp.end+1);
   el.querySelectorAll('rect[data-i]').forEach(r=>{const g=segs[+r.dataset.i];
-    r.addEventListener('mousemove',e=>showTT(e,`<b>${esc(g.app)}</b> ${g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(spanOf(g.clip_start)?subName[spanOf(g.clip_start).subtype]:'focus'):(g.state==='idle'?'idle':'unfocused')}${g.uncertain?' · <i>uncertain</i>':''}<br>${fmtT(g.clip_start)}–${fmtT(g.clip_end)} (${fmtMin(g.duration/60)})<br><span class="muted">${esc(g.title)}</span>${g.url?'<br><span class="muted">'+esc(g.url.slice(0,100))+'</span>':''}${g.source==='transit'?'<br><i>transit - part of one transition</i>':(g.label?'<br>label: '+g.label+' ('+g.source+')':'')}`));
+    r.addEventListener('mousemove',e=>{const sp0=spanOf(g.clip_start);const kind=g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(sp0?subName[sp0.subtype]:'focus'):(g.state==='idle'?'idle (away)':'unfocused');
+      showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
