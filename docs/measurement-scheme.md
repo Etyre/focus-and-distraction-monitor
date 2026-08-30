@@ -120,8 +120,11 @@ scoring, and the only ones ever shown to you.
   confident, only a 10% audit sample goes to Claude. Non-focus-leaving switches
   use Claude only under 60% of budget. Hard cap
   **$15/day**.
-- **Review queue**: ≤ **8/day**, highest-stakes first. Your review overrides the
-  model and retrains it.
+- **Review queue (ranked, not first-come)**: every focus-leaving switch the models are unsure about is
+  marked uncertain, but you are only shown the **top 8 per day**, ranked by **stakes × uncertainty**
+  (`importance × (1 − top probability)`), recomputed continuously — an afternoon uncertainty is never
+  crowded out by an earlier marginal one. The timeline's "needs review" flags and the queue draw from
+  this same selection. Your review always overrides the model and retrains it.
 
 ---
 
