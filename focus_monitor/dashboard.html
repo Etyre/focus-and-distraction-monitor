@@ -46,6 +46,12 @@ table{border-collapse:collapse;width:100%} td,th{padding:6px 8px;border-bottom:1
 .muted{color:var(--muted)} .small{font-size:12px}
 textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--ink)}
 .hidden{display:none}
+.chatlog{max-height:260px;overflow-y:auto;margin:8px 0;display:flex;flex-direction:column;gap:6px}
+.cmsg{padding:6px 10px;border-radius:8px;font-size:13px;max-width:90%;white-space:pre-wrap}
+.cmsg.user{align-self:flex-end;background:var(--focus);color:#fff}
+.cmsg.assistant{align-self:flex-start;background:var(--surface);border:1px solid var(--grid)}
+.cmsg.pending{align-self:flex-start;color:var(--muted)}
+.chatrow{display:flex;gap:8px}.chatrow input{flex:1}
 </style>
 </head>
 <body>
@@ -105,7 +111,7 @@ const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distract
 const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',focus:'var(--f-general)'};
 const subName={creative_work:'creative work',focused_task:'focused task',focus:'focus (reading/planning)'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
-let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={};
+let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}
 
 // ---- routing
@@ -271,13 +277,28 @@ async function renderSwitch(id){
     ${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
-      <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>`;
+      <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
+    <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
+      <b>Ask Claude about this switch</b> <span class="muted small">— it sees the same screenshots, activity, Toggl intent, and model rationales</span>
+      <div id="chatlog" class="chatlog"></div>
+      <div class="chatrow"><input id="chatinput" placeholder="e.g. What's on screen in the after shot? Why did you call this an interruption?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Ask</button></div>
+    </div>`;
+  renderChat(id);
 }
 async function review(label){if(!current)return;await api(`/api/switch/${current.switch.id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note:$('#note').value||null})});next();}
 async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
 function skip(){next();}
 function next(){qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
-document.addEventListener('keydown',e=>{if(location.hash!=='#review'||e.target.tagName==='TEXTAREA')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(e.key==='s')skip();});
+function renderChat(id){const log=$('#chatlog');if(!log)return;
+  log.innerHTML=(CHAT[id]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
+  log.scrollTop=log.scrollHeight;}
+async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#chatinput'),q=inp.value.trim();if(!q)return;
+  CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});inp.value='';renderChat(id);
+  const log=$('#chatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
+  try{const r=await api(`/api/switch/${id}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
+  catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
+  renderChat(id);}
+document.addEventListener('keydown',e=>{if(location.hash!=='#review'||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(e.key==='s')skip();});
 
 // ---- accuracy
 async function loadAccuracy(){

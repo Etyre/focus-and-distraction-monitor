@@ -86,6 +86,30 @@ def api_switch(switch_id: int):
     return full
 
 
+_chat = None
+def get_chat():
+    global _chat
+    if _chat is None:
+        from .chat import ReviewChat
+        _chat = ReviewChat(cfg)
+    return _chat
+
+
+class ChatReq(BaseModel):
+    messages: list[dict]
+
+
+@app.post("/api/switch/{switch_id}/chat")
+def api_chat(switch_id: int, req: ChatReq):
+    c = conn()
+    if not db.switch_full(c, switch_id):
+        raise HTTPException(404)
+    try:
+        return {"reply": get_chat().reply(c, switch_id, req.messages)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 class Review(BaseModel):
     label: str
     note: str | None = None
