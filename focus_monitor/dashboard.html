@@ -8,13 +8,13 @@
 :root{
   --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
   --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#c3c2b7;--taskchange:#1baf7a;
-  --f-creative:#2a78d6;--f-task:#12a594;--f-general:#7a86e8;
+  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#6f8fe0;--f-planning:#9a6fd6;--f-other:#3aa5c2;
   --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
   --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#383835;--taskchange:#199e70;
-  --f-creative:#3987e5;--f-task:#1cb8a6;--f-general:#8f99ee;
+  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#8f99ee;--f-planning:#ad86e6;--f-other:#4fbcd6;
   --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
 }}
 *{box-sizing:border-box}
@@ -65,7 +65,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="row" style="margin-bottom:12px">
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
-    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-general)"></i>focus (reading/planning)</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>short break</span></span>
+    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>short break</span></span>
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="card"><div class="muted small" style="margin-bottom:6px">Timeline — pinch to zoom · two-finger scroll to pan · double-click to reset · click a ● to resolve</div><div id="timeline"></div></div>
@@ -116,8 +116,8 @@ const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-d
 const fmtMin=m=>m>=60?`${Math.floor(m/60)}h ${Math.round(m%60)}m`:`${Math.round(m)}m`;
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
-const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',focus:'var(--f-general)'};
-const subName={creative_work:'creative work',focused_task:'focused task',focus:'focus (reading/planning)'};
+const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',focus:'var(--f-other)'};
+const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',focus:'other focused work'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}
@@ -180,7 +180,7 @@ function drawTimeline(d){
   renderTimeline();
 }
 function clampView(){
-  const minW=180, maxW=TL.B1-TL.B0;
+  const minW=20, maxW=TL.B1-TL.B0;
   let w=Math.max(minW,Math.min(maxW,TL.view1-TL.view0)), v0=TL.view0;
   if(v0<TL.B0)v0=TL.B0; if(v0+w>TL.B1)v0=TL.B1-w;
   TL.view0=v0; TL.view1=v0+w;
@@ -319,7 +319,7 @@ async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#
   try{const r=await api(`/api/switch/${id}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
   catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderChat(id);}
-document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key])review(m[e.key]);if(h==='#review'&&e.key==='s')skip();if(h==='#segments'&&e.key==='ArrowLeft')segNav('prev');if(h==='#segments'&&e.key==='ArrowRight')segNav('next');});
+document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowLeft'){segNav('prev');e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowRight'){segNav('next');e.preventDefault();}},{passive:false});
 
 // ---- accuracy
 async function loadAccuracy(){

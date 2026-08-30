@@ -25,8 +25,9 @@ class Judgement(BaseModel):
     p_task_change: float = Field(ge=0, le=1, description="'focus start': focused work begins or resumes with this switch")
     activity: str = Field(description="What the person is doing in the TO window: one of 'reading', "
                           "'writing' (composing an essay/notes/doc), 'coding', 'task_execution' (working "
-                          "through discrete tasks: email, forms, admin, calendar), 'browsing' (feeds/"
-                          "shopping/aimless), or 'other'.")
+                          "through discrete tasks: email, forms, admin, calendar), 'planning' (organizing "
+                          "thoughts, choosing goals, metacognition, journaling, reflecting), 'browsing' "
+                          "(feeds/shopping/aimless), or 'other'.")
 
 
 SYSTEM_TEMPLATE = """You are an attention-monitoring assistant. A person is tracking their own focus on their Mac. \

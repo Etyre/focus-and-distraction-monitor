@@ -125,49 +125,40 @@ def _runs(segs: list[dict], state: str, new_run_on_label: str | None = None) -> 
 
 
 def span_subtype(sp: dict, cfg) -> str:
-    """Classify a focus span (Rules doc): creative-work (making something) vs focused-task
-    (executing tasks) vs plain focus (reading/research/planning). Prefers Claude's per-switch
-    `activity` tag and Toggl tags/description; falls back to an app/Toggl heuristic."""
+    """Classify a focus span into one of five kinds (Rules doc + user categories):
+    creative_work, focused_task, reading, planning, other_focused. Prefers Claude's per-switch
+    `activity` tag; falls back to app/Toggl heuristics."""
     from collections import Counter
     fsegs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
     tot = sum(s["duration"] for s in fsegs) or 1.0
 
-    # 1) Content signal: dominant Claude activity over the span's focus time.
-    act = Counter()
+    # 1) Content signal: dominant Claude activity, mapped to a subtype.
+    ACT2SUB = {"writing": "creative_work", "coding": "creative_work", "task_execution": "focused_task",
+               "reading": "reading", "planning": "planning", "browsing": "other_focused", "other": "other_focused"}
+    grp = Counter()
     for s in fsegs:
         a = s.get("activity")
         if a:
-            act[a] += s["duration"]
-    covered = sum(act.values())
-    if covered / tot >= 0.4:  # enough of the span was actually looked at
-        creative = act.get("writing", 0) + act.get("coding", 0)
-        task = act.get("task_execution", 0)
-        if creative >= task and creative / covered >= 0.4:
-            return "creative_work"
-        if task > creative and task / covered >= 0.4:
-            return "focused_task"
-        return "focus"
+            grp[ACT2SUB.get(a, "other_focused")] += s["duration"]
+    if sum(grp.values()) / tot >= 0.4:
+        return grp.most_common(1)[0][0]
 
-    # 2) Toggl tags/description as a hint.
+    # 2) Toggl tags/description hint.
     tagtext = " ".join(f"{s.get('toggl_tags','')} {s.get('toggl_desc','')}" for s in fsegs).lower()
     if any(k in tagtext for k in ("writ", "essay", "draft", "coding", "software", "creativ", "video")):
         return "creative_work"
     if any(k in tagtext for k in ("focused work", "task", "admin", "process", "email", "errand", "logistic")):
         return "focused_task"
+    if any(k in tagtext for k in ("plan", "reflect", "goal", "journal", "metacog", "prioriti", "choosing")):
+        return "planning"
+    if any(k in tagtext for k in ("read", "study")):
+        return "reading"
 
-    # 3) Fallback: authoring apps => creative; task-churn under Toggl => focused-task.
+    # 3) App heuristic: authoring surface => creative; else other focused work.
     creative = sum(s["duration"] for s in fsegs if cfg.is_authoring(s["app"], s["title"], s["url"]))
     if creative / tot >= cfg.creative_frac:
         return "creative_work"
-    toggl_cov = sum(s["duration"] for s in fsegs if s.get("toggl_id")) / tot
-    apps = {(s["app"], s["domain"]) for s in fsegs}
-    dom = Counter()
-    for s in fsegs:
-        dom[s["domain"] or s["app"]] += s["duration"]
-    dominant = (dom.most_common(1)[0][1] / tot) if dom else 0
-    if toggl_cov >= cfg.task_toggl_frac and len(apps) >= cfg.task_min_apps and dominant < 0.6:
-        return "focused_task"
-    return "focus"
+    return "other_focused"
 
 
 def _detour_label(run: dict) -> str:
