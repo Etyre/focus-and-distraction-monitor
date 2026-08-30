@@ -68,7 +68,10 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>short break</span></span>
   </div>
   <div class="tiles" id="tiles"></div>
-  <div class="card"><div class="muted small" style="margin-bottom:6px">Timeline — pinch to zoom · two-finger scroll to pan · double-click to reset · click a ● to resolve</div><div id="timeline"></div></div>
+  <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
+    <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
+    <span><button onclick="zoomView(0.4)" title="Zoom in (+)">＋</button> <button onclick="zoomView(2.5)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
+  </div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
 </section>
@@ -127,6 +130,10 @@ function show(v){document.querySelectorAll('section').forEach(s=>s.classList.tog
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
   ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
+document.addEventListener('keydown',e=>{if((location.hash||'#day')!=='#day'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.key==='+'||e.key==='='){zoomView(0.4);e.preventDefault();}
+  else if(e.key==='-'||e.key==='_'){zoomView(2.5);e.preventDefault();}
+  else if(e.key==='0'){resetZoom();e.preventDefault();}});
 
 // ---- tooltip
 const tt=$('#tt');
@@ -166,7 +173,7 @@ function drawTimeline(d){
       const xv=Math.max(L,Math.min(W-R,(e.clientX-rect.left)/rect.width*W));
       const tc=TL.view0+(xv-L)/(W-L-R)*(TL.view1-TL.view0);
       if(e.ctrlKey){                                  // trackpad pinch = wheel + ctrlKey
-        const f=Math.exp(e.deltaY*0.01), lf=(tc-TL.view0)/(TL.view1-TL.view0);
+        const f=Math.exp(e.deltaY*0.1), lf=(tc-TL.view0)/(TL.view1-TL.view0);
         let w=(TL.view1-TL.view0)*f; TL.view0=tc-lf*w; TL.view1=TL.view0+w;
       } else {                                        // two-finger scroll = pan
         const dp=(Math.abs(e.deltaX)>=Math.abs(e.deltaY)?e.deltaX:e.deltaY)/rect.width*(TL.view1-TL.view0);
@@ -179,6 +186,13 @@ function drawTimeline(d){
   }
   renderTimeline();
 }
+function zoomView(factor, tc){
+  if(!TL.d)return;
+  tc=(tc==null)?(TL.view0+TL.view1)/2:tc;
+  const lf=(tc-TL.view0)/(TL.view1-TL.view0), w=(TL.view1-TL.view0)*factor;
+  TL.view0=tc-lf*w; TL.view1=TL.view0+w; clampView(); renderTimeline();
+}
+function resetZoom(){if(!TL.d)return;TL.view0=TL.def0;TL.view1=TL.def1;renderTimeline();}
 function clampView(){
   const minW=20, maxW=TL.B1-TL.B0;
   let w=Math.max(minW,Math.min(maxW,TL.view1-TL.view0)), v0=TL.view0;
