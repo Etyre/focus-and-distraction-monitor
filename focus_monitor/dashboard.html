@@ -216,11 +216,11 @@ function el_render(el,s,d,segs,flags){
   el.querySelectorAll('rect[data-i]').forEach(r=>{const g=segs[+r.dataset.i];
     r.addEventListener('mousemove',e=>showTT(e,`<b>${esc(g.app)}</b> ${g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(spanOf(g.clip_start)?subName[spanOf(g.clip_start).subtype]:'focus'):(g.state==='idle'?'idle':'unfocused')}${g.uncertain?' · <i>uncertain</i>':''}<br>${fmtT(g.clip_start)}–${fmtT(g.clip_end)} (${fmtMin(g.duration/60)})<br><span class="muted">${esc(g.title)}</span>${g.url?'<br><span class="muted">'+esc(g.url.slice(0,100))+'</span>':''}${g.source==='transit'?'<br><i>transit - part of one transition</i>':(g.label?'<br>label: '+g.label+' ('+g.source+')':'')}`));
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();location.hash='review';openSwitch(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSwitch(g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
     c.addEventListener('mousemove',e=>showTT(e,'<b>Needs review</b><br>uncertain — click to resolve'));
     c.addEventListener('mouseleave',hideTT);
-    c.addEventListener('click',()=>{hideTT();location.hash='review';openSwitch(id);});});
+    c.addEventListener('click',()=>{hideTT();openSwitch(id);});});
   el.querySelectorAll('rect[data-t]').forEach(r=>{const e=d.toggl[+r.dataset.t];r.addEventListener('mousemove',ev=>showTT(ev,`<b>Toggl:</b> ${esc(e.description)||'(untitled)'}<br>${fmtT(e.start)}–${fmtT(e.end)}${e.project?'<br>project: '+esc(e.project):''}${e.tags?'<br>tags: '+esc(e.tags):''}`));r.addEventListener('mouseleave',hideTT);});
 }
 
@@ -252,10 +252,12 @@ let queue=[],qi=0,current=null;
 async function loadQueue(){
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
   queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;
+  if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;$('#queueCount').textContent='viewing selected switch';renderSwitch(id);return;}
   $('#queueCount').textContent=queue.length?`${queue.length} in queue`:'queue empty';
   if(queue.length)renderSwitch(queue[0].switch.id);else $('#reviewCard').innerHTML='<div class="muted">Nothing to review. Toggle "show all" to review any unreviewed switch, or click a block on the timeline.</div>';
 }
-async function openSwitch(id){await renderSwitch(id);}
+let pendingSwitch=null;
+function openSwitch(id){pendingSwitch=id; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
 function probBar(p){return `<div class="prob">${Object.entries(p).map(([k,v])=>`<i style="width:${(v*100).toFixed(1)}%;background:${labelColor[k]}"></i>`).join('')}</div>`;}
 function segLine(s){if(!s)return '<span class="muted">(none)</span>';const dur=((s.end||Date.now()/1000)-s.start)/60;
   return `<b>${esc(s.app)}</b> <span class="muted">${fmtT(s.start)} · ${dur.toFixed(1)} min</span><br>${esc(s.title)}${s.url?'<br><span class="muted small">'+esc(s.url.slice(0,140))+'</span>':''}`;}
