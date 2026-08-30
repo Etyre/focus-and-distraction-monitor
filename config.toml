@@ -25,7 +25,8 @@ audit_sample_rate = 0.10       # fraction still sent to Claude for calibration o
 count_events = false           # phase 1: measure focus spans only. Set true later to surface event counts.
 break_min = 5                  # detours shorter than this are events INSIDE a span; 5+ min breaks the span
 min_focus_span_min = 15        # a span must contain >= 15 min of focus; leaving one is what counts as an event
-max_reviews_per_day = 8        # the review queue shows at most this many switches per day (highest-stakes first)
+max_reviews_per_day = 8        # per day, the review queue shows the top-N most uncertain x highest-stakes
+                               # switches (ranked, recomputed continuously - not the first N of the day)
 working_pair_window_min = 30   # A<->B bounced 3+ times within this window = a working pair, never questioned
 uncertain_threshold = 0.65     # ensemble max-probability below this => flagged for review
 uncertain_threshold_focus = 0.75  # stricter for switches that leave an ongoing focus span (the ones that matter)

@@ -132,10 +132,10 @@ class ClassifierService:
             probs["interruption"] = probs["distraction"] = 0.0
             rationales["daily_notes"] = "daily-notes capture (never an interruption/distraction)"
         label = max(probs, key=probs.get)
-        # Only switches that leave a focus span are ever put to the user, and at most N per day.
+        # Mark ambiguity on every focus-leaving switch; the review SET is chosen later as the
+        # top-N most uncertain/highest-stakes per day (stats.select_for_review), not first-come.
         uncertain = (leaving_focus and not trivial
-                     and ensemble.is_uncertain(probs, preds, self.cfg.uncertain_threshold_focus)
-                     and self.flags_today() < self.cfg.max_reviews_per_day)
+                     and ensemble.is_uncertain(probs, preds, self.cfg.uncertain_threshold_focus))
         now = time.time()
         with db.tx(self.conn):
             for m, p in preds.items():

@@ -33,9 +33,15 @@ def api_day(day: str | None = None):
     t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
     se = stats.spans_and_events(segs)
+    selected = set(stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day))
+    for s in segs:
+        s["needs_review"] = s.get("switch_id") in selected and s.get("source") != "review"
+    reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
+                         (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "source", "probs", "neutral")} for s in segs]
+                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral")} for s in segs]
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
+            "to_review": len(selected), "reviewed": reviewed,
             "short_breaks": stats.short_breaks(c, t0, t1),
             "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
                        "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
@@ -67,12 +73,23 @@ def api_accuracy(days: int = 60):
 @app.get("/api/review/queue")
 def api_review_queue(limit: int = 30, all: bool = False):
     c = conn()
-    where = "" if all else "AND e.uncertain=1"
-    rows = c.execute(f"""
-        SELECT s.id FROM switches s JOIN ensemble e ON e.switch_id=s.id
-        LEFT JOIN reviews r ON r.switch_id=s.id
-        WHERE r.switch_id IS NULL {where} ORDER BY e.importance DESC, s.ts DESC LIMIT ?""", (limit,)).fetchall()
-    return [db.switch_full(c, r[0]) for r in rows]
+    if all:
+        rows = c.execute("""
+            SELECT s.id FROM switches s JOIN ensemble e ON e.switch_id=s.id
+            LEFT JOIN reviews r ON r.switch_id=s.id
+            WHERE r.switch_id IS NULL AND s.status!='transit' ORDER BY s.ts DESC LIMIT ?""", (limit,)).fetchall()
+        ids = [r[0] for r in rows]
+    else:
+        # The ranked selection: top-N per day (highest stakes x uncertainty), most recent day first.
+        ids = []
+        today = dt.date.today()
+        for i in range(14):
+            t0, t1 = stats.day_bounds(today - dt.timedelta(days=i))
+            ids += stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day)
+            if len(ids) >= limit:
+                break
+        ids = ids[:limit]
+    return [db.switch_full(c, i) for i in ids]
 
 
 @app.get("/api/switch/{switch_id}")

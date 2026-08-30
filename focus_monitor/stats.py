@@ -326,6 +326,20 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             "interruptions": interruptions, "distractions": distractions}
 
 
+def select_for_review(conn, t0: float, t1: float, n: int) -> list[int]:
+    """The top-N switches worth reviewing in [t0,t1): ambiguous, focus-leaving, still unreviewed,
+    ranked by stakes x uncertainty (importance x (1 - top probability)). Recomputed each call, so
+    a 2 pm uncertain switch is never crowded out by an earlier marginal one."""
+    rows = conn.execute("""
+        SELECT s.id,
+               e.importance * (1.0 - max(e.p_continuation, e.p_interruption, e.p_distraction, e.p_task_change)) AS score
+        FROM switches s JOIN ensemble e ON e.switch_id = s.id
+        LEFT JOIN reviews r ON r.switch_id = s.id
+        WHERE s.ts >= ? AND s.ts < ? AND e.uncertain = 1 AND r.switch_id IS NULL AND s.status != 'transit'
+        ORDER BY score DESC, s.ts DESC LIMIT ?""", (t0, t1, n)).fetchall()
+    return [r[0] for r in rows]
+
+
 def short_breaks(conn, t0: float, t1: float) -> list[dict]:
     return [{"start": max(r["start"], t0), "end": min(r["end"], t1)} for r in
             conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ? ORDER BY start", (t1, t0))]

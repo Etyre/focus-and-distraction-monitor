@@ -135,7 +135,7 @@ async function loadDay(){
   const m=d.metrics;
   const tiles=[['Longest span',fmtMin(m.longest_focus_min)],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)],['Total focus',fmtMin(m.total_focus_min)],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`]];
   if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Self-distractions',m.distraction_count],['Time distracted',fmtMin(m.distracted_min)]);
-  tiles.push(['Active time',fmtMin(m.active_min)],['Short breaks',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${m.uncertain} / ${m.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
+  tiles.push(['Active time',fmtMin(m.active_min)],['Short breaks',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
   $('#tiles').innerHTML=tiles.map(([l,v])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
   COUNT_EVENTS=d.count_events; MIN_SPAN=d.min_focus_span_min;
@@ -204,7 +204,7 @@ function renderTimeline(){
     (sp.events||[]).forEach(e=>{if(!vis(e.start,e.end))return;const cx=xc((e.start+e.end)/2);s+=`<path d="M${cx-4},2 L${cx+4},2 L${cx},10 Z" fill="var(--interrupted)"><title>${e.kind} ${fmtMin((e.end-e.start)/60)} (inside the span)</title></path>`;});});
   // oversight flags: uncertain, unresolved switches — click to resolve
   const flags=[],seen=new Set();
-  segs.forEach(g=>{if(g.uncertain&&g.switch_id&&g.source!=='review'&&!seen.has(g.switch_id)&&vis(g.clip_start,g.clip_start+1)){seen.add(g.switch_id);flags.push(g);}});
+  segs.forEach(g=>{if(g.needs_review&&!seen.has(g.switch_id)&&vis(g.clip_start,g.clip_start+1)){seen.add(g.switch_id);flags.push(g);}});
   s+=`<text x="${L}" y="114" fill="var(--distracted)">Needs review</text>`;
   flags.forEach((g,i)=>{const cx=xc(g.clip_start);s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="0.5"/><circle data-flag="${g.switch_id}" cx="${cx}" cy="108" r="5" fill="var(--distracted)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"/>`;});
   s+='</svg>';
