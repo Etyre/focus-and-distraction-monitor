@@ -228,7 +228,7 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
     """Evaluate the oldest unevaluated stretch that is at least LAZY_S old. Called from the
     classifier loop; also usable for backfill with a longer lookback and more chunks."""
     cfg = cfg or load_config()
-    if db.spend_today(conn) >= cfg.daily_budget_usd:
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     horizon = time.time() - LAZY_S
     done = 0

@@ -115,7 +115,7 @@ def ensure_summaries(conn, cfg: Config | None = None, max_new: int = 2) -> int:
     don't have a stored summary yet. Called from the classifier loop."""
     from . import stats
     cfg = cfg or load_config()
-    if db.spend_today(conn) >= cfg.daily_budget_usd:
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     now = time.time()
     segs = stats.labelled_segments(conn, now - 7 * 86400, now)  # cover the span-review queue window

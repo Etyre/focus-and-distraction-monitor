@@ -40,7 +40,8 @@ class Config:
                                     # hunt (desktops -> window -> tab) is judged once as one transition  # wait this long after a switch so we can see what followed
     claude_model: str = "claude-opus-5"
     claude_effort: str = "medium"
-    daily_budget_usd: float = 10.0
+    daily_budget_usd: float = 15.0     # soft target; per-switch Opus is gated against it,
+    hard_budget_multiple: float = 2.0  # but judgment work only stops at this multiple (safety)
     switch_claude_budget_fraction: float = 0.35  # per-switch Opus stops here; rest goes to the evaluator
     # frugality: skip Claude when local models are this accurate on recent reviews AND this confident
     frugal_accuracy_threshold: float = 0.85
