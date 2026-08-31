@@ -45,6 +45,9 @@ class DashboardWindow:
                 rect, style, NSBackingStoreBuffered, False)
             self.window.setTitle_("Focus Monitor")
             self.window.setReleasedWhenClosed_(False)
+            # Open on the Space the user is on right now, instead of switching desktops
+            # to wherever the window last lived (NSWindowCollectionBehaviorMoveToActiveSpace).
+            self.window.setCollectionBehavior_(1 << 1)
             self.window.center()
             self.webview = WKWebView.alloc().initWithFrame_configuration_(rect, WKWebViewConfiguration.alloc().init())
             self.webview.setAutoresizingMask_(18)  # width + height sizable

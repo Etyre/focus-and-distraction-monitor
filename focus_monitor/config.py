@@ -76,7 +76,13 @@ class Config:
     authoring_domains: list[str] = field(default_factory=lambda: ["docs.google.com", "overleaf.com"])
     creative_frac: float = 0.40        # >= this share of a span's focus time on authoring => creative-work
     task_toggl_frac: float = 0.60      # Toggl running for >= this share of the span
+    reading_notes_frac: float = 0.10   # a reading span requires notes surfaces for >= this share of its
+                                       # focus time (Rules doc: reading = reading AND taking notes;
+                                       # passive essay-hopping without notes is unfocused)
     task_min_apps: int = 5             # and this many distinct apps/sites (task-churn), not one reading surface
+    # Passive-consumption domains: watching here is NEVER focused work (categorical rule) -
+    # the state machine forces these segments to 'distracted' unless a human review overrides.
+    passive_domains: list[str] = field(default_factory=lambda: ["youtube.com"])
     ignore_apps: list[str] = field(default_factory=list)
     # Windows that are "neutral": recorded, but never a switch/event and transparent to focus spans
     # (e.g. a presence-check form). Case-insensitive substrings matched against app, title and URL.

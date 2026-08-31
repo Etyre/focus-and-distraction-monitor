@@ -32,14 +32,22 @@ def api_day(day: str | None = None):
     c = conn()
     t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
-    se = stats.spans_and_events(segs)
+    se = stats.spans_and_events(segs, conn=c)
     selected = set(stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day))
+    # Switch reviews wait until the containing span is confirmed (two-tier review).
+    unconf = [(sp["start"], sp["end"]) for sp in se["focus_spans"] + se["disqualified"]
+              if not sp.get("confirmed")]
     for s in segs:
-        s["needs_review"] = s.get("switch_id") in selected and s.get("source") != "review"
+        gated = any(a - 1 <= s["clip_start"] < b + 1 for a, b in unconf)
+        s["needs_review"] = s.get("switch_id") in selected and s.get("source") != "review" and not gated
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot")} for s in segs]
+                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "toggl_id", "toggl_desc")} for s in segs]
+    from . import summaries as _summ
+    def _summary(r):
+        row = _summ.lookup(c, r["start"], r["end"])
+        return row["summary"] if row else None
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
             "to_review": len(selected), "reviewed": reviewed,
             "short_breaks": stats.short_breaks(c, t0, t1),
@@ -49,12 +57,17 @@ def api_day(day: str | None = None):
             "focus_spans": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "ended_by": r["ended_by"],
                              "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
+                             "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
                              "apps": sorted({s["app"] for s in r["segments"]}),
                              "toggl": sorted({e["description"] for e in toggl.entries_between(c, r["start"], r["end"]) if e["description"]})}
                             for r in se["focus_spans"]],
             "distractions": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "is_event": r["is_event"],
-                              "where": sorted({s["domain"] or s["app"] for s in r["segments"]})} for r in se["distractions"]]}
+                              "where": sorted({s["domain"] or s["app"] for s in r["segments"]})} for r in se["distractions"]],
+            "disqualified": [{"start": r["start"], "end": r["end"], "duration": r["duration"],
+                              "reason": r.get("disq_reason", "does not meet the focused-work standard"),
+                              "summary": _summary(r)}
+                             for r in se.get("disqualified", [])]}
 
 
 @app.get("/api/metrics")
@@ -70,6 +83,102 @@ def api_accuracy(days: int = 60):
             "reviews": c.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]}
 
 
+def _unconfirmed_ranges(c, t0: float, t1: float) -> list[tuple[float, float]]:
+    se = stats.spans_and_events(stats.labelled_segments(c, t0, t1), conn=c)
+    return [(sp["start"], sp["end"]) for sp in se["focus_spans"] + se["disqualified"]
+            if not sp.get("confirmed")]
+
+
+CTX_S = 600.0  # timeline context shown on each side of a reviewed span
+
+
+def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
+    from . import summaries as _summ
+    row = _summ.lookup(c, sp["start"], sp["end"])
+    w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
+    keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+            "url", "activity", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+    in_span_ids = {id(s) for s in sp["segments"]}
+    segs = []
+    for s in (day_segs or sp["segments"]):
+        if s["clip_end"] <= w0 or s["clip_start"] >= w1 or s["duration"] <= 0:
+            continue
+        d = {k: s.get(k) for k in keys}
+        d["in_span"] = id(s) in in_span_ids or (day_segs is None)
+        segs.append(d)
+    return {"day": day, "start": sp["start"], "end": sp["end"], "duration": sp["duration"],
+            "focus_min": sp["focus_min"], "subtype": sp.get("subtype"),
+            "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
+            "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
+            "summary": row["summary"] if row else None,
+            "apps": sorted({s["app"] for s in sp["segments"]}),
+            "toggl": sorted({e["description"] for e in toggl.entries_between(c, sp["start"], sp["end"])
+                             if e["description"]}),
+            "toggl_entries": [{"start": max(e["start"], w0), "end": min(e["stop"] or time.time(), w1),
+                               "description": e["description"], "project": e["project"]}
+                              for e in toggl.entries_between(c, w0, w1)],
+            "segments": segs}
+
+
+@app.get("/api/span/queue")
+def api_span_queue(days: int = 7):
+    """Every finished, unconfirmed hypothesized span of the last N days: today's first
+    (chronological within the day), then yesterday's, and so on back."""
+    c = conn()
+    out = []
+    today = logical_date()
+    for i in range(days):
+        day = today - dt.timedelta(days=i)
+        t0, t1 = stats.day_bounds(day)
+        day_segs = stats.labelled_segments(c, t0, t1)
+        se = stats.spans_and_events(day_segs, conn=c)
+        for sp in sorted(se["focus_spans"] + se["disqualified"], key=lambda s: s["start"]):
+            if sp.get("confirmed") or sp.get("ended_by") == "ongoing":
+                continue
+            out.append(_span_payload(c, sp, day.isoformat(), day_segs))
+    return out
+
+
+@app.get("/api/span/at")
+def api_span_at(ts: float):
+    """The hypothesized span (qualifying or disqualified) containing ts, as a review payload."""
+    c = conn()
+    d = logical_date(ts)
+    t0, t1 = stats.day_bounds(d)
+    day_segs = stats.labelled_segments(c, t0, t1)
+    se = stats.spans_and_events(day_segs, conn=c)
+    for sp in se["focus_spans"] + se["disqualified"]:
+        if sp["start"] - 1 <= ts < sp["end"] + 1:
+            p = _span_payload(c, sp, d.isoformat(), day_segs)
+            p["confirmed"] = bool(sp.get("confirmed"))
+            rv = stats._span_review_for(c.execute("SELECT * FROM span_reviews").fetchall(), sp)
+            p["review"] = {"verdict": rv["verdict"], "subtype": rv["subtype"]} if rv else None
+            return p
+    raise HTTPException(404, "no span at that time")
+
+
+class SpanReview(BaseModel):
+    start: float
+    end: float
+    verdict: str
+    subtype: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/span/review")
+def api_span_review(r: SpanReview):
+    if r.verdict not in ("focus", "not_focus"):
+        raise HTTPException(400, "bad verdict")
+    if r.subtype is not None and r.subtype not in stats.SUBTYPES:
+        raise HTTPException(400, "bad subtype")
+    c = conn()
+    with db.tx(c):
+        c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (r.start - 60, r.end + 60))
+        c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created) VALUES (?,?,?,?,?,?)",
+                  (r.start, r.end, r.verdict, r.subtype, r.note, time.time()))
+    return {"ok": True}
+
+
 @app.get("/api/review/queue")
 def api_review_queue(limit: int = 30, all: bool = False):
     c = conn()
@@ -81,11 +190,21 @@ def api_review_queue(limit: int = 30, all: bool = False):
         ids = [r[0] for r in rows]
     else:
         # The ranked selection: top-N per day (highest stakes x uncertainty), most recent day first.
+        # Two-tier review: a switch inside a not-yet-confirmed span is held back until the
+        # span itself has been reviewed.
         ids = []
         today = logical_date()
         for i in range(14):
             t0, t1 = stats.day_bounds(today - dt.timedelta(days=i))
-            ids += stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day)
+            day_ids = stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day)
+            if day_ids:
+                unconf = _unconfirmed_ranges(c, t0, t1)
+                if unconf:
+                    q = ",".join("?" * len(day_ids))
+                    ts_of = dict(c.execute(f"SELECT id, ts FROM switches WHERE id IN ({q})", day_ids).fetchall())
+                    day_ids = [i2 for i2 in day_ids
+                               if not any(a - 1 <= ts_of.get(i2, 0) < b + 1 for a, b in unconf)]
+            ids += day_ids
             if len(ids) >= limit:
                 break
         ids = ids[:limit]
@@ -119,6 +238,36 @@ def api_switch(switch_id: int):
         raise HTTPException(404)
     full["before"] = [dict(r) for r in db.segments_before(c, (full["from"] or full["to"])["start"], 5)]
     full["after"] = [dict(r) for r in db.segments_after(c, full["to"]["start"], 4)]
+    ts = full["switch"]["ts"]
+    te = next((e for e in toggl.entries_between(c, ts - 1, ts + 1)
+               if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts)), None)
+    full["toggl"] = {"description": te["description"], "project": te["project"], "tags": te["tags"]} if te else None
+    # The span this switch lands in (qualifying or disqualified), for audit context.
+    from . import summaries as _summ
+    full["span"] = None
+    full["timeline"] = []
+    try:
+        ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
+        keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+                "url", "activity", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+        full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
+                            if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
+        se = stats.spans_and_events(ctx_segs, conn=c)
+        spans = se["focus_spans"] + se["disqualified"]
+        cand = next((sp for sp in spans if sp["start"] - 1 <= ts < sp["end"] + 1), None)
+        rel = "inside"
+        if cand is None:  # a span retroactively shortened ends just before the switch that left it
+            ended = [sp for sp in spans if 0 <= ts - sp["end"] <= 300]
+            if ended:
+                cand, rel = max(ended, key=lambda s: s["end"]), "leaving"
+        if cand is not None:
+            row = _summ.lookup(c, cand["start"], cand["end"])
+            full["span"] = {"start": cand["start"], "end": cand["end"], "subtype": cand.get("subtype"),
+                            "disq_reason": cand.get("disq_reason"), "relation": rel,
+                            "is_start": rel == "inside" and abs(full["to"]["start"] - cand["start"]) < 1,
+                            "summary": row["summary"] if row else None}
+    except Exception:
+        pass
     return full
 
 
@@ -129,6 +278,29 @@ def get_chat():
         from .chat import ReviewChat
         _chat = ReviewChat(cfg)
     return _chat
+
+
+_span_chat = None
+def get_span_chat():
+    global _span_chat
+    if _span_chat is None:
+        from .chat import SpanChat
+        _span_chat = SpanChat(cfg)
+    return _span_chat
+
+
+class SpanChatReq(BaseModel):
+    start: float
+    end: float
+    messages: list[dict]
+
+
+@app.post("/api/span/chat")
+def api_span_chat(req: SpanChatReq):
+    try:
+        return {"reply": get_span_chat().reply(conn(), req.start, req.end, req.messages)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 class ChatReq(BaseModel):

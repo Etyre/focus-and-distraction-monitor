@@ -77,6 +77,64 @@ CREATE TABLE IF NOT EXISTS reviews (
     note TEXT,
     created REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segment judgments
+    segment_id INTEGER PRIMARY KEY REFERENCES segments(id),
+    content TEXT NOT NULL,        -- creative | task | reading | planning | other | passive
+    switch_label TEXT,            -- nature of the switch INTO this segment:
+                                  --   continuation | interruption | return
+    interruption_kind TEXT,       -- when interruption: self_distraction | focus_start | detour
+    rationale TEXT,
+    created REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS seg_reviews (      -- the user's edits to those judgments (authoritative,
+    segment_id INTEGER PRIMARY KEY,           --  and few-shot training signal for the evaluator)
+    content TEXT,
+    switch_label TEXT,
+    interruption_kind TEXT,
+    note TEXT,
+    created REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS eval_runs (        -- chunk evaluation bookkeeping (spend accounting)
+    id INTEGER PRIMARY KEY,
+    t0 REAL NOT NULL,
+    t1 REAL NOT NULL,
+    n_segments INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS eval_runs_t0 ON eval_runs(t0);
+
+CREATE TABLE IF NOT EXISTS thread_calls (     -- small-LLM judgment for ambiguous 'continuation'
+    switch_id INTEGER PRIMARY KEY REFERENCES switches(id),  -- switches: WHAT is being continued -
+    thread TEXT NOT NULL,                     -- 'work' | 'interruption' | 'distraction'
+    rationale TEXT,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS span_reviews (     -- the user's verdict on each hypothesized span
+    id INTEGER PRIMARY KEY,
+    start REAL NOT NULL,
+    end REAL NOT NULL,
+    verdict TEXT NOT NULL,        -- 'focus' | 'not_focus'
+    subtype TEXT,                 -- confirmed/changed subtype when verdict='focus'
+    note TEXT,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS span_reviews_start ON span_reviews(start);
+
+CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finished (hypothesized) span
+    id INTEGER PRIMARY KEY,
+    start REAL NOT NULL,
+    end REAL NOT NULL,
+    summary TEXT NOT NULL,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
 """
 
 
@@ -177,4 +235,8 @@ def spend_today(conn) -> float:
     start = day_bounds(logical_date())[0]
     row = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM predictions WHERE created >= ?",
                        (start,)).fetchone()
-    return float(row[0])
+    srow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM span_summaries WHERE created >= ?",
+                        (start,)).fetchone()
+    trow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM thread_calls WHERE created >= ?",
+                        (start,)).fetchone()
+    return float(row[0]) + float(srow[0]) + float(trow[0])

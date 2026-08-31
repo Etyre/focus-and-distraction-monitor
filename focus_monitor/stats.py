@@ -41,10 +41,12 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
     q = ",".join("?" * len(ids))
     sw = conn.execute(f"""
         SELECT s.id, s.to_segment, s.status, s.group_id, e.label AS e_label, e.uncertain, r.label AS r_label,
-               e.p_continuation, e.p_interruption, e.p_distraction, e.p_task_change, e.activity AS e_activity
+               e.p_continuation, e.p_interruption, e.p_distraction, e.p_task_change, e.activity AS e_activity,
+               tc.thread AS thread
         FROM switches s
         LEFT JOIN ensemble e ON e.switch_id = COALESCE(s.group_id, s.id)
         LEFT JOIN reviews r ON r.switch_id = COALESCE(s.group_id, s.id)
+        LEFT JOIN thread_calls tc ON tc.switch_id = COALESCE(s.group_id, s.id)
         WHERE s.to_segment IN ({q})""", ids).fetchall()
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
@@ -53,9 +55,19 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts):
                 return e
         return None
+    def toggl_near(ts, slack=120.0):
+        """The entry running at ts, tolerating brief gaps in a series of entries."""
+        for e in tg:
+            if e["start"] - slack <= ts and (e["stop"] is None or e["stop"] + slack > ts):
+                return e
+        return None
     by_to = {r["to_segment"]: r for r in sw}
     prev_state = "focus"
     last_focus_ctx = None  # (app, domain) of the most recent focused segment
+    last_detour = None  # ((app, domain), state) of the most recent detour segment: an ongoing
+    # distraction/interruption context. A mere "continuation" back into it RESUMES the detour -
+    # a brief flip to notes must not launder a video session into focus. Cleared by a deliberate
+    # focus start (task_change) in that same context.
     for s in segs:
         s["end_eff"] = s["end"] or now
         s["clip_start"], s["clip_end"] = max(s["start"], t0), min(s["end_eff"], t1)
@@ -64,6 +76,9 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         s["toggl_id"] = _te["id"] if _te else None
         s["toggl_tags"] = (_te["tags"] or "") if _te else ""
         s["toggl_desc"] = (_te["description"] or "") if _te else ""
+        _ta, _tb = toggl_near(s["start"]), toggl_near(s["end_eff"])
+        s["tg_near_a"] = _ta["id"] if _ta else None
+        s["tg_near_b"] = _tb["id"] if _tb else None
         r = by_to.get(s["id"])
         if s["idle"]:
             s.update(state="idle", label=None, switch_id=None, uncertain=0, source=None)
@@ -78,18 +93,29 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             continue
         if r is None:  # first segment, or a return to the same window after a neutral one
             st = prev_state if prev_state != "idle" else "focus"
+            if (st == "focus" and last_detour and last_detour[0] == (s["app"], s["domain"])
+                    and last_focus_ctx != (s["app"], s["domain"])
+                    and not cfg.is_focus_context(s["app"], s["title"], s["url"])):
+                st = last_detour[1]  # returning (even after idle) to an ongoing detour context
             s.update(state=st, label="continuation", switch_id=None, uncertain=0, source="start")
         else:
             label = r["r_label"] or r["e_label"] or "continuation"
             transit = r["status"] == "transit"
             if label == "continuation":
-                if prev_state == "idle":
-                    st = "focus"
+                thread = None if r["r_label"] else r["thread"]  # a human review outranks the resolver
+                if thread == "work":
+                    st = "focus"  # the resolver's judgment: this continues the work thread
+                elif thread in ("interruption", "distraction"):
+                    st = "interrupted" if thread == "interruption" else "distracted"
                 elif prev_state in ("interrupted", "distracted"):
                     same = last_focus_ctx == (s["app"], s["domain"])
                     st = "focus" if (same or cfg.is_focus_context(s["app"], s["title"], s["url"])) else prev_state
                 else:
                     st = "focus"
+                if (thread is None and st == "focus" and last_detour and last_detour[0] == (s["app"], s["domain"])
+                        and last_focus_ctx != (s["app"], s["domain"])
+                        and not cfg.is_focus_context(s["app"], s["title"], s["url"])):
+                    st = last_detour[1]  # fallback only: back into the recent detour context
             else:
                 st = STATE_OF[label]
             s["activity"] = r["e_activity"]
@@ -99,8 +125,20 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                      probs=None if r["e_label"] is None else {
                          "continuation": r["p_continuation"], "interruption": r["p_interruption"],
                          "distraction": r["p_distraction"], "task_change": r["p_task_change"]})
+        # Categorical rule (Rules doc + user ruling): passive-consumption domains (video
+        # watching) are never focused work, however the switch was labelled - continuation
+        # inheritance must not launder a video session into focus. Only a human review of
+        # the inbound switch can override.
+        if (s["state"] == "focus" and s.get("source") != "review"
+                and any((s.get("domain") or "") == d or (s.get("domain") or "").endswith("." + d)
+                        for d in cfg.passive_domains)):
+            s["state"] = "distracted"
         if s["state"] == "focus":
             last_focus_ctx = (s["app"], s["domain"])
+            if s.get("label") == "task_change" and last_detour and last_detour[0] == (s["app"], s["domain"]):
+                last_detour = None  # a deliberate focus start here ends the detour context
+        elif s["state"] in ("interrupted", "distracted"):
+            last_detour = ((s["app"], s["domain"]), s["state"])
         prev_state = s["state"]
     return segs
 
@@ -126,13 +164,30 @@ def _runs(segs: list[dict], state: str, new_run_on_label: str | None = None) -> 
     return runs
 
 
-def span_subtype(sp: dict, cfg) -> str:
+def span_subtype(sp: dict, cfg) -> str | None:
     """Classify a focus span into one of five kinds (Rules doc + user categories):
     creative_work, focused_task, reading, planning, other_focused. Prefers Claude's per-switch
-    `activity` tag; falls back to app/Toggl heuristics."""
+    `activity` tag; falls back to app/Toggl heuristics.
+
+    Hard rules (Rules doc) - failing either gate means the span is NOT focused work of any
+    kind: returns None (setting sp["disq_reason"]) and the caller drops it from the focus
+    spans, so its time counts as unfocused.
+    - focused_task requires a running Toggl entry (>= task_toggl_frac of focus time).
+    - reading requires interleaved note-taking (notes surfaces >= reading_notes_frac of
+      focus time); passive essay/post-hopping without notes is unfocused."""
     from collections import Counter
     fsegs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
     tot = sum(s["duration"] for s in fsegs) or 1.0
+
+    toggl_s = sum(s["duration"] for s in fsegs if s.get("toggl_id"))
+    task_ok = toggl_s / tot >= cfg.task_toggl_frac
+
+    def _is_notes(s):
+        dom = s.get("domain") or ""
+        return (s["app"] in cfg.notes_apps or cfg.is_authoring(s["app"], s.get("title") or "", s.get("url") or "")
+                or any(dom == d or dom.endswith("." + d) for d in cfg.focus_domains))
+    notes_s = sum(s["duration"] for s in fsegs if _is_notes(s))
+    reading_ok = notes_s / tot >= cfg.reading_notes_frac
 
     # 1) Content signal: dominant Claude activity, mapped to a subtype.
     ACT2SUB = {"writing": "creative_work", "coding": "creative_work", "task_execution": "focused_task",
@@ -143,17 +198,27 @@ def span_subtype(sp: dict, cfg) -> str:
         if a:
             grp[ACT2SUB.get(a, "other_focused")] += s["duration"]
     if sum(grp.values()) / tot >= 0.4:
-        return grp.most_common(1)[0][0]
+        top = grp.most_common(1)[0][0]
+        if top == "focused_task" and not task_ok:
+            sp["disq_reason"] = "task activity without a Toggl entry"
+            return None  # task churn without Toggl: not focused work at all
+        if top == "reading" and not reading_ok:
+            sp["disq_reason"] = "reading without note-taking"
+            return None  # passive reading, no notes back-and-forth: not focused work
+        return top
 
     # 2) Toggl tags/description hint.
     tagtext = " ".join(f"{s.get('toggl_tags','')} {s.get('toggl_desc','')}" for s in fsegs).lower()
     if any(k in tagtext for k in ("writ", "essay", "draft", "coding", "software", "creativ", "video")):
         return "creative_work"
-    if any(k in tagtext for k in ("focused work", "task", "admin", "process", "email", "errand", "logistic")):
+    if task_ok and any(k in tagtext for k in ("focused work", "task", "admin", "process", "email", "errand", "logistic")):
         return "focused_task"
     if any(k in tagtext for k in ("plan", "reflect", "goal", "journal", "metacog", "prioriti", "choosing")):
         return "planning"
     if any(k in tagtext for k in ("read", "study")):
+        if not reading_ok:
+            sp["disq_reason"] = "reading without note-taking"
+            return None
         return "reading"
 
     # 3) App heuristic: authoring surface => creative; else other focused work.
@@ -198,7 +263,57 @@ def _runs3(segs: list[dict]) -> list[dict]:
     return runs
 
 
-def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break_min: float | None = None) -> dict:
+SUBTYPES = ("creative_work", "focused_task", "reading", "planning", "other_focused")
+
+
+def _span_review_for(rows, sp):
+    """The user's span review covering >= 50% of sp, if any."""
+    best, best_ov = None, 0.0
+    for r in rows:
+        ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
+        if ov > best_ov:
+            best, best_ov = r, ov
+    return best if best is not None and best_ov >= 0.5 * (sp["end"] - sp["start"]) else None
+
+
+def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) -> tuple[list, list]:
+    """User verdicts are authoritative: 'not_focus' demotes a span, 'focus' confirms it (and can
+    resurrect a gate-disqualified one, with the user's subtype). Unreviewed spans are marked
+    confirmed=False - they stand provisionally until reviewed."""
+    rows = conn.execute("SELECT * FROM span_reviews").fetchall()
+    keep_q, keep_d = [], []
+    for sp in qualifying:
+        r = _span_review_for(rows, sp)
+        if r is None:
+            sp["confirmed"] = False
+            keep_q.append(sp)
+        elif r["verdict"] == "not_focus":
+            sp["confirmed"], sp["subtype"] = True, None
+            sp["disq_reason"] = "you reviewed this: not a focus span"
+            keep_d.append(sp)
+        else:
+            sp["confirmed"] = True
+            if r["subtype"] in SUBTYPES:
+                sp["subtype"] = r["subtype"]
+            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+            keep_q.append(sp)
+    for sp in disqualified:
+        r = _span_review_for(rows, sp)
+        if r is not None and r["verdict"] == "focus":
+            sp["confirmed"] = True
+            sp["subtype"] = r["subtype"] if r["subtype"] in SUBTYPES else "other_focused"
+            sp.pop("disq_reason", None)
+            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+            keep_q.append(sp)
+        else:
+            sp["confirmed"] = r is not None
+            keep_d.append(sp)
+    keep_q.sort(key=lambda s: s["start"])
+    return keep_q, keep_d
+
+
+def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break_min: float | None = None,
+                     conn=None) -> dict:
     """Unified model (Rules and heuristics doc). A focus span holds attention on one task/project.
     ONE threshold governs every diversion: any contiguous time AWAY from the span's task - whether a
     distraction, an interruption, or a hop to different work - ends the span only if it reaches
@@ -225,8 +340,16 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             return True
         if not r.get("focus_start"):
             return True  # continuation-type focus = same task
+        last_tg = last.get("tg_near_b") or last.get("toggl_id")
+        new_tg = first.get("tg_near_a") or first.get("toggl_id")
+        if last_tg and new_tg and last_tg == new_tg:
+            return True  # one declared Toggl intent spans the switch (Rules doc: Toggl glues tasks)
         if first.get("source") == "review":
             return False  # a human-confirmed task change is authoritative
+        if last_tg and new_tg and "task_execution" in (last.get("activity"), first.get("activity")):
+            return True  # a series of Toggl entries in a focused-task block stays one span
+        if last.get("activity") == "reading" and first.get("activity") in ("writing", "coding"):
+            return True  # reading flowing into creative work stays one span (Rules doc)
         return (first.get("probs") or {}).get("task_change", 0.0) < 0.7
 
     def _finalize(sp, ended_by):
@@ -301,8 +424,22 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     from .config import load_config as _lc
     _cfg = _lc()
     for sp in qualifying:
-        sp["fully_absorbed"] = len(sp["detours"]) == 0
         sp["subtype"] = span_subtype(sp, _cfg)
+        # Fully-absorbed = zero interruptions AND a single object of attention - a focused-task
+        # span is inherently task-switching, so it never counts (Rules doc).
+        sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+        # Reading flowing into creative work is one span (Rules doc) but the timeline colors
+        # each part by its own activity when both sides are substantial.
+        fs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
+        ft = sum(s["duration"] for s in fs) or 1.0
+        rd = sum(s["duration"] for s in fs if s.get("activity") == "reading") / ft
+        cr = sum(s["duration"] for s in fs if s.get("activity") in ("writing", "coding")) / ft
+        sp["mixed_read_create"] = rd >= 0.2 and cr >= 0.2
+    # Spans disqualified by the Toggl gate (task churn, no entry) are unfocused time, not spans.
+    disqualified = [sp for sp in qualifying if sp["subtype"] is None]
+    qualifying = [sp for sp in qualifying if sp["subtype"] is not None]
+    if conn is not None:  # the user's span reviews are authoritative over the gates
+        qualifying, disqualified = _apply_span_reviews(conn, qualifying, disqualified)
     interruptions, distractions = [], []
     for sp in qualifying:
         for d in sp["detours"]:
@@ -315,7 +452,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             r["inside_span"] = False
             (interruptions if r["state"] == "interrupted" else distractions).append(r)
     interruptions.sort(key=lambda r: r["start"]); distractions.sort(key=lambda r: r["start"])
-    return {"focus_spans": qualifying, "short_focus": short,
+    return {"focus_spans": qualifying, "short_focus": short, "disqualified": disqualified,
             "interruptions": interruptions, "distractions": distractions}
 
 
@@ -341,7 +478,7 @@ def short_breaks(conn, t0: float, t1: float) -> list[dict]:
 def daily_metrics(conn, day: dt.date) -> dict:
     t0, t1 = day_bounds(day)
     segs = labelled_segments(conn, t0, t1)
-    se = spans_and_events(segs)
+    se = spans_and_events(segs, conn=conn)
     focus = se["focus_spans"]
     breaks = short_breaks(conn, t0, t1)
     return {
@@ -415,7 +552,7 @@ def focus_context(conn, from_seg: dict | None) -> tuple[str, float]:
     state = segs[-1]["state"]
     if state != "focus":
         return state, 0.0
-    se = spans_and_events(segs, min_focus_min=0)
+    se = spans_and_events(segs, min_focus_min=0, conn=conn)
     for sp in reversed(se["focus_spans"]):
         if sp["end"] >= end - 1 and sp["start"] <= end:
             return "focus", sp["focus_min"]

@@ -222,8 +222,15 @@ class ClassifierService:
         for sid in ids:
             try:
                 self.classify_switch(sid)
+                from . import resolver
+                resolver.maybe_resolve(self.conn, self.cfg, sid)
             except Exception:
                 log.exception("failed to classify switch %d", sid)
+        try:
+            from . import summaries
+            summaries.ensure_summaries(self.conn, self.cfg)
+        except Exception:
+            log.exception("span summaries failed")
         return len(ids)
 
     def run(self, interval: float = 15.0):

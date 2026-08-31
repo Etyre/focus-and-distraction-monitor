@@ -50,12 +50,21 @@ shopping, dating apps, a blocked URL. Duration is not the test - intent is.
 - "task_change" means FOCUS START: focused work begins or resumes with this switch - returning to the \
 task after a detour or distraction, deliberately starting a different piece of work, or genuinely \
 settling into absorbed reading with note-taking after having arrived somewhere as a distraction.
-- Known distraction domains are a WEAK prior. Opening a specific post or comment reached from the \
-current reading thread is continuation; moving on to a different essay/thread and settling into it \
-is a focus start (a "focus transition"). Only feed-scrolling / aimless browsing is distraction.
+- Known distraction domains are a STRONG prior: a switch into one is distraction unless there is \
+clear evidence it serves the current work (e.g. looking up a specific quote or reference for the \
+piece being written). Moving from video to video, channel-surfing, or feed-scrolling is \
+stimulation-seeking - distraction - regardless of how interesting or educational the content is.
+- An ongoing video / entertainment session stays a distraction across brief visits to notes or \
+work apps: a short flip to an editor or daily notes mid-session is quick capture, NOT a \
+task_change, and the return to the video is continuation OF THE DISTRACTION, not of focused work.
+- Be skeptical about focus. This person's explicit calibration feedback is that the system has \
+been far too optimistic about what counts as focused work. When the evidence is ambiguous between \
+focused work and a detour or distraction, lean AWAY from focus.
 - Adding a spare thought to their DAILY NOTES / journal in Roam or Logseq is quick capture and part \
 of staying focused - it is NEVER an interruption or distraction. Treat a switch into a daily-notes \
 page as continuation.
+- Reading that flows into writing - notes on the material growing into a draft or essay - is \
+continuation of the same focus span, not a task change.
 - Spans are containers: a detour under 5 minutes is an event inside the span, so do not hesitate to \
 call a brief glance an interruption - it will not end their span. Label what the switch IS.
 - The switches that matter most are the ones that LEAVE an ongoing focus span: is this switch still the \
@@ -67,9 +76,21 @@ an unrelated newsletter is interruption; a block-page or infinite feed suggests 
 About this person (in their own words):
 {about_me}
 
+Their own rules and definitions for this monitoring (authoritative - when these conflict with the \
+general guidance above, follow these):
+{rules_doc}
+
 Known distraction domains: {distraction_domains}
 Work apps: {work_apps}. Notes apps: {notes_apps}.
 """
+
+
+def _rules_doc() -> str:
+    p = Path(__file__).resolve().parents[2] / "Rules and heuristics for Focus monitor.md"
+    try:
+        return p.read_text().strip()
+    except OSError:
+        return "(rules document not available)"
 
 
 def _b64(path_name: str | None) -> str | None:
@@ -102,6 +123,7 @@ class ClaudeVisionClassifier(Classifier):
         self.system = SYSTEM_TEMPLATE.format(
             label_help="\n".join(f"- {k}: {v}" for k, v in LABEL_HELP.items()),
             about_me=cfg.about_me.strip() or "(no description given)",
+            rules_doc=_rules_doc(),
             distraction_domains=", ".join(cfg.distraction_domains) or "(none)",
             work_apps=", ".join(cfg.work_apps) or "(none)",
             notes_apps=", ".join(cfg.notes_apps) or "(none)",
