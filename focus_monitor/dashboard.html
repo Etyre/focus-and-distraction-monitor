@@ -8,18 +8,16 @@
 :root{
   --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
   --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#e8e7e1;--taskchange:#1baf7a;
-  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#55a047;--f-planning:#9a6fd6;--f-other:#7f8fa6;--f-meeting:#7a4e22;--f-passive:#e34948;--pending:#c3c2b7;
+  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#55a047;--f-planning:#9a6fd6;--f-other:#7f8fa6;--f-meeting:#7a4e22;--f-passive:#e34948;--pending:#9a988c;
   --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
   --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#22221f;--taskchange:#199e70;
-  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#6cb85e;--f-planning:#ad86e6;--f-other:#93a2b8;--f-meeting:#9a6d3e;--f-passive:#e66767;--pending:#383835;
+  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#6cb85e;--f-planning:#ad86e6;--f-other:#93a2b8;--f-meeting:#9a6d3e;--f-passive:#e66767;--pending:#55554f;
   --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
 }}
 *{box-sizing:border-box}
-.pending{animation:pendpulse 2.4s ease-in-out infinite}
-@keyframes pendpulse{0%,100%{opacity:.35}50%{opacity:.8}}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,system-ui,sans-serif}
 header{display:flex;gap:18px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--grid)}
 header h1{font-size:16px;margin:0 12px 0 0}
@@ -73,7 +71,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
     <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
-  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span></div><div class="legend"><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>unfocused</span><span><i class="sw pending" style="background:var(--pending)"></i>pending evaluation (~15 min behind)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></div></div><div id="timeline"></div></div>
+  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span></div><div class="legend"><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>unfocused</span><span><i class="sw" style="background:var(--pending)"></i>pending evaluation (~15 min behind)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></div></div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
 </section>
@@ -233,7 +231,7 @@ function renderTimeline(){
     if(hasC){fill=contentColor[g.content]||fill;}
     else if(g.state!=='idle'&&g.source!=='neutral'){pending=true;fill='var(--pending)';}
     const detourInSpan=false;
-    const unfBorder=hasC&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':(pending?'class="pending"':'');
+    const unfBorder=hasC&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${unfBorder} ${shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':'')} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="8" width="3" height="6" fill="var(--taskchange)"/>`;});
   (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
@@ -321,7 +319,7 @@ function spanTL(sp){
     const pend=!g.content&&g.state!=='idle';
     let fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
     const op=g.in_span?(g.state!=='focus'?0.8:1):0.35;
-    const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':(pend?'class="pending"':'');
+    const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-si="${i}" x="${x0}" y="16" width="${w}" height="46" rx="2" fill="${fill}" ${unfB} opacity="${g.source==='neutral'?Math.min(op,0.4):op}" style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="9" width="3" height="6" fill="var(--taskchange)" ${g.in_span?'':'opacity="0.5"'}/>`;
     else if(g.label==='interruption'||g.label==='distraction')s+=`<path d="M${x0-3},9 L${x0+3},9 L${x0},15 Z" fill="var(--${g.label==='distraction'?'distracted':'interrupted'})" ${g.in_span?'':'opacity="0.5"'}/>`;});
@@ -418,7 +416,7 @@ function switchTL(f){
     const pend2=!g.content&&g.state!=='idle';
     const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
     const isCur=g.switch_id===f.switch.id;
-    const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':(pend2&&!isCur?'class="pending"':'');
+    const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
   // the switch itself: arrow + line at the exact boundary
   s+=`<line x1="${x(ts)}" x2="${x(ts)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
