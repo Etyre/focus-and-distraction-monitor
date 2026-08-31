@@ -89,6 +89,16 @@ CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segme
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS segment_shots (    -- every screenshot a segment received
+    id INTEGER PRIMARY KEY,                   --  (first, periodic refreshes, every display)
+    segment_id INTEGER NOT NULL REFERENCES segments(id),
+    ts REAL NOT NULL,
+    path TEXT NOT NULL,
+    display INTEGER NOT NULL DEFAULT 0        -- 0 = main display, 1+ = external monitors
+);
+CREATE INDEX IF NOT EXISTS segment_shots_seg ON segment_shots(segment_id);
+CREATE INDEX IF NOT EXISTS segment_shots_ts ON segment_shots(ts);
+
 CREATE TABLE IF NOT EXISTS seg_predictions (  -- per-model probability outputs for each segment
     segment_id INTEGER NOT NULL REFERENCES segments(id),
     model TEXT NOT NULL,          -- heuristic | learned | claude

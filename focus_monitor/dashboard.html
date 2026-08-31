@@ -466,7 +466,8 @@ async function renderSwitch(id){
     ${switchTL(f)}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
-      <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
+      <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img id="afterShot" src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}
+      ${(f.to_shots&&f.to_shots.length>1)?`<div class="row" style="gap:4px;flex-wrap:wrap;margin-top:4px">${f.to_shots.map(s=>`<img src="/shot/${s.path}" style="height:42px;border-radius:3px;cursor:pointer;border:1px solid var(--grid)" title="${fmtT(s.ts)}${s.display?' · external display':''}" onclick="document.getElementById('afterShot').src='/shot/${s.path}'">`).join('')}</div><div class="muted small">all captures of this segment — click to view${f.to_shots.some(s=>s.display)?' · includes external display':''}</div>`:''}</div>
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
     ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}

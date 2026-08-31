@@ -117,25 +117,37 @@ def current_window() -> WindowState | None:
     return WindowState(app=app.strip(), title=title.strip()[:300], url=url.strip()[:1000])
 
 
-def take_screenshot(cfg: Config, tag: str) -> str | None:
-    path = DATA_DIR / "screenshots" / f"{int(time.time() * 1000)}_{tag}.jpg"
-    tmp = path.with_suffix(".png")
+def take_screenshots(cfg: Config, tag: str) -> list[str]:
+    """Capture EVERY display (main monitor first, then externals). Returns saved file names -
+    empty on failure. screencapture writes one file per attached display and ignores the
+    extra paths, so passing four covers any realistic setup."""
+    ts_ms = int(time.time() * 1000)
+    tmps = [DATA_DIR / "screenshots" / f"{ts_ms}_{tag}_d{i}.png" for i in range(4)]
+    out: list[str] = []
     try:
-        subprocess.run(["screencapture", "-x", "-m", str(tmp)], capture_output=True, timeout=10)
-        if not tmp.exists():
-            return None
-        with Image.open(tmp) as im:
-            im = im.convert("RGB")
-            if im.width > cfg.screenshot_max_width:
-                h = round(im.height * cfg.screenshot_max_width / im.width)
-                im = im.resize((cfg.screenshot_max_width, h), Image.LANCZOS)
-            im.save(path, "JPEG", quality=cfg.screenshot_quality, optimize=True)
-        return path.name
+        subprocess.run(["screencapture", "-x"] + [str(t) for t in tmps], capture_output=True, timeout=10)
+        for tmp in tmps:
+            if not tmp.exists():
+                continue
+            path = tmp.with_suffix(".jpg")
+            with Image.open(tmp) as im:
+                im = im.convert("RGB")
+                if im.width > cfg.screenshot_max_width:
+                    h = round(im.height * cfg.screenshot_max_width / im.width)
+                    im = im.resize((cfg.screenshot_max_width, h), Image.LANCZOS)
+                im.save(path, "JPEG", quality=cfg.screenshot_quality, optimize=True)
+            out.append(path.name)
     except Exception as e:
         log.warning("screenshot failed: %s", e)
-        return None
     finally:
-        tmp.unlink(missing_ok=True)
+        for tmp in tmps:
+            tmp.unlink(missing_ok=True)
+    return out
+
+
+def take_screenshot(cfg: Config, tag: str) -> str | None:
+    shots = take_screenshots(cfg, tag)
+    return shots[0] if shots else None
 
 
 def cleanup_screenshots(cfg: Config) -> int:
@@ -175,15 +187,20 @@ class Collector:
             self.conn.execute("UPDATE segments SET end=? WHERE id=?", (at, self.current_id))
 
     def _open_segment(self, state: WindowState | None, at: float, idle: bool, neutral: bool = False) -> int:
-        shot = None if (idle or neutral) else take_screenshot(self.cfg, "first")
+        shots = [] if (idle or neutral) else take_screenshots(self.cfg, "first")
+        shot = shots[0] if shots else None
         cur = self.conn.execute(
             "INSERT INTO segments(start, app, title, url, domain, first_screenshot, last_screenshot, idle, neutral)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
             (at, state.app if state else "__idle__", state.title if state else "",
              state.url if state else "", state.domain if state else "", shot, shot, int(idle), int(neutral)),
         )
+        seg_id = cur.lastrowid
+        for i, name in enumerate(shots):
+            self.conn.execute("INSERT INTO segment_shots(segment_id, ts, path, display) VALUES (?,?,?,?)",
+                              (seg_id, at, name, i))
         self.last_shot_time = at
-        return cur.lastrowid
+        return seg_id
 
     def _switch_to(self, state: WindowState | None, at: float, idle: bool):
         neutral = bool(state) and not idle and self.cfg.is_neutral(state.app, state.title, state.url)
@@ -246,10 +263,13 @@ class Collector:
         if state == self.current_state:
             self.candidate = None
             if now - self.last_shot_time >= self.cfg.refresh_screenshot_seconds:
-                shot = take_screenshot(self.cfg, "last")
-                if shot:
+                shots = take_screenshots(self.cfg, "last")
+                if shots:
                     self.conn.execute("UPDATE segments SET last_screenshot=? WHERE id=?",
-                                      (shot, self.current_id))
+                                      (shots[0], self.current_id))
+                    for i, name in enumerate(shots):
+                        self.conn.execute("INSERT INTO segment_shots(segment_id, ts, path, display) VALUES (?,?,?,?)",
+                                          (self.current_id, now, name, i))
                 self.last_shot_time = now
             return
         # Different window: debounce
@@ -266,6 +286,8 @@ class Collector:
                 self.tick()
                 if time.time() - last_cleanup > 3600:
                     n = cleanup_screenshots(self.cfg)
+                    self.conn.execute("DELETE FROM segment_shots WHERE ts < ?",
+                                      (time.time() - self.cfg.screenshot_retention_days * 86400,))
                     if n:
                         log.info("deleted %d old screenshots", n)
                     last_cleanup = time.time()

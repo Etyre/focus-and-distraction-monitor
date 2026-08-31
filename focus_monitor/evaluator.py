@@ -213,12 +213,20 @@ class ChunkEvaluator:
                           f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
                           f"{e['description'] or '(unnamed)'}" for e in tg) or "  (none)"
         content: list[dict] = []
-        shots = [s for s in target if s.get("first_screenshot")]
-        step = max(1, len(shots) // MAX_SHOTS)
-        for s in shots[::step][:MAX_SHOTS]:
-            b = _b64(s["first_screenshot"])
+        qs = ",".join("?" * len(target_ids))
+        shot_rows = [dict(r) for r in conn.execute(
+            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts",
+            list(target_ids)).fetchall()]
+        if not shot_rows:  # segments recorded before per-shot history existed
+            shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
+                         for s in target if s.get("first_screenshot")]
+        app_of = {s["id"]: s["app"] for s in target}
+        step = max(1, len(shot_rows) // MAX_SHOTS)
+        for r2 in shot_rows[::step][:MAX_SHOTS]:
+            b = _b64(r2["path"])
             if b:
-                content.append({"type": "text", "text": f"Screenshot of segment id={s['id']} ({dt.datetime.fromtimestamp(s['clip_start']).strftime('%H:%M')} {s['app']}):"})
+                where = f" - EXTERNAL display {r2['display']}" if r2.get("display") else ""
+                content.append({"type": "text", "text": f"Screenshot of segment id={r2['segment_id']} ({dt.datetime.fromtimestamp(r2['ts']).strftime('%H:%M')} {app_of.get(r2['segment_id'], '')}{where}):"})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         content.append({"type": "text", "text":
                         f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
