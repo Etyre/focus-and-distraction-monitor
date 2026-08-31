@@ -32,9 +32,7 @@ from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUT
 
 log = logging.getLogger("evaluator")
 
-CONTENTS = ("creative", "task", "reading", "planning", "other", "passive")
-SWITCHES = ("continuation", "interruption", "return")
-KINDS = ("self_distraction", "focus_start", "detour")
+from .seg_models import CONTENTS, HEADS, KINDS, SWITCHES  # single source for the label space
 
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
@@ -44,7 +42,7 @@ MAX_SHOTS = 6
 
 class SegJudgement(BaseModel):
     segment_id: int
-    content: str = Field(description="One of: creative, task, reading, planning, other, passive.")
+    content: str = Field(description="One of: creative, task, reading, planning, other, passive, meeting.")
     switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
     interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
@@ -72,6 +70,8 @@ browsing/consumption.)
    - passive: passive consumption - watching videos, scrolling feeds, browsing without an \
 objective, reading comics/entertainment. When in doubt between 'other' and 'passive', lean passive: \
 this person's calibration is that the system has been far too optimistic about focus.
+   - meeting: a live conversation - video call (Zoom/Meet/FaceTime), call notes or live transcript \
+(e.g. Otter) during one.
 2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
 editor<->terminal, stepping through desktops to find something; also staying within one ongoing \
@@ -148,14 +148,54 @@ class ChunkEvaluator:
         return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
 
     def evaluate_chunk(self, conn, t0: float, t1: float) -> int:
-        """Evaluate all real segments starting in [t0, t1). Returns how many were judged."""
-        from . import stats, summaries, toggl
+        """Evaluate all real segments starting in [t0, t1). Local models predict first (and are
+        stored for track-record scoring); segments where the locals have EARNED confident
+        deferral skip the LLM; the rest go into one LLM call, and the resolved judgment is the
+        accuracy-weighted ensemble of all models. Returns how many segments were judged."""
+        from . import seg_models, stats, summaries, toggl
         from .classifiers.claude_vision import _b64
         segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S)
         target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
                   and not s.get("neutral") and s["duration"] > 0]
         if not target:
             return 0
+        # -- local models + deferral decision ---------------------------------------------
+        sc = seg_models.scores(conn)
+        real = [s for s in segs if not s["idle"] and not s.get("neutral") and s["duration"] > 0]
+        local: dict = {}   # id -> (per-model preds, combined dist per head)
+        deferred: set = set()
+        now = time.time()
+        for s in target:
+            i = real.index(s)
+            prev = real[i - 1] if i > 0 else None
+            lp = seg_models.local_predict(conn, self.cfg, s, prev)
+            for m, p in lp.items():
+                seg_models.store_prediction(conn, s["id"], m, p)
+            combined = {h: seg_models.combine_head({m: lp[m][h] for m in lp},
+                                                   seg_models.weights_for(sc, h, list(lp)))
+                        for h in HEADS}
+            local[s["id"]] = (lp, combined)
+            if seg_models.can_defer(sc, combined, self.cfg):
+                deferred.add(s["id"])
+        for s in target:
+            if s["id"] not in deferred:
+                continue
+            _, comb = local[s["id"]]
+            c = max(comb["content"], key=comb["content"].get)
+            sw = max(comb["switch"], key=comb["switch"].get)
+            k = max(comb["kind"], key=comb["kind"].get) if sw == "interruption" else None
+            conn.execute(
+                "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (s["id"], c, sw, k, 0, "(deferred to local models - earned track record)", now))
+        target = [s for s in target if s["id"] not in deferred]
+        if not target:
+            log.info("chunk %s-%s: all %d segments deferred to local models ($0)",
+                     dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
+                     dt.datetime.fromtimestamp(t1).strftime("%H:%M"), len(deferred))
+            conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created) VALUES (?,?,?,?,?)",
+                         (t0, t1, len(deferred), 0.0, now))
+            return len(deferred)
         target_ids = {s["id"] for s in target}
         lines = []
         for s in segs:
@@ -192,6 +232,7 @@ class ChunkEvaluator:
         n = 0
         if resp.parsed_output is not None:
             now = time.time()
+            per_seg_cost = cost / max(len(target), 1)
             with db.tx(conn):
                 for j in resp.parsed_output.segments:
                     if j.segment_id not in target_ids:
@@ -202,10 +243,28 @@ class ChunkEvaluator:
                     if c not in CONTENTS or sw not in SWITCHES or (k is not None and k not in KINDS):
                         log.warning("bad judgement for segment %d: %s/%s/%s", j.segment_id, c, sw, k)
                         continue
+                    # Claude's discrete judgment as (pseudo-)probabilities, so it can be scored
+                    # and weighted alongside the local models.
+                    top_p = 0.55 if j.uncertain else 0.85
+                    cp = {"content": seg_models._uniformish(CONTENTS, c, top_p),
+                          "switch": seg_models._uniformish(SWITCHES, sw, top_p),
+                          "kind": seg_models._uniformish(KINDS, k, top_p) if k else seg_models._uniformish(KINDS)}
+                    seg_models.store_prediction(conn, j.segment_id, "claude", cp, per_seg_cost)
+                    # Resolved judgment = accuracy-weighted ensemble of every model's output.
+                    lp, _ = local.get(j.segment_id, ({}, None))
+                    allp = dict(lp); allp["claude"] = cp
+                    comb = {h: seg_models.combine_head({m: allp[m][h] for m in allp},
+                                                       seg_models.weights_for(sc, h, list(allp)))
+                            for h in HEADS}
+                    rc = max(comb["content"], key=comb["content"].get)
+                    rsw = max(comb["switch"], key=comb["switch"].get)
+                    rk = max(comb["kind"], key=comb["kind"].get) if rsw == "interruption" else None
+                    unc = int(j.uncertain or max(comb["content"].values()) < 0.5
+                              or max(comb["switch"].values()) < 0.5)
                     conn.execute(
                         "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
                         " VALUES (?,?,?,?,?,?,?)",
-                        (j.segment_id, c, sw, k if sw == "interruption" else None, int(j.uncertain), j.note, now))
+                        (j.segment_id, rc, rsw, rk, unc, j.note, now))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
@@ -217,11 +276,84 @@ class ChunkEvaluator:
                             " VALUES (?,?,?,?,?,?)",
                             (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now))
                 conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created) VALUES (?,?,?,?,?)",
-                             (t0, t1, n, cost, now))
-        log.info("chunk %s-%s: %d/%d segments judged ($%.3f)",
+                             (t0, t1, n + len(deferred), cost, now))
+        log.info("chunk %s-%s: %d/%d segments judged, %d deferred ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
-                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), cost)
-        return n
+                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), cost)
+        return n + len(deferred)
+
+
+class AuditFlag(BaseModel):
+    segment_id: int
+    field: str = Field(description="Which judgment looks wrong: content, switch, or kind.")
+    suggested: str = Field(description="The label you would give instead.")
+    reason: str = Field(description="One short sentence.")
+
+
+class DayAudit(BaseModel):
+    flags: list[AuditFlag] = Field(description="ONLY segments whose judgment looks wrong. Empty list if the day looks right.")
+
+
+AUDIT_PROMPT = """Below is one full day of this person's activity, with the resolved judgments \
+(state, [content=...], switch labels) each segment received - some judged by cheap local models. \
+Re-check the day as a whole. List ONLY the segments whose content or switch judgment looks wrong, \
+with what you'd say instead. These get flagged for the person to review, so precision matters more \
+than recall - do not nitpick defensible calls. An empty list is the expected answer for a clean day.
+
+{log}"""
+
+
+def daily_audit(conn, cfg: Config | None = None) -> int:
+    """Once per day: one LLM sweep over yesterday's resolved judgments; suspected errors are
+    flagged (uncertain=1) for the user's review queue - labels are never silently changed."""
+    from . import stats, summaries
+    from .config import logical_date
+    cfg = cfg or load_config()
+    if not cfg.daily_audit:
+        return 0
+    day = logical_date() - dt.timedelta(days=1)
+    key = day.isoformat()
+    if conn.execute("SELECT 1 FROM audit_runs WHERE day=?", (key,)).fetchone():
+        return 0
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
+        return 0
+    t0, t1 = stats.day_bounds(day)
+    segs = [s for s in stats.labelled_segments(conn, t0, t1)
+            if not s["idle"] and not s.get("neutral") and s["duration"] > 0]
+    evaluated = [s for s in segs if s.get("content")]
+    if not evaluated:
+        conn.execute("INSERT INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
+                     (key, 0, 0.0, time.time()))
+        return 0
+    lines = [f"id={s['id']} [content={s.get('content') or '?'}] " + summaries.seg_line(s) for s in segs]
+    ev = _get()
+    resp = ev.client.beta.messages.parse(
+        model=cfg.claude_model, max_tokens=4000,
+        system=ev._system_blocks(conn),
+        messages=[{"role": "user", "content": AUDIT_PROMPT.format(log="\n".join(lines))}],
+        output_format=DayAudit,
+        output_config={"effort": "low"},
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default")
+    cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
+            + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
+            + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
+    n = 0
+    ids = {s["id"] for s in evaluated}
+    with db.tx(conn):
+        if resp.parsed_output is not None:
+            for f in resp.parsed_output.flags:
+                if f.segment_id not in ids:
+                    continue
+                if conn.execute("SELECT 1 FROM seg_reviews WHERE segment_id=?", (f.segment_id,)).fetchone():
+                    continue  # the user already ruled on this one
+                conn.execute("UPDATE seg_evals SET uncertain=1, rationale = COALESCE(rationale,'') || ? WHERE segment_id=?",
+                             (f" | daily audit: {f.field} looks like '{f.suggested}' - {f.reason}", f.segment_id))
+                n += 1
+        conn.execute("INSERT INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
+                     (key, n, cost, time.time()))
+    log.info("daily audit %s: %d flag(s) ($%.3f)", key, n, cost)
+    return n
 
 
 def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float = 36 * 3600) -> int:

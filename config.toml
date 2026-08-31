@@ -22,6 +22,12 @@ hard_budget_multiple = 2.0         # judgment work (evaluator, summaries) only s
 switch_claude_budget_fraction = 0.35  # per-switch Opus calls stop at this share of the daily
                                       # budget; the rest is reserved for the chunk evaluator,
                                       # summaries, and chats
+# Segment-evaluator deferral: skip the LLM when the local models are this confident AND have
+# earned this accuracy on your last edits (per judgment head, needs this much feedback).
+defer_confidence = 0.85
+defer_accuracy = 0.85
+defer_min_feedback = 25
+daily_audit = true             # one end-of-day LLM sweep re-checks the whole day, flags errors
 # Frugality kicks in once the local models beat this accuracy on your last N reviews.
 frugal_accuracy_threshold = 0.85
 frugal_confidence_threshold = 0.85

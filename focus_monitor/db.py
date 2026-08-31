@@ -89,6 +89,25 @@ CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segme
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS seg_predictions (  -- per-model probability outputs for each segment
+    segment_id INTEGER NOT NULL REFERENCES segments(id),
+    model TEXT NOT NULL,          -- heuristic | learned | claude
+    p_content TEXT NOT NULL,      -- JSON {label: prob}
+    p_switch TEXT NOT NULL,
+    p_kind TEXT,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL,
+    UNIQUE(segment_id, model)
+);
+CREATE INDEX IF NOT EXISTS seg_predictions_seg ON seg_predictions(segment_id);
+
+CREATE TABLE IF NOT EXISTS audit_runs (       -- once-a-day whole-day LLM error sweep
+    day TEXT PRIMARY KEY,
+    n_flags INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS seg_reviews (      -- the user's edits to those judgments (authoritative,
     segment_id INTEGER PRIMARY KEY,           --  and few-shot training signal for the evaluator)
     content TEXT,

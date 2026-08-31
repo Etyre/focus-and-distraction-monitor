@@ -230,7 +230,7 @@ def span_subtype(sp: dict, cfg) -> str | None:
     ACT2SUB = {"writing": "creative_work", "coding": "creative_work", "task_execution": "focused_task",
                "reading": "reading", "planning": "planning", "browsing": "other_focused", "other": "other_focused"}
     CONTENT2SUB = {"creative": "creative_work", "task": "focused_task", "reading": "reading",
-                   "planning": "planning", "other": "other_focused"}
+                   "planning": "planning", "other": "other_focused", "meeting": "meeting"}
     grp = Counter()
     for s in fsegs:
         c = s.get("content")
@@ -306,7 +306,7 @@ def _runs3(segs: list[dict]) -> list[dict]:
     return runs
 
 
-SUBTYPES = ("creative_work", "focused_task", "reading", "planning", "other_focused")
+SUBTYPES = ("creative_work", "focused_task", "reading", "planning", "other_focused", "meeting")
 
 
 def _span_review_for(rows, sp):

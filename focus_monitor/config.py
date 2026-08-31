@@ -43,6 +43,12 @@ class Config:
     daily_budget_usd: float = 15.0     # soft target; per-switch Opus is gated against it,
     hard_budget_multiple: float = 2.0  # but judgment work only stops at this multiple (safety)
     switch_claude_budget_fraction: float = 0.35  # per-switch Opus stops here; rest goes to the evaluator
+    # Deferral: skip the LLM for a segment when the local models (heuristic+learned) are this
+    # confident AND their track record on the user's edits has earned it.
+    defer_confidence: float = 0.85
+    defer_accuracy: float = 0.85
+    defer_min_feedback: int = 25
+    daily_audit: bool = True           # one end-of-day LLM sweep re-checks the day, flags errors
     # frugality: skip Claude when local models are this accurate on recent reviews AND this confident
     frugal_accuracy_threshold: float = 0.85
     frugal_confidence_threshold: float = 0.85

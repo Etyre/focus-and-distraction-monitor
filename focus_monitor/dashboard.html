@@ -8,13 +8,13 @@
 :root{
   --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
   --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#c3c2b7;--taskchange:#1baf7a;
-  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#6f8fe0;--f-planning:#9a6fd6;--f-other:#7f8fa6;
+  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#6f8fe0;--f-planning:#9a6fd6;--f-other:#7f8fa6;--f-meeting:#a5764f;
   --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
   --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#383835;--taskchange:#199e70;
-  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#8f99ee;--f-planning:#ad86e6;--f-other:#93a2b8;
+  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#8f99ee;--f-planning:#ad86e6;--f-other:#93a2b8;--f-meeting:#bd8a61;
   --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
 }}
 *{box-sizing:border-box}
@@ -65,7 +65,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="row" style="margin-bottom:12px">
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
-    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></span>
+    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></span>
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
@@ -119,9 +119,9 @@ const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-d
 const fmtMin=m=>m>=60?`${Math.floor(m/60)}h ${Math.round(m%60)}m`:`${Math.round(m)}m`;
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
-const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',focus:'var(--f-other)'};
+const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',meeting:'var(--f-meeting)',focus:'var(--f-other)'};
 const actColor={reading:'var(--f-reading)',writing:'var(--f-creative)',coding:'var(--f-creative)',task_execution:'var(--f-task)',planning:'var(--f-planning)'};
-const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',focus:'other focused work'};
+const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',meeting:'meeting',focus:'other focused work'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}
@@ -344,7 +344,7 @@ function renderSpanReview(){
 }
 function renderSpanCard(sp,oneOff){
   currentSpan=sp;spanOneOff=!!oneOff;
-  const subs=['creative_work','focused_task','reading','planning','other_focused'];
+  const subs=['creative_work','focused_task','reading','planning','other_focused','meeting'];
   const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${sqi+1}/${spanQueue.length} <button onclick="sqi++;renderSpanReview()">skip (s)</button>`;
   const prior=sp.review?`<div class="small" style="margin:4px 0;color:var(--taskchange)">already reviewed: ${sp.review.verdict==='not_focus'?'not a focus span':(subName[sp.review.subtype]||'focus span')} — a new verdict below replaces it</div>`:'';
   $('#reviewCard').innerHTML=`
@@ -445,7 +445,7 @@ async function renderSwitch(id){
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?' · <b>edited by you</b>':''):'not yet evaluated — runs ~15 min behind'}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive','meeting'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
   </div>`;
