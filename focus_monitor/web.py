@@ -60,7 +60,7 @@ def api_day(day: str | None = None):
                              "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
                              "apps": _apps_by_time(r["segments"]),
-                             "toggl": sorted({e["description"] for e in toggl.entries_between(c, r["start"], r["end"]) if e["description"]})}
+                             "toggl": _toggl_with_coverage(c, r["start"], r["end"])}
                             for r in se["focus_spans"]],
             "distractions": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "is_event": r["is_event"],
                               "where": sorted({s["domain"] or s["app"] for s in r["segments"]})} for r in se["distractions"]],
@@ -92,6 +92,21 @@ def _unconfirmed_ranges(c, t0: float, t1: float) -> list[tuple[float, float]]:
 CTX_S = 600.0  # timeline context shown on each side of a reviewed span
 
 
+def _toggl_with_coverage(c, start: float, end: float) -> list[str]:
+    """Toggl descriptions annotated with how much of the span each actually covered, so a
+    briefly-running entry cannot masquerade as describing the whole span."""
+    cov: dict = {}
+    for e in toggl.entries_between(c, start, end):
+        if not e["description"]:
+            continue
+        ov = min(e["stop"] or time.time(), end) - max(e["start"], start)
+        if ov > 0:
+            cov[e["description"]] = cov.get(e["description"], 0.0) + ov
+    dur = end - start
+    return [d if ov >= 0.9 * dur else f"{d} ({ov / 60:.0f}m of {dur / 60:.0f}m)"
+            for d, ov in sorted(cov.items(), key=lambda kv: -kv[1])]
+
+
 def _apps_by_time(segments) -> list[str]:
     from collections import Counter
     c = Counter()
@@ -120,8 +135,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
             "summary": row["summary"] if row else None,
             "apps": _apps_by_time(sp["segments"]),
-            "toggl": sorted({e["description"] for e in toggl.entries_between(c, sp["start"], sp["end"])
-                             if e["description"]}),
+            "toggl": _toggl_with_coverage(c, sp["start"], sp["end"]),
             "toggl_entries": [{"start": max(e["start"], w0), "end": min(e["stop"] or time.time(), w1),
                                "description": e["description"], "project": e["project"]}
                               for e in toggl.entries_between(c, w0, w1)],
