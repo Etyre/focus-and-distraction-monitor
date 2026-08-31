@@ -47,6 +47,7 @@ class SegJudgement(BaseModel):
     content: str = Field(description="One of: creative, task, reading, planning, other, passive.")
     switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
     interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
+    uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
     note: str = Field(description="One short sentence of reasoning.")
 
 
@@ -202,9 +203,9 @@ class ChunkEvaluator:
                         log.warning("bad judgement for segment %d: %s/%s/%s", j.segment_id, c, sw, k)
                         continue
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created)"
-                        " VALUES (?,?,?,?,?,?)",
-                        (j.segment_id, c, sw, k if sw == "interruption" else None, j.note, now))
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
+                        " VALUES (?,?,?,?,?,?,?)",
+                        (j.segment_id, c, sw, k if sw == "interruption" else None, int(j.uncertain), j.note, now))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.

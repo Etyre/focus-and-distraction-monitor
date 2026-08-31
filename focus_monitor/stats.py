@@ -54,13 +54,14 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         f"SELECT * FROM seg_reviews WHERE segment_id IN ({q})", ids)}
 
     def verdict(seg_id):
-        """(content, switch, kind, user_edited) - the user's edit overrides the evaluator
-        field-by-field; None when neither exists."""
+        """(content, switch, kind, user_edited, uncertain) - the user's edit overrides the
+        evaluator field-by-field; None when neither exists."""
         e, u = ev.get(seg_id), rv.get(seg_id)
         if e is None and u is None:
             return None
         g = lambda k: (u[k] if u is not None and u[k] else (e[k] if e is not None else None))
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None
+        unc = 0 if u is not None else int((e["uncertain"] if e is not None else 0) or 0)
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     def toggl_at(ts):
@@ -107,7 +108,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited = v
+            content, vsw, vkind, edited, v_unc = v
             vsw = vsw or "continuation"
             if vsw == "continuation":
                 st = prev_state if prev_state != "idle" else "focus"
@@ -125,7 +126,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             if r is not None:
                 s["activity"] = r["e_activity"]
             s.update(state=st, label=label, switch_id=(r["group_id"] or r["id"]) if r is not None else None,
-                     uncertain=0, source="review" if edited else "eval")
+                     uncertain=v_unc, source="review" if edited else "eval")
         elif r is None:  # first segment, or a return to the same window after a neutral one
             st = prev_state if prev_state != "idle" else "focus"
             if (st == "focus" and last_detour and last_detour[0] == (s["app"], s["domain"])
@@ -509,7 +510,19 @@ def select_for_review(conn, t0: float, t1: float, n: int) -> list[int]:
         LEFT JOIN reviews r ON r.switch_id = s.id
         WHERE s.ts >= ? AND s.ts < ? AND e.uncertain = 1 AND r.switch_id IS NULL AND s.status != 'transit'
         ORDER BY score DESC, s.ts DESC LIMIT ?""", (t0, t1, n)).fetchall()
-    return [r[0] for r in rows]
+    ids = [r[0] for r in rows]
+    # The chunk evaluator's own uncertainty flags rank ahead of ensemble uncertainty - its
+    # judgments are what actually drive the states now.
+    ev_rows = conn.execute("""
+        SELECT s.id FROM seg_evals v
+        JOIN switches s ON s.to_segment = v.segment_id
+        LEFT JOIN seg_reviews u ON u.segment_id = v.segment_id
+        LEFT JOIN reviews r ON r.switch_id = s.id
+        WHERE s.ts >= ? AND s.ts < ? AND v.uncertain = 1 AND u.segment_id IS NULL
+              AND r.switch_id IS NULL AND s.status != 'transit'
+        ORDER BY s.ts DESC""", (t0, t1)).fetchall()
+    out = [r[0] for r in ev_rows] + [i for i in ids if i not in {r[0] for r in ev_rows}]
+    return out[:n]
 
 
 def short_breaks(conn, t0: float, t1: float) -> list[dict]:

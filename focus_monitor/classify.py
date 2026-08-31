@@ -44,6 +44,10 @@ class ClassifierService:
         spent = db.spend_today(self.conn)
         if spent >= self.cfg.daily_budget_usd:
             return False, f"daily budget reached (${spent:.2f})"
+        # The chunk evaluator is now the primary judgment; per-switch Opus calls only get a
+        # slice of the budget (they mainly sharpen review-queue ranking).
+        if spent >= self.cfg.switch_claude_budget_fraction * self.cfg.daily_budget_usd:
+            return False, "budget reserved for the chunk evaluator"
         local_conf = max(local_probs.values()) if local_probs else 0.0
         if not leaving_focus:
             # Already distracted/interrupted: cheap to get wrong. Local models suffice if confident,

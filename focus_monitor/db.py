@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segme
     switch_label TEXT,            -- nature of the switch INTO this segment:
                                   --   continuation | interruption | return
     interruption_kind TEXT,       -- when interruption: self_distraction | focus_start | detour
+    uncertain INTEGER NOT NULL DEFAULT 0,  -- the evaluator was genuinely unsure -> flag for review
     rationale TEXT,
     created REAL NOT NULL
 );
@@ -159,6 +160,9 @@ def connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE ensemble ADD COLUMN activity TEXT")
     elif "activity" not in {r[1] for r in conn.execute("PRAGMA table_info(ensemble)")}:
         conn.execute("ALTER TABLE ensemble ADD COLUMN activity TEXT")
+    vcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_evals)")}
+    if vcols and "uncertain" not in vcols:
+        conn.execute("ALTER TABLE seg_evals ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
