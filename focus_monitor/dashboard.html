@@ -71,7 +71,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
     <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
-  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span></div><div class="legend"><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>orange border = unfocused (fill still shows content)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused (not yet evaluated)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></div></div><div id="timeline"></div></div>
+  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span></div><div class="legend"><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>orange border = unfocused (fill still shows content)</span><span><i class="sw" style="background:var(--surface);border:1.5px dashed var(--muted);box-sizing:border-box"></i>pending evaluation (~15 min behind)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></div></div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
 </section>
@@ -227,14 +227,11 @@ function renderTimeline(){
   segs.forEach((g,i)=>{if(!vis(g.clip_start,g.clip_end))return;const x0=xc(g.clip_start),w=Math.max(1,xc(g.clip_end)-x0-1);
     const sp0=spanOf(g.clip_start); const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);
     const hasC=!!g.content&&g.state!=='idle';
-    let fill=stateColor[g.state]; let shortFocus=false;
+    let fill=stateColor[g.state]; let shortFocus=false; let pending=false;
     if(hasC){fill=contentColor[g.content]||fill;}
-    else{shortFocus=g.state==='focus'&&!sp0&&!dq;
-      if(g.state==='focus'&&sp0)fill=(sp0.mixed&&actColor[g.activity])||subColor[sp0.subtype]||'var(--focus)';
-      if(dq)fill='var(--interrupted)';}
-    if(!hasC&&!COUNT_EVENTS&&(g.state==='interrupted'||g.state==='distracted'))fill='var(--interrupted)';
-    const detourInSpan=!hasC&&(g.state==='interrupted'||g.state==='distracted')&&inSpan(g);
-    const unfBorder=hasC&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
+    else if(g.state!=='idle'&&g.source!=='neutral'){pending=true;fill='var(--surface)';}
+    const detourInSpan=false;
+    const unfBorder=hasC&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':(pending?'stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"':'');
     s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${unfBorder} ${shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':'')} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="8" width="3" height="6" fill="var(--taskchange)"/>`;});
   (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
@@ -255,7 +252,7 @@ function el_render(el,s,d,segs,flags){
   const spanOf=t=>d.focus_spans.find(sp=>t>=sp.start-1&&t<sp.end+1);
   const disqOf=t=>(d.disqualified||[]).find(q=>t>=q.start-1&&t<q.end+1);
   el.querySelectorAll('rect[data-i]').forEach(r=>{const g=segs[+r.dataset.i];
-    r.addEventListener('mousemove',e=>{const sp0=spanOf(g.clip_start);const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);const kind=g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(sp0?subName[sp0.subtype]:(dq?'unfocused — '+(dq.reason||''):'focus')):(g.state==='idle'?'idle (away)':'unfocused');
+    r.addEventListener('mousemove',e=>{const sp0=spanOf(g.clip_start);const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);const kind=g.source==='neutral'?'neutral (presence check)':(!g.content&&g.state!=='idle')?'pending evaluation (runs ~15 min behind)':g.state==='focus'?(sp0?subName[sp0.subtype]:(dq?'unfocused — '+(dq.reason||''):'focus')):(g.state==='idle'?'idle (away)':'unfocused');
       const holder=sp0||disqOf(g.clip_start);
       const spanStart=holder&&Math.abs(g.clip_start-holder.start)<1;
       showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
@@ -319,9 +316,10 @@ function spanTL(sp){
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="14" y2="64" stroke="var(--grid)"/><text x="${x(t)}" y="78" text-anchor="middle">${fmtT(t)}</text>`;
   sp.segments.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
-    let fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='focus'?(g.in_span?(sp.disq_reason?'var(--interrupted)':(subColor[sp.subtype]||'var(--f-other)')):'var(--focus)'):(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)')));
+    const pend=!g.content&&g.state!=='idle';
+    let fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--surface)');
     const op=g.in_span?(g.state!=='focus'?0.8:1):0.35;
-    const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
+    const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':(pend?'stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"':'');
     s+=`<rect data-si="${i}" x="${x0}" y="16" width="${w}" height="46" rx="2" fill="${fill}" ${unfB} opacity="${g.source==='neutral'?Math.min(op,0.4):op}" style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="9" width="3" height="6" fill="var(--taskchange)" ${g.in_span?'':'opacity="0.5"'}/>`;
     else if(g.label==='interruption'||g.label==='distraction')s+=`<path d="M${x0-3},9 L${x0+3},9 L${x0},15 Z" fill="var(--${g.label==='distraction'?'distracted':'interrupted'})" ${g.in_span?'':'opacity="0.5"'}/>`;});
@@ -415,9 +413,10 @@ function switchTL(f){
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="22" y2="70" stroke="var(--grid)"/><text x="${x(t)}" y="86" text-anchor="middle">${fmtT(t)}</text>`;
   segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
-    const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='focus'?'var(--focus)':(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)')));
+    const pend2=!g.content&&g.state!=='idle';
+    const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--surface)');
     const isCur=g.switch_id===f.switch.id;
-    const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
+    const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':(pend2&&!isCur?'stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"':'');
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
   // the switch itself: arrow + line at the exact boundary
   s+=`<line x1="${x(ts)}" x2="${x(ts)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
