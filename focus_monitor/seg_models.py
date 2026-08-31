@@ -21,7 +21,7 @@ from . import db
 
 log = logging.getLogger("seg_models")
 
-CONTENTS = ("creative", "task", "reading", "planning", "other", "passive", "meeting")
+CONTENTS = ("creative", "task", "reading", "planning", "other", "passive", "meeting", "idle")
 SWITCHES = ("continuation", "interruption", "return")
 KINDS = ("self_distraction", "focus_start", "detour")
 HEADS = {"content": CONTENTS, "switch": SWITCHES, "kind": KINDS}

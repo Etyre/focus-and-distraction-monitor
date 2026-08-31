@@ -62,6 +62,9 @@ def seg_line(s) -> str:
         bits.append(f"[{s['activity']}]")
     if s.get("toggl_desc"):
         bits.append(f"(toggl: {s['toggl_desc']})")
+    ia, dur2 = s.get("inact_s") or 0.0, s.get("duration") or 1.0
+    if ia >= 60 and ia >= 0.3 * dur2:
+        bits.append(f"(input idle {ia / 60:.0f}m of {dur2 / 60:.0f}m)")
     return "  ".join(str(b) for b in bits)
 
 

@@ -121,7 +121,7 @@ const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>
 const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
 const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',meeting:'var(--f-meeting)',focus:'var(--f-other)'};
 const actColor={reading:'var(--f-reading)',writing:'var(--f-creative)',coding:'var(--f-creative)',task_execution:'var(--f-task)',planning:'var(--f-planning)'};
-const contentColor={creative:'var(--f-creative)',task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other:'var(--f-other)',meeting:'var(--f-meeting)',passive:'var(--f-passive)'};
+const contentColor={creative:'var(--f-creative)',task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other:'var(--f-other)',meeting:'var(--f-meeting)',passive:'var(--f-passive)',idle:'var(--pending)'};
 const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',meeting:'meeting',focus:'other focused work'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
@@ -451,7 +451,7 @@ async function renderSwitch(id){
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?' · <b>edited by you</b>':''):'not yet evaluated — runs ~15 min behind'}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive','meeting'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive','meeting','idle'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
   </div>`;

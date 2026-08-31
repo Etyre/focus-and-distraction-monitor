@@ -64,6 +64,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
+    inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
     def toggl_at(ts):
         for e in tg:
             if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts):
@@ -90,6 +91,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         s["toggl_id"] = _te["id"] if _te else None
         s["toggl_tags"] = (_te["tags"] or "") if _te else ""
         s["toggl_desc"] = (_te["description"] or "") if _te else ""
+        s["inact_s"] = sum(max(0.0, min(i["end"], s["clip_end"]) - max(i["start"], s["clip_start"])) for i in inact)
         _ta, _tb = toggl_near(s["start"]), toggl_near(s["end_eff"])
         s["tg_near_a"] = _ta["id"] if _ta else None
         s["tg_near_b"] = _tb["id"] if _tb else None
@@ -236,6 +238,8 @@ def span_subtype(sp: dict, cfg) -> str | None:
         c = s.get("content")
         if c in CONTENT2SUB:
             grp[CONTENT2SUB[c]] += s["duration"]
+            continue
+        if c in ("passive", "idle"):
             continue
         a = s.get("activity")
         if a:
