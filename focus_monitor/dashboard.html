@@ -8,13 +8,13 @@
 :root{
   --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
   --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#c3c2b7;--taskchange:#1baf7a;
-  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#6f8fe0;--f-planning:#9a6fd6;--f-other:#7f8fa6;--f-meeting:#a5764f;
+  --f-creative:#2a78d6;--f-task:#12a594;--f-reading:#6f8fe0;--f-planning:#9a6fd6;--f-other:#7f8fa6;--f-meeting:#a5764f;--f-passive:#d1953b;
   --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
   --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#383835;--taskchange:#199e70;
-  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#8f99ee;--f-planning:#ad86e6;--f-other:#93a2b8;--f-meeting:#bd8a61;
+  --f-creative:#3987e5;--f-task:#1cb8a6;--f-reading:#8f99ee;--f-planning:#ad86e6;--f-other:#93a2b8;--f-meeting:#bd8a61;--f-passive:#dba64f;
   --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
 }}
 *{box-sizing:border-box}
@@ -65,13 +65,13 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="row" style="margin-bottom:12px">
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
-    <span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>focused task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other focused work</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span><span><i class="sw" style="background:var(--f-general);opacity:.35"></i>below 10-min min</span><span><i class="sw" style="background:var(--interrupted);opacity:.55"></i>interruption in a span (&lt;5 min)</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></span>
+    
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
     <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
-  </div><div id="timeline"></div></div>
+  </div><div style="margin:4px 0 6px"><span class="legend"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span><span><i class="sw" style="background:var(--interrupted)"></i>unfocused (not yet evaluated)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span></span></div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
 </section>
@@ -121,6 +121,7 @@ const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>
 const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
 const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',meeting:'var(--f-meeting)',focus:'var(--f-other)'};
 const actColor={reading:'var(--f-reading)',writing:'var(--f-creative)',coding:'var(--f-creative)',task_execution:'var(--f-task)',planning:'var(--f-planning)'};
+const contentColor={creative:'var(--f-creative)',task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other:'var(--f-other)',meeting:'var(--f-meeting)',passive:'var(--f-passive)'};
 const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',meeting:'meeting',focus:'other focused work'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
@@ -225,11 +226,14 @@ function renderTimeline(){
   s+=`<defs><pattern id="hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1.5" height="4" fill="var(--ink)" opacity="0.55"/></pattern></defs>`;
   segs.forEach((g,i)=>{if(!vis(g.clip_start,g.clip_end))return;const x0=xc(g.clip_start),w=Math.max(1,xc(g.clip_end)-x0-1);
     const sp0=spanOf(g.clip_start); const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);
-    let fill=stateColor[g.state]; const shortFocus=g.state==='focus'&&!sp0&&!dq;
-    if(g.state==='focus'&&sp0)fill=(sp0.mixed&&actColor[g.activity])||subColor[sp0.subtype]||'var(--focus)';
-    if(dq)fill='var(--interrupted)';
-    if(!COUNT_EVENTS&&(g.state==='interrupted'||g.state==='distracted'))fill='var(--interrupted)';
-    const detourInSpan=(g.state==='interrupted'||g.state==='distracted')&&inSpan(g);
+    const hasC=!!g.content&&g.state!=='idle';
+    let fill=stateColor[g.state]; let shortFocus=false;
+    if(hasC){fill=contentColor[g.content]||fill;}
+    else{shortFocus=g.state==='focus'&&!sp0&&!dq;
+      if(g.state==='focus'&&sp0)fill=(sp0.mixed&&actColor[g.activity])||subColor[sp0.subtype]||'var(--focus)';
+      if(dq)fill='var(--interrupted)';}
+    if(!hasC&&!COUNT_EVENTS&&(g.state==='interrupted'||g.state==='distracted'))fill='var(--interrupted)';
+    const detourInSpan=!hasC&&(g.state==='interrupted'||g.state==='distracted')&&inSpan(g);
     s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':'')} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="8" width="3" height="6" fill="var(--taskchange)"/>`;});
   (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
@@ -253,7 +257,7 @@ function el_render(el,s,d,segs,flags){
     r.addEventListener('mousemove',e=>{const sp0=spanOf(g.clip_start);const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);const kind=g.source==='neutral'?'neutral (presence check)':g.state==='focus'?(sp0?subName[sp0.subtype]:(dq?'unfocused — '+(dq.reason||''):'focus')):(g.state==='idle'?'idle (away)':'unfocused');
       const holder=sp0||disqOf(g.clip_start);
       const spanStart=holder&&Math.abs(g.clip_start-holder.start)<1;
-      showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
+      showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
@@ -314,7 +318,7 @@ function spanTL(sp){
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="14" y2="64" stroke="var(--grid)"/><text x="${x(t)}" y="78" text-anchor="middle">${fmtT(t)}</text>`;
   sp.segments.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
-    let fill=g.state==='focus'?(g.in_span?(sp.disq_reason?'var(--interrupted)':(subColor[sp.subtype]||'var(--f-other)')):'var(--focus)'):(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)'));
+    let fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='focus'?(g.in_span?(sp.disq_reason?'var(--interrupted)':(subColor[sp.subtype]||'var(--f-other)')):'var(--focus)'):(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)')));
     const op=g.in_span?(g.state!=='focus'?0.8:1):0.35;
     s+=`<rect data-si="${i}" x="${x0}" y="16" width="${w}" height="46" rx="2" fill="${fill}" opacity="${g.source==='neutral'?Math.min(op,0.4):op}" style="cursor:${g.switch_id?'pointer':'default'}"/>`;
     if(g.label==='task_change')s+=`<rect x="${x0}" y="9" width="3" height="6" fill="var(--taskchange)" ${g.in_span?'':'opacity="0.5"'}/>`;
@@ -409,7 +413,7 @@ function switchTL(f){
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="22" y2="70" stroke="var(--grid)"/><text x="${x(t)}" y="86" text-anchor="middle">${fmtT(t)}</text>`;
   segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
-    const fill=g.state==='focus'?'var(--focus)':(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)'));
+    const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='focus'?'var(--focus)':(g.state==='idle'?'var(--idle)':(g.state==='distracted'?'var(--distracted)':'var(--interrupted)')));
     const isCur=g.switch_id===f.switch.id;
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
   // the switch itself: arrow + line at the exact boundary

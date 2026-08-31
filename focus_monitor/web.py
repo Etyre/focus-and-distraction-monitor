@@ -59,7 +59,7 @@ def api_day(day: str | None = None):
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
                              "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
-                             "apps": sorted({s["app"] for s in r["segments"]}),
+                             "apps": _apps_by_time(r["segments"]),
                              "toggl": sorted({e["description"] for e in toggl.entries_between(c, r["start"], r["end"]) if e["description"]})}
                             for r in se["focus_spans"]],
             "distractions": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "is_event": r["is_event"],
@@ -92,6 +92,14 @@ def _unconfirmed_ranges(c, t0: float, t1: float) -> list[tuple[float, float]]:
 CTX_S = 600.0  # timeline context shown on each side of a reviewed span
 
 
+def _apps_by_time(segments) -> list[str]:
+    from collections import Counter
+    c = Counter()
+    for s in segments:
+        c[s["app"]] += s.get("duration", 0.0)
+    return [a for a, _ in c.most_common()]
+
+
 def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     from . import summaries as _summ
     row = _summ.lookup(c, sp["start"], sp["end"])
@@ -111,7 +119,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
             "summary": row["summary"] if row else None,
-            "apps": sorted({s["app"] for s in sp["segments"]}),
+            "apps": _apps_by_time(sp["segments"]),
             "toggl": sorted({e["description"] for e in toggl.entries_between(c, sp["start"], sp["end"])
                              if e["description"]}),
             "toggl_entries": [{"start": max(e["start"], w0), "end": min(e["stop"] or time.time(), w1),
