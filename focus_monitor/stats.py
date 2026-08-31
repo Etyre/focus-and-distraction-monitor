@@ -239,7 +239,7 @@ def span_subtype(sp: dict, cfg) -> str | None:
         if c in CONTENT2SUB:
             grp[CONTENT2SUB[c]] += s["duration"]
             continue
-        if c in ("passive", "idle"):
+        if c in ("passive", "idle", "transition"):
             continue
         a = s.get("activity")
         if a:

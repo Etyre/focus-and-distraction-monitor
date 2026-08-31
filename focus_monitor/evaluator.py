@@ -42,7 +42,7 @@ MAX_SHOTS = 6
 
 class SegJudgement(BaseModel):
     segment_id: int
-    content: str = Field(description="One of: creative, task, reading, planning, other, passive, meeting, idle.")
+    content: str = Field(description="One of: creative, task, reading, planning, other, passive, meeting, idle, transition.")
     switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
     interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
@@ -77,6 +77,10 @@ nothing suggests engaged reading or watching - the person was likely away or dis
 Log lines show "(input idle ...)" when recorded. A mostly-input-idle segment can NOT be task, \
 creative, or planning (those require interaction); it can still be reading or passive if they \
 were plausibly reading/watching the screen.
+   - transition: rapidly passing through desktops, windows, or tabs on the WAY to a specific \
+target - travel, not attention. Typically a chain of very short segments ending somewhere the \
+person settles. Transitions are never attention shifts in themselves; their switch is \
+'continuation' of whatever the person is heading toward.
 2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
 editor<->terminal, stepping through desktops to find something; also staying within one ongoing \

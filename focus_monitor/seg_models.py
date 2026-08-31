@@ -21,7 +21,7 @@ from . import db
 
 log = logging.getLogger("seg_models")
 
-CONTENTS = ("creative", "task", "reading", "planning", "other", "passive", "meeting", "idle")
+CONTENTS = ("creative", "task", "reading", "planning", "other", "passive", "meeting", "idle", "transition")
 SWITCHES = ("continuation", "interruption", "return")
 KINDS = ("self_distraction", "focus_start", "detour")
 HEADS = {"content": CONTENTS, "switch": SWITCHES, "kind": KINDS}
@@ -63,6 +63,7 @@ def features(cfg, seg: dict, prev: dict | None) -> dict:
         "hour=" + str(dt.datetime.fromtimestamp(seg["start"]).hour // 4): 1.0,
         "toggl": 1.0 if seg.get("toggl_id") else 0.0,
         "same_ctx_prev": 1.0 if prev is not None and (prev.get("app"), prev.get("domain")) == (app, seg.get("domain")) else 0.0,
+        "short": 1.0 if dur < 20 else 0.0,
         "authoring": 1.0 if app in cfg.authoring_apps or _dom_in(dom, cfg.authoring_domains) else 0.0,
         "notes": 1.0 if app in cfg.notes_apps or _dom_in(dom, cfg.focus_domains) else 0.0,
         "passive_dom": 1.0 if _dom_in(dom, cfg.passive_domains) else 0.0,
@@ -99,6 +100,10 @@ def heuristic_predict(cfg, seg: dict, prev: dict | None) -> dict:
     else:
         content = _norm({"reading": 0.25, "other": 0.2, "task": 0.2, "creative": 0.15,
                          "planning": 0.1, "passive": 0.07, "meeting": 0.03})
+    if f["short"] and not f["same_ctx_prev"]:
+        content = {k: v * 0.55 for k, v in content.items()}
+        content["transition"] = content.get("transition", 0.0) + 0.45
+        content = _norm(content)
     if f["same_ctx_prev"]:
         switch = _uniformish(SWITCHES, "continuation", 0.85)
     elif f["passive_dom"] or f["distraction_dom"]:

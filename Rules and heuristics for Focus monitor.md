@@ -43,7 +43,7 @@
 For each segment, the model to do several different related evaluations:
 
 * Evaluate the content of the *segment*: 
-  * 1) What kind of span is this: Lable as Creative, Task, Reading, Planning/Reflecting, Meeting, Other, Passive Consumption.
+  * 1) What kind of span is this: Lable as Creative, Task, Reading, Planning/Reflecting, Meeting, Other, Passive Consumption, or transition.
     2) Is the user focused during this segment, or unfocused? 
 * Evaluate the nature of the *switch*: Does this switch corespondent to a shift in the user's object of attention? Label as either a continuation, an interuption, transition (meaning, navigating through apps or windows to get to the relevant target or return from ineruption. 
 * If a switch is labled as an interuption, then additionally evaluate if it's additionally a self-distraction event (it probably is if the type is "passive consumption", but not if it's something else), or a new focus start. 
