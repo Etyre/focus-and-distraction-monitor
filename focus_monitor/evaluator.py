@@ -1,0 +1,253 @@
+"""Chunked segment evaluator: the model applies judgment over whole stretches of activity.
+
+Every ~15 minutes (lazily, so after-context exists), one Claude call evaluates a chunk of
+segments together, with surrounding context and sampled screenshots. For each segment it
+judges:
+  1. CONTENT - what kind of activity the segment is:
+     creative | task | reading | planning | other | passive
+     ("task" describes the activity's nature regardless of Toggl - Toggl is span-level
+     evidence of deliberate focus, not evidence of task-nature.)
+  2. SWITCH - what the switch INTO the segment was, attention-wise:
+     continuation (no shift of the object of attention) | interruption (a shift) |
+     return (coming back to the pre-interruption object)
+  3. For interruptions, the KIND:
+     self_distraction (stimulation-seeking; usual when the target is passive consumption) |
+     focus_start (deliberately starting a new piece of focused work) |
+     detour (a reactive/task-adjacent shift that is neither)
+
+The user audits and edits these (seg_reviews); edits are authoritative for state derivation
+and are fed back to the evaluator as few-shot corrections, so it learns over time."""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import logging
+import time
+
+from pydantic import BaseModel, Field
+
+from . import db
+from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config,
+                     load_config)
+
+log = logging.getLogger("evaluator")
+
+CONTENTS = ("creative", "task", "reading", "planning", "other", "passive")
+SWITCHES = ("continuation", "interruption", "return")
+KINDS = ("self_distraction", "focus_start", "detour")
+
+LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
+CHUNK_S = 20 * 60         # evaluate about this much activity per call
+CTX_S = 10 * 60           # context shown on each side of the chunk
+MAX_SHOTS = 6
+
+
+class SegJudgement(BaseModel):
+    segment_id: int
+    content: str = Field(description="One of: creative, task, reading, planning, other, passive.")
+    switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
+    interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
+    note: str = Field(description="One short sentence of reasoning.")
+
+
+class ChunkJudgement(BaseModel):
+    segments: list[SegJudgement]
+
+
+SYSTEM = """You are the segment evaluator for a personal attention monitor. You receive a stretch \
+of one person's computer activity - an ordered log of segments (one active window each), with \
+surrounding context before and after, Toggl entries, and sampled screenshots - and you judge every \
+segment marked EVALUATE. For each one output:
+
+1. content - what the activity IS:
+   - creative: making something (writing an essay/doc, coding, video editing).
+   - task: executing discrete tasks (email, forms, errands, admin, logistics). Judge the \
+activity's nature only - whether a Toggl timer is running is NOT part of this judgment.
+   - reading: reading posts/papers/books. (Whether notes are being taken matters for spans, not \
+for this label - reading without notes is still 'reading' content, unless it is really passive \
+browsing/consumption.)
+   - planning: metacognition - journaling, prioritizing, reviewing goals, deciding what to work on.
+   - other: real engaged activity fitting none of the above.
+   - passive: passive consumption - watching videos, scrolling feeds, browsing without an \
+objective, reading comics/entertainment. When in doubt between 'other' and 'passive', lean passive: \
+this person's calibration is that the system has been far too optimistic about focus.
+2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
+   - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
+editor<->terminal, stepping through desktops to find something; also staying within one ongoing \
+distraction session).
+   - interruption: the object of attention changed.
+   - return: coming back to the object they were on before an interruption.
+3. interruption_kind - ONLY for switch='interruption':
+   - self_distraction: seeking stimulation without clear intent (usually when the target content \
+is passive; going to a blocked site; absent-mindedly opening feeds/shopping/dating apps).
+   - focus_start: deliberately starting a NEW piece of focused work (often marked by starting a \
+Toggl entry, opening a todo list, or settling into new material with notes).
+   - detour: a reactive or task-adjacent shift that is neither - answering a message, a stray \
+question, a quick errand.
+
+Judge each segment in the context of the whole stretch - what came before AND after it. A flip to \
+a notes app mid-video does not make the video session work; a quick message check inside a writing \
+session is a detour, not the end of the work.
+
+Their own rules and definitions (authoritative):
+{rules}
+
+About this person (their own words):
+{about_me}
+
+{examples}"""
+
+
+_ev = None
+
+
+def _get():
+    global _ev
+    if _ev is None:
+        _ev = ChunkEvaluator(load_config())
+    return _ev
+
+
+class ChunkEvaluator:
+    def __init__(self, cfg: Config):
+        import anthropic
+        from .config import load_api_key
+        load_api_key()
+        self.cfg = cfg
+        self.client = anthropic.Anthropic()
+        if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
+            raise RuntimeError("no Anthropic credentials")
+        self._examples_stamp = None
+        self._system = None
+
+    def _examples(self, conn) -> str:
+        rows = conn.execute("""
+            SELECT r.segment_id, r.content, r.switch_label, r.interruption_kind, r.note,
+                   g.app, g.domain, g.title
+            FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
+            ORDER BY r.created DESC LIMIT 20""").fetchall()
+        if not rows:
+            return ""
+        lines = ["The person has corrected past judgments - follow these precedents:"]
+        for r in rows:
+            what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
+            verdict = " / ".join(v for v in (r["content"], r["switch_label"], r["interruption_kind"]) if v)
+            note = f" ({r['note']})" if r["note"] else ""
+            lines.append(f"- {what} -> {verdict}{note}")
+        return "\n".join(lines)
+
+    def _system_blocks(self, conn) -> list[dict]:
+        stamp = conn.execute("SELECT COALESCE(MAX(created),0) FROM seg_reviews").fetchone()[0]
+        if self._system is None or stamp != self._examples_stamp:
+            from .classifiers.claude_vision import _rules_doc
+            self._system = SYSTEM.format(rules=_rules_doc(),
+                                         about_me=self.cfg.about_me.strip() or "(no description given)",
+                                         examples=self._examples(conn))
+            self._examples_stamp = stamp
+        return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
+
+    def evaluate_chunk(self, conn, t0: float, t1: float) -> int:
+        """Evaluate all real segments starting in [t0, t1). Returns how many were judged."""
+        from . import stats, summaries, toggl
+        from .classifiers.claude_vision import _b64
+        segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S)
+        target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
+                  and not s.get("neutral") and s["duration"] > 0]
+        if not target:
+            return 0
+        target_ids = {s["id"] for s in target}
+        lines = []
+        for s in segs:
+            if s["duration"] <= 0:
+                continue
+            mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else "(context) "
+            lines.append(mark + summaries.seg_line(s))
+        tg = toggl.entries_between(conn, t0 - CTX_S, t1 + CTX_S)
+        tgtxt = "\n".join(f"  {dt.datetime.fromtimestamp(e['start']).strftime('%H:%M')}"
+                          f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
+                          f"{e['description'] or '(unnamed)'}" for e in tg) or "  (none)"
+        content: list[dict] = []
+        shots = [s for s in target if s.get("first_screenshot")]
+        step = max(1, len(shots) // MAX_SHOTS)
+        for s in shots[::step][:MAX_SHOTS]:
+            b = _b64(s["first_screenshot"])
+            if b:
+                content.append({"type": "text", "text": f"Screenshot of segment id={s['id']} ({dt.datetime.fromtimestamp(s['clip_start']).strftime('%H:%M')} {s['app']}):"})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        content.append({"type": "text", "text":
+                        f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
+                        + "\n\nJudge every segment marked EVALUATE (all of them, by id)."})
+        resp = self.client.beta.messages.parse(
+            model=self.cfg.claude_model, max_tokens=8000,
+            system=self._system_blocks(conn),
+            messages=[{"role": "user", "content": content}],
+            output_format=ChunkJudgement,
+            output_config={"effort": "low"},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default")
+        cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
+                + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
+                + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
+        n = 0
+        if resp.parsed_output is not None:
+            now = time.time()
+            with db.tx(conn):
+                for j in resp.parsed_output.segments:
+                    if j.segment_id not in target_ids:
+                        continue
+                    c = j.content.strip().lower()
+                    sw = j.switch.strip().lower()
+                    k = (j.interruption_kind or "").strip().lower() or None
+                    if c not in CONTENTS or sw not in SWITCHES or (k is not None and k not in KINDS):
+                        log.warning("bad judgement for segment %d: %s/%s/%s", j.segment_id, c, sw, k)
+                        continue
+                    conn.execute(
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created)"
+                        " VALUES (?,?,?,?,?,?)",
+                        (j.segment_id, c, sw, k if sw == "interruption" else None, j.note, now))
+                    n += 1
+                # A target the model omitted must not stall the queue forever: store an
+                # explicit default the user can audit and correct.
+                judged = {j.segment_id for j in resp.parsed_output.segments}
+                for s in target:
+                    if s["id"] not in judged:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created)"
+                            " VALUES (?,?,?,?,?,?)",
+                            (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now))
+                conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created) VALUES (?,?,?,?,?)",
+                             (t0, t1, n, cost, now))
+        log.info("chunk %s-%s: %d/%d segments judged ($%.3f)",
+                 dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
+                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), cost)
+        return n
+
+
+def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float = 36 * 3600) -> int:
+    """Evaluate the oldest unevaluated stretch that is at least LAZY_S old. Called from the
+    classifier loop; also usable for backfill with a longer lookback and more chunks."""
+    cfg = cfg or load_config()
+    if db.spend_today(conn) >= cfg.daily_budget_usd:
+        return 0
+    horizon = time.time() - LAZY_S
+    done = 0
+    for _ in range(max_chunks):
+        row = conn.execute("""
+            SELECT MIN(g.start) FROM segments g
+            LEFT JOIN seg_evals e ON e.segment_id = g.id
+            WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0
+              AND COALESCE(g.end, g.start) > g.start
+              AND COALESCE(g.end, g.start) <= ? AND e.segment_id IS NULL""",
+            (time.time() - lookback_s, horizon, horizon)).fetchone()
+        if not row or row[0] is None:
+            break
+        t0 = row[0] - 1
+        t1 = min(t0 + CHUNK_S, horizon)
+        try:
+            if _get().evaluate_chunk(conn, t0, t1) == 0:
+                break  # nothing judged: don't spin on the same window
+        except Exception:
+            log.exception("chunk evaluation failed (%s)", dt.datetime.fromtimestamp(t0))
+            break
+        done += 1
+    return done

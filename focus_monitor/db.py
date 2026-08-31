@@ -239,4 +239,6 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     trow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM thread_calls WHERE created >= ?",
                         (start,)).fetchone()
-    return float(row[0]) + float(srow[0]) + float(trow[0])
+    erow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM eval_runs WHERE created >= ?",
+                        (start,)).fetchone()
+    return float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0])

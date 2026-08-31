@@ -48,6 +48,19 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         LEFT JOIN reviews r ON r.switch_id = COALESCE(s.group_id, s.id)
         LEFT JOIN thread_calls tc ON tc.switch_id = COALESCE(s.group_id, s.id)
         WHERE s.to_segment IN ({q})""", ids).fetchall()
+    ev = {r["segment_id"]: r for r in conn.execute(
+        f"SELECT * FROM seg_evals WHERE segment_id IN ({q})", ids)}
+    rv = {r["segment_id"]: r for r in conn.execute(
+        f"SELECT * FROM seg_reviews WHERE segment_id IN ({q})", ids)}
+
+    def verdict(seg_id):
+        """(content, switch, kind, user_edited) - the user's edit overrides the evaluator
+        field-by-field; None when neither exists."""
+        e, u = ev.get(seg_id), rv.get(seg_id)
+        if e is None and u is None:
+            return None
+        g = lambda k: (u[k] if u is not None and u[k] else (e[k] if e is not None else None))
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     def toggl_at(ts):
@@ -91,7 +104,29 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                 last_focus_ctx = (s["app"], s["domain"])
             prev_state = s["state"]
             continue
-        if r is None:  # first segment, or a return to the same window after a neutral one
+        v = verdict(s["id"])
+        if v is not None:
+            # The evaluator's (or the user's edited) per-segment judgment drives the state.
+            content, vsw, vkind, edited = v
+            vsw = vsw or "continuation"
+            if vsw == "continuation":
+                st = prev_state if prev_state != "idle" else "focus"
+            elif vsw == "return":
+                st = "focus"
+            else:  # interruption: what kind of shift?
+                st = {"self_distraction": "distracted", "focus_start": "focus",
+                      "detour": "interrupted"}.get(vkind or "detour", "interrupted")
+            if content == "passive":
+                st = "distracted"  # Rules doc: passive consumption never counts toward focus
+            label = ("continuation" if vsw in ("continuation", "return") else
+                     {"self_distraction": "distraction", "focus_start": "task_change",
+                      "detour": "interruption"}.get(vkind or "detour", "interruption"))
+            s["content"] = content
+            if r is not None:
+                s["activity"] = r["e_activity"]
+            s.update(state=st, label=label, switch_id=(r["group_id"] or r["id"]) if r is not None else None,
+                     uncertain=0, source="review" if edited else "eval")
+        elif r is None:  # first segment, or a return to the same window after a neutral one
             st = prev_state if prev_state != "idle" else "focus"
             if (st == "focus" and last_detour and last_detour[0] == (s["app"], s["domain"])
                     and last_focus_ctx != (s["app"], s["domain"])
@@ -189,11 +224,18 @@ def span_subtype(sp: dict, cfg) -> str | None:
     notes_s = sum(s["duration"] for s in fsegs if _is_notes(s))
     reading_ok = notes_s / tot >= cfg.reading_notes_frac
 
-    # 1) Content signal: dominant Claude activity, mapped to a subtype.
+    # 1) Content signal: the evaluator's per-segment content label (preferred), falling back
+    #    to the legacy per-switch activity tag.
     ACT2SUB = {"writing": "creative_work", "coding": "creative_work", "task_execution": "focused_task",
                "reading": "reading", "planning": "planning", "browsing": "other_focused", "other": "other_focused"}
+    CONTENT2SUB = {"creative": "creative_work", "task": "focused_task", "reading": "reading",
+                   "planning": "planning", "other": "other_focused"}
     grp = Counter()
     for s in fsegs:
+        c = s.get("content")
+        if c in CONTENT2SUB:
+            grp[CONTENT2SUB[c]] += s["duration"]
+            continue
         a = s.get("activity")
         if a:
             grp[ACT2SUB.get(a, "other_focused")] += s["duration"]
@@ -498,6 +540,8 @@ def daily_metrics(conn, day: dt.date) -> dict:
         "distracted_min": sum(d["duration"] for d in se["distractions"]) / 60,
         "interrupted_min": sum(d["duration"] for d in se["interruptions"]) / 60,
         "active_min": sum(s["duration"] for s in segs if s["state"] != "idle") / 60,
+        # Rules doc: passive consumption is tracked in its own right (never counts toward focus).
+        "passive_min": sum(s["duration"] for s in segs if s.get("content") == "passive") / 60,
         "switches": sum(1 for s in segs if s["switch_id"]),
         "uncertain": sum(1 for s in segs if s["uncertain"]),
         "reviewed": sum(1 for s in segs if s["source"] == "review"),

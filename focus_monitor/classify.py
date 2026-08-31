@@ -222,10 +222,13 @@ class ClassifierService:
         for sid in ids:
             try:
                 self.classify_switch(sid)
-                from . import resolver
-                resolver.maybe_resolve(self.conn, self.cfg, sid)
             except Exception:
                 log.exception("failed to classify switch %d", sid)
+        try:
+            from . import evaluator
+            evaluator.run_pending(self.conn, self.cfg)  # supersedes the per-switch thread resolver
+        except Exception:
+            log.exception("chunk evaluation failed")
         try:
             from . import summaries
             summaries.ensure_summaries(self.conn, self.cfg)

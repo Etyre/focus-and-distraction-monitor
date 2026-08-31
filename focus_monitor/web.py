@@ -43,7 +43,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "toggl_id", "toggl_desc")} for s in segs]
+                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "toggl_id", "toggl_desc")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
@@ -97,7 +97,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     row = _summ.lookup(c, sp["start"], sp["end"])
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
     keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
-            "url", "activity", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+            "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
     in_span_ids = {id(s) for s in sp["segments"]}
     segs = []
     for s in (day_segs or sp["segments"]):
@@ -239,6 +239,11 @@ def api_switch(switch_id: int):
     full["before"] = [dict(r) for r in db.segments_before(c, (full["from"] or full["to"])["start"], 5)]
     full["after"] = [dict(r) for r in db.segments_after(c, full["to"]["start"], 4)]
     ts = full["switch"]["ts"]
+    to_id = full["to"]["id"]
+    full["to_eval"] = (lambda r: dict(r) if r else None)(
+        c.execute("SELECT * FROM seg_evals WHERE segment_id=?", (to_id,)).fetchone())
+    full["to_seg_review"] = (lambda r: dict(r) if r else None)(
+        c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (to_id,)).fetchone())
     te = next((e for e in toggl.entries_between(c, ts - 1, ts + 1)
                if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts)), None)
     full["toggl"] = {"description": te["description"], "project": te["project"], "tags": te["tags"]} if te else None
@@ -249,7 +254,7 @@ def api_switch(switch_id: int):
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
         keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
-                "url", "activity", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+                "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
         se = stats.spans_and_events(ctx_segs, conn=c)
@@ -316,6 +321,54 @@ def api_chat(switch_id: int, req: ChatReq):
         return {"reply": get_chat().reply(c, switch_id, req.messages)}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+class SegEvalReview(BaseModel):
+    content: str | None = None
+    switch_label: str | None = None
+    interruption_kind: str | None = None
+    note: str | None = None
+
+
+# The user's edit of the evaluator's judgment maps onto the legacy 4-label review scheme so the
+# older per-switch models keep learning from the same corrections.
+_NEW2OLD = {("continuation", None): "continuation", ("return", None): "task_change",
+            ("interruption", "self_distraction"): "distraction",
+            ("interruption", "focus_start"): "task_change",
+            ("interruption", "detour"): "interruption"}
+
+
+@app.post("/api/segment/{segment_id}/eval-review")
+def api_seg_eval_review(segment_id: int, r: SegEvalReview):
+    from .evaluator import CONTENTS, KINDS, SWITCHES
+    if r.content is not None and r.content not in CONTENTS:
+        raise HTTPException(400, "bad content label")
+    if r.switch_label is not None and r.switch_label not in SWITCHES:
+        raise HTTPException(400, "bad switch label")
+    if r.interruption_kind is not None and r.interruption_kind not in KINDS:
+        raise HTTPException(400, "bad interruption kind")
+    c = conn()
+    if not c.execute("SELECT 1 FROM segments WHERE id=?", (segment_id,)).fetchone():
+        raise HTTPException(404)
+    with db.tx(c):
+        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, note, created)"
+                  " VALUES (?,?,?,?,?,?)",
+                  (segment_id, r.content, r.switch_label, r.interruption_kind, r.note, time.time()))
+        old = _NEW2OLD.get((r.switch_label, r.interruption_kind if r.switch_label == "interruption" else None))
+        sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (segment_id,)).fetchone()
+        if old and sw:
+            c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
+                      (sw["id"], old, r.note, time.time()))
+            c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+    return {"ok": True}
+
+
+@app.delete("/api/segment/{segment_id}/eval-review")
+def api_seg_eval_unreview(segment_id: int):
+    c = conn()
+    with db.tx(c):
+        c.execute("DELETE FROM seg_reviews WHERE segment_id=?", (segment_id,))
+    return {"ok": True}
 
 
 class Review(BaseModel):

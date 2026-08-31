@@ -424,6 +424,15 @@ function switchTLBind(f){
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();renderSwitch(g.switch_id);});});
 }
+let segEvalSel=null;
+function evalBtns(cur,vals,names,field){return vals.map(v=>`<button class="small" style="${cur===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEdit('${field}','${v}')">${names[v]||v}</button>`).join(' ');}
+async function segEdit(field,val){
+  segEvalSel[field]=segEvalSel[field]===val?null:val;
+  if(field==='switch_label'&&val!=='interruption')segEvalSel.interruption_kind=null;
+  await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(segEvalSel)});
+  renderSwitch(current.switch.id);
+}
+async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
 async function renderSwitch(id){
   const f=await api('/api/switch/'+id);current=f;
   const P=k=>({continuation:f.ensemble?.p_continuation,interruption:f.ensemble?.p_interruption,distraction:f.ensemble?.p_distraction,task_change:f.ensemble?.p_task_change});
@@ -431,6 +440,15 @@ async function renderSwitch(id){
   const togglLine=`<div class="small" style="margin:4px 0">⏱ ${f.toggl?'Toggl: <b>'+esc(f.toggl.description||'(unnamed entry)')+'</b>'+(f.toggl.project?' · '+esc(f.toggl.project):''):'<span class="muted">no Toggl entry running at this moment</span>'}</div>`;
   const sp=f.span;
   const spanLine=sp?`<div class="small" style="margin:4px 0">${sp.is_start?'<b style="color:var(--taskchange)">⚑ This capture is the START of a span</b> — ':''}${sp.relation==='leaving'?'this switch LEFT ':'inside '}${sp.disq_reason?'<span style="color:var(--interrupted)">a disqualified span ('+esc(sp.disq_reason)+')</span>':'a <b>'+(subName[sp.subtype]||sp.subtype)+'</b> span'} ${fmtT(sp.start)}–${fmtT(sp.end)}${sp.summary?'<br>📝 <span style="opacity:.85">'+esc(sp.summary)+'</span>':''}</div>`:'';
+  const ev=f.to_eval,evr=f.to_seg_review;
+  segEvalSel={content:(evr&&evr.content)||(ev&&ev.content)||null,switch_label:(evr&&evr.switch_label)||(ev&&ev.switch_label)||null,interruption_kind:(evr&&evr.interruption_kind)||(ev&&ev.interruption_kind)||null};
+  const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
+    <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?' · <b>edited by you</b>':''):'not yet evaluated — runs ~15 min behind'}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
+    ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
+    ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
+  </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
     return `<tr><td><b>${p.model}</b></td><td style="width:160px">${top} ${Math.round(pr[top]*100)}%${probBar(pr)}</td><td class="small">${esc(p.rationale)}${p.cost_usd?` <span class="muted">($${p.cost_usd.toFixed(3)})</span>`:''}</td></tr>`;}).join('');
@@ -445,7 +463,7 @@ async function renderSwitch(id){
       <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
-    ${togglLine}${spanLine}${ens}<table style="margin:8px 0">${preds}</table>${rev}
+    ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
       <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
