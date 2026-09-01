@@ -406,9 +406,16 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             return True
         if not r.get("focus_start"):
             return True  # continuation-type focus = same task
+        # A user edit is absolute: it outranks every glue heuristic below.
+        if first.get("source") == "review" and first.get("eval_split_p") is not None:
+            return first["eval_split_p"] < 0.5
         last_tg = last.get("tg_near_b") or last.get("toggl_id")
+        # Same-entry glue requires the entry to be RUNNING at the new segment's start -
+        # stopping a Toggl entry declares the END of that intent, and the near-slack must not
+        # glue new work to an entry that ended at the boundary.
+        new_tg_running = first.get("toggl_id")
         new_tg = first.get("tg_near_a") or first.get("toggl_id")
-        if last_tg and new_tg and last_tg == new_tg:
+        if last_tg and new_tg_running and last_tg == new_tg_running:
             return True  # one declared Toggl intent spans the switch (Rules doc: Toggl glues tasks)
         if first.get("eval_split_p") is not None:
             # Evaluator-era segments carry the resolved ensemble confidence that this switch

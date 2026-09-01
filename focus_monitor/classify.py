@@ -232,6 +232,7 @@ class ClassifierService:
             from . import evaluator
             evaluator.run_pending(self.conn, self.cfg)  # supersedes the per-switch thread resolver
             evaluator.daily_audit(self.conn, self.cfg)  # once a day; a fast no-op otherwise
+            evaluator.refine_incoherent(self.conn, self.cfg)  # auto-correct model-vs-model findings
         except Exception:
             log.exception("chunk evaluation failed")
         try:

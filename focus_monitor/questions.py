@@ -123,7 +123,7 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     # the span's head produces questions about the wrong end).
     for r in conn.execute("""
         SELECT s.start, s.end, s.issue FROM span_summaries s
-        WHERE s.coherent = 0 AND s.start >= ?""", (t0,)).fetchall():
+        WHERE s.coherent = 0 AND s.refined = 1 AND s.start >= ?""", (t0,)).fetchall():
         segs = conn.execute("""SELECT g.id, g.start, e.content,
                                       rv.segment_id AS reviewed, q.id AS questioned
             FROM segments g

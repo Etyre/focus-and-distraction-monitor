@@ -156,7 +156,7 @@ class ChunkEvaluator:
             self._examples_stamp = stamp
         return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
 
-    def evaluate_chunk(self, conn, t0: float, t1: float) -> int:
+    def evaluate_chunk(self, conn, t0: float, t1: float, extra: str | None = None) -> int:
         """Evaluate all real segments starting in [t0, t1). Local models predict first (and are
         stored for track-record scoring); segments where the locals have EARNED confident
         deferral skip the LLM; the rest go into one LLM call, and the resolved judgment is the
@@ -184,7 +184,7 @@ class ChunkEvaluator:
                                                    seg_models.weights_for(sc, h, list(lp)))
                         for h in HEADS}
             local[s["id"]] = (lp, combined)
-            if seg_models.can_defer(sc, combined, self.cfg):
+            if extra is None and seg_models.can_defer(sc, combined, self.cfg):
                 deferred.add(s["id"])
         for s in target:
             if s["id"] not in deferred:
@@ -237,6 +237,7 @@ class ChunkEvaluator:
                 content.append({"type": "text", "text": label})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
+                       + (f"\n\nIMPORTANT - {extra}" if extra else "")
                        + "\n\nJudge every segment marked EVALUATE (all of them, by id).")
         content.append({"type": "text", "text": prompt_text})
         system_text = self._system_blocks(conn)[0]["text"]
@@ -307,6 +308,41 @@ class ChunkEvaluator:
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), cost)
         return n + len(deferred)
+
+
+def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> int:
+    """Model judgments are not sacred: when the coherence check catches a span containing two
+    objects of attention, RE-EVALUATE its segments with that finding in hand and correct them
+    (the user's own edits always take precedence in state derivation and are never the target).
+    Bounded: a stretch already refined twice in 24h falls back to asking the user instead."""
+    cfg = cfg or load_config()
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
+        return 0
+    rows = conn.execute("SELECT * FROM span_summaries WHERE coherent=0 AND refined=0"
+                        " ORDER BY created DESC LIMIT ?", (max_spans,)).fetchall()
+    n = 0
+    for r in rows:
+        conn.execute("UPDATE span_summaries SET refined=1 WHERE id=?", (r["id"],))
+        prior = conn.execute(
+            "SELECT COUNT(*) FROM span_summaries WHERE refined=1 AND id != ? AND start < ? AND end > ? AND created >= ?",
+            (r["id"], r["end"], r["start"], time.time() - 86400)).fetchone()[0]
+        if prior >= 2:
+            log.info("refinement budget exhausted for %s - leaving for the user",
+                     dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"))
+            continue
+        try:
+            extra = (f"a whole-span coherence review of this stretch found: {r['issue']} "
+                     f"Re-judge with that in hand. If a NEW piece of work begins mid-stretch, "
+                     f"mark the segment where it begins as switch='interruption', "
+                     f"interruption_kind='focus_start'.")
+            self_n = _get().evaluate_chunk(conn, r["start"] - 1, r["end"] + 1, extra=extra)
+            log.info("coherence-driven re-evaluation of %s-%s: %d segments re-judged",
+                     dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"),
+                     dt.datetime.fromtimestamp(r["end"]).strftime("%H:%M"), self_n)
+            n += 1
+        except Exception:
+            log.exception("refinement failed")
+    return n
 
 
 def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:

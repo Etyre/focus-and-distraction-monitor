@@ -186,7 +186,8 @@ CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finish
     cost_usd REAL NOT NULL DEFAULT 0,
     created REAL NOT NULL,
     coherent INTEGER NOT NULL DEFAULT 1,      -- does the description fit "one object of attention"?
-    issue TEXT                                -- when not: what contradicts the span definition
+    issue TEXT,                               -- when not: what contradicts the span definition
+    refined INTEGER NOT NULL DEFAULT 0        -- an incoherence-driven re-evaluation was attempted
 );
 CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
 """
@@ -224,6 +225,8 @@ def connect() -> sqlite3.Connection:
     if scols and "coherent" not in scols:
         conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
         conn.execute("ALTER TABLE span_summaries ADD COLUMN issue TEXT")
+    if scols and "refined" not in scols:
+        conn.execute("ALTER TABLE span_summaries ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
     rcols = {r[1] for r in conn.execute("PRAGMA table_info(eval_runs)")}
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(review_questions)")}
     if qcols and "note" not in qcols:
