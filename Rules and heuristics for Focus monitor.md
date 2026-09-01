@@ -74,3 +74,4 @@ It's the app's job to review the data and make intelligent judgements about  whe
 * If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).  
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
 * If my computer is inactive, I can't be doing a task. 
+* My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.

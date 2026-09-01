@@ -37,8 +37,26 @@ class DashboardWindow:
         self.window = None
         self.webview = None
 
+    def _install_edit_menu(self):
+        # A menu-bar-only app has no Edit menu, so Cmd+C/V/X/A/Z do nothing inside the
+        # dashboard's text fields - key equivalents are resolved through the main menu.
+        from AppKit import NSMenu, NSMenuItem
+        main = NSMenu.alloc().init()
+        app_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Focus Monitor", None, "")
+        main.addItem_(app_item)
+        edit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Edit", None, "")
+        edit = NSMenu.alloc().initWithTitle_("Edit")
+        for title, sel, key in [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"),
+                                ("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+                                ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")]:
+            edit.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, key))
+        main.addItem_(edit_item)
+        main.setSubmenu_forItem_(edit, edit_item)
+        NSApp.setMainMenu_(main)
+
     def show(self, fragment: str = "day"):
         if self.window is None:
+            self._install_edit_menu()
             rect = NSMakeRect(0, 0, 1180, 820)
             style = NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask | NSResizableWindowMask
             self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
