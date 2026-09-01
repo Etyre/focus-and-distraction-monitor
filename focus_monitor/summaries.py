@@ -15,6 +15,7 @@ from .config import PRICE_INPUT, PRICE_OUTPUT, Config, load_config
 
 
 class SpanSummaryJudgement(BaseModel):
+    title: str = Field(description="3-8 words naming the OBJECT OF ATTENTION, like a document title - e.g. 'Reading METR's incident report', 'Editing elityre.com date page'. Use an epistemic marker ('likely ...') only if genuinely unsure.")
     summary: str = Field(description="1-2 factual sentences: what the person was actually doing.")
     coherent: bool = Field(description="THE CHECK: a focus span means ONE project/task/intention held throughout, with contained interruptions under 5 minutes each. Is the stretch you just described plausibly one object of attention? False whenever your own description contradicts that - e.g. the first stretch is a different activity than the rest, phrases like 'switched to' or 'from X on', or a sequence of unrelated things. (The reading->creative merge only excuses a shift when the writing grows out of the SAME material being read; moving to a different project is a different object.)")
     issue: str | None = Field(default=None, description="When coherent is false: one sentence naming the contradiction and, if apparent, where the real boundary lies.")
@@ -178,10 +179,10 @@ def generate(conn, cfg: Config, sp) -> bool:
             ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
             if ov >= 0.5 * (r["end"] - r["start"]) or ov >= 0.5 * (sp["end"] - sp["start"]):
                 conn.execute("DELETE FROM span_summaries WHERE id=?", (r["id"],))
-        conn.execute("INSERT INTO span_summaries(start, end, summary, cost_usd, created, coherent, issue)"
-                     " VALUES (?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO span_summaries(start, end, summary, cost_usd, created, coherent, issue, title)"
+                     " VALUES (?,?,?,?,?,?,?,?)",
                      (sp["start"], sp["end"], text, cost, time.time(), int(j.coherent),
-                      (j.issue or None) if not j.coherent else None))
+                      (j.issue or None) if not j.coherent else None, j.title.strip() or None))
     log.info("summarized span %s-%s ($%.4f)%s", t0s, t1s, cost,
              "" if j.coherent else " - COHERENCE ISSUE: " + (j.issue or ""))
     return True
