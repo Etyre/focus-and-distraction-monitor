@@ -144,7 +144,7 @@ def generate(conn, cfg: Config, sp) -> bool:
               + "\n\nAbout this person (their own words):\n" + (cfg.about_me.strip() or "(none)")),
               "cache_control": {"type": "ephemeral"}}]
     resp = client.beta.messages.parse(
-        model=cfg.claude_model, max_tokens=500, output_config={"effort": "low"},
+        model=cfg.claude_model, max_tokens=500, output_config={"effort": "medium"},
         system=system,
         messages=[{"role": "user", "content": content}],
         output_format=SpanSummaryJudgement)

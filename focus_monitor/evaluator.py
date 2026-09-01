@@ -37,7 +37,7 @@ from .seg_models import CONTENTS, HEADS, KINDS, SWITCHES  # single source for th
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
 CTX_S = 10 * 60           # context shown on each side of the chunk
-MAX_SHOTS = 6
+MAX_SHOTS = 8
 
 
 class SegJudgement(BaseModel):
@@ -488,7 +488,7 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
         system=ev._system_blocks(conn),
         messages=[{"role": "user", "content": content}],
         output_format=DayAudit,
-        output_config={"effort": "low"},
+        output_config={"effort": "medium"},
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default")
     cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT

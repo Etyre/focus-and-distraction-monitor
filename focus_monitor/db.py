@@ -311,6 +311,14 @@ def reviews_with_context(conn, limit: int | None = None) -> list[dict]:
     return [dict(r) for r in conn.execute(q)]
 
 
+def spend_total(conn) -> float:
+    """All Claude spend, ever, across every cost table."""
+    total = 0.0
+    for t in ("predictions", "span_summaries", "thread_calls", "eval_runs", "review_questions"):
+        total += float(conn.execute(f"SELECT COALESCE(SUM(cost_usd),0) FROM {t}").fetchone()[0])
+    return total
+
+
 def spend_today(conn) -> float:
     start = day_bounds(logical_date())[0]
     row = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM predictions WHERE created >= ?",

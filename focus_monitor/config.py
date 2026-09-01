@@ -40,7 +40,8 @@ class Config:
                                     # hunt (desktops -> window -> tab) is judged once as one transition  # wait this long after a switch so we can see what followed
     claude_model: str = "claude-opus-5"
     claude_effort: str = "medium"
-    daily_budget_usd: float = 15.0     # soft target; per-switch Opus is gated against it,
+    daily_budget_usd: float = 40.0     # generous; per-switch Opus is gated against it,
+    total_budget_usd: float = 500.0    # cumulative ceiling: flag the user when crossed
     hard_budget_multiple: float = 2.0  # but judgment work only stops at this multiple (safety)
     switch_claude_budget_fraction: float = 0.35  # per-switch Opus stops here; rest goes to the evaluator
     # Deferral: skip the LLM for a segment when the local models (heuristic+learned) are this

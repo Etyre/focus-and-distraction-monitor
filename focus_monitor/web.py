@@ -52,6 +52,7 @@ def api_day(day: str | None = None):
         row = _summ.lookup(c, r["start"], r["end"])
         return row["issue"] if row is not None and not row["coherent"] else None
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
+            "spend_total": db.spend_total(c), "budget_total": cfg.total_budget_usd,
             "to_review": len(selected), "reviewed": reviewed,
             "short_breaks": stats.short_breaks(c, t0, t1),
             "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
@@ -84,6 +85,7 @@ def api_accuracy(days: int = 60):
     c = conn()
     return {"daily": stats.accuracy_over_time(c, days), "scores": ensemble.model_scores(c),
             "spend_today": db.spend_today(c), "budget": cfg.daily_budget_usd,
+            "spend_total": db.spend_total(c), "budget_total": cfg.total_budget_usd,
             "reviews": c.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]}
 
 
