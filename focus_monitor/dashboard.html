@@ -476,9 +476,9 @@ async function renderSwitch(id){
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
       <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
-      <b>Ask Claude about this switch</b> <span class="muted small">— it sees the same screenshots, activity, Toggl intent, and model rationales</span>
+      <b>Ask the evaluator that judged this segment</b> <span class="muted small">— the same conversation it made the decision in: same instructions, same context, same screenshots, its own answer</span>
       <div id="chatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="chatinput" placeholder="e.g. What's on screen in the after shot? Why did you call this an interruption?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Ask</button></div>
+      <div class="chatrow"><input id="chatinput" placeholder="e.g. Why did you label this passive? What instruction would have changed your judgment?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Ask</button></div>
     </div>`;
   switchTLBind(f);
   renderChat(id);
@@ -493,7 +493,7 @@ function renderChat(id){const log=$('#chatlog');if(!log)return;
 async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#chatinput'),q=inp.value.trim();if(!q)return;
   CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});inp.value='';renderChat(id);
   const log=$('#chatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api(`/api/switch/${id}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
+  try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
   catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderChat(id);}
 document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowLeft'){segNav('prev');e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowRight'){segNav('next');e.preventDefault();}},{passive:false});

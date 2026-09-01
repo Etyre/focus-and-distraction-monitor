@@ -226,15 +226,19 @@ class ChunkEvaluator:
                          for s in target if s.get("first_screenshot")]
         app_of = {s["id"]: s["app"] for s in target}
         step = max(1, len(shot_rows) // MAX_SHOTS)
+        shot_meta: list[dict] = []
         for r2 in shot_rows[::step][:MAX_SHOTS]:
             b = _b64(r2["path"])
             if b:
                 where = f" - EXTERNAL display {r2['display']}" if r2.get("display") else ""
-                content.append({"type": "text", "text": f"Screenshot of segment id={r2['segment_id']} ({dt.datetime.fromtimestamp(r2['ts']).strftime('%H:%M')} {app_of.get(r2['segment_id'], '')}{where}):"})
+                label = f"Screenshot of segment id={r2['segment_id']} ({dt.datetime.fromtimestamp(r2['ts']).strftime('%H:%M')} {app_of.get(r2['segment_id'], '')}{where}):"
+                shot_meta.append({"path": r2["path"], "label": label})
+                content.append({"type": "text", "text": label})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
-        content.append({"type": "text", "text":
-                        f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
-                        + "\n\nJudge every segment marked EVALUATE (all of them, by id)."})
+        prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
+                       + "\n\nJudge every segment marked EVALUATE (all of them, by id).")
+        content.append({"type": "text", "text": prompt_text})
+        system_text = self._system_blocks(conn)[0]["text"]
         resp = self.client.beta.messages.parse(
             model=self.cfg.claude_model, max_tokens=8000,
             system=self._system_blocks(conn),
@@ -251,6 +255,11 @@ class ChunkEvaluator:
             now = time.time()
             per_seg_cost = cost / max(len(target), 1)
             with db.tx(conn):
+                run_id = conn.execute(
+                    "INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created, system, prompt, shots, response, model)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (t0, t1, 0, cost, now, system_text, prompt_text, json.dumps(shot_meta),
+                     resp.parsed_output.model_dump_json(), self.cfg.claude_model)).lastrowid
                 for j in resp.parsed_output.segments:
                     if j.segment_id not in target_ids:
                         continue
@@ -279,9 +288,9 @@ class ChunkEvaluator:
                     unc = int(j.uncertain or max(comb["content"].values()) < 0.5
                               or max(comb["switch"].values()) < 0.5)
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
-                        " VALUES (?,?,?,?,?,?,?)",
-                        (j.segment_id, rc, rsw, rk, unc, j.note, now))
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created, run_id)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        (j.segment_id, rc, rsw, rk, unc, j.note, now, run_id))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
@@ -289,15 +298,74 @@ class ChunkEvaluator:
                 for s in target:
                     if s["id"] not in judged:
                         conn.execute(
-                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created)"
-                            " VALUES (?,?,?,?,?,?)",
-                            (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now))
-                conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created) VALUES (?,?,?,?,?)",
-                             (t0, t1, n + len(deferred), cost, now))
+                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created, run_id)"
+                            " VALUES (?,?,?,?,?,?,?)",
+                            (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
+                conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
         log.info("chunk %s-%s: %d/%d segments judged, %d deferred ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), cost)
         return n + len(deferred)
+
+
+def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
+    """Talk to "the one who made the decision": reconstitute the EXACT evaluation conversation
+    (same system prompt, same user message with the same screenshots, its actual response), then
+    continue it with the reviewer's questions - so mistakes can be triangulated and the
+    instruction that would have prevented them identified. Falls back to an informed stand-in
+    for segments judged by the local models (deferral) or before transcripts were kept."""
+    import json as _json
+    from .classifiers.claude_vision import _b64
+    ev_row = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    run = None
+    if ev_row is not None and ev_row["run_id"]:
+        run = conn.execute("SELECT * FROM eval_runs WHERE id=?", (ev_row["run_id"],)).fetchone()
+    seg = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
+    who = f"segment id={segment_id} ({seg['app']} | {(seg['title'] or '')[:60]})" if seg else f"segment id={segment_id}"
+    ev = _get()
+    if run is not None and run["system"] and run["response"]:
+        system = [{"type": "text", "text": run["system"], "cache_control": {"type": "ephemeral"}}]
+        content: list[dict] = []
+        for m in _json.loads(run["shots"] or "[]"):
+            b = _b64(m["path"])
+            if b:
+                content.append({"type": "text", "text": m["label"]})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        content.append({"type": "text", "text": run["prompt"]})
+        api_msgs: list[dict] = [
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": [{"type": "text", "text": run["response"],
+                                               "cache_control": {"type": "ephemeral"}}]}]
+        preface = (f"[The person you monitor is now reviewing your judgments above, in particular "
+                   f"{who}. Answer their questions about what you saw and why you judged as you did; "
+                   f"if you now think you were wrong, say so plainly and say what instruction or "
+                   f"information would have led you to the right judgment.]\n\n")
+    else:
+        # No transcript: an informed stand-in built from what actually decided this segment.
+        preds = conn.execute("SELECT model, p_content, p_switch, p_kind FROM seg_predictions WHERE segment_id=?",
+                             (segment_id,)).fetchall()
+        ptxt = "\n".join(f"  {p['model']}: content={p['p_content']} switch={p['p_switch']}" for p in preds) or "  (none stored)"
+        vtxt = (f"resolved: content={ev_row['content']}, switch={ev_row['switch_label']}, "
+                f"kind={ev_row['interruption_kind']}, rationale: {ev_row['rationale']}") if ev_row else "(no evaluation recorded)"
+        system = [{"type": "text", "text": ev._system_blocks(conn)[0]["text"], "cache_control": {"type": "ephemeral"}}]
+        api_msgs = []
+        preface = (f"[No verbatim transcript exists for the evaluation of {who} - it was judged "
+                   f"before transcripts were kept, or deferred to the local (non-LLM) models. "
+                   f"What is on record:\n{vtxt}\nPer-model probability outputs:\n{ptxt}\n"
+                   f"Help the person triangulate whether the judgment was right.]\n\n")
+    for i, m in enumerate(messages):
+        role = "assistant" if m.get("role") == "assistant" else "user"
+        text = (m.get("text") or "").strip()
+        if role == "user" and preface:
+            text = preface + text
+            preface = ""
+        api_msgs.append({"role": role, "content": text})
+    resp = ev.client.messages.create(model=(run["model"] if run is not None and run["model"] else cfg.claude_model),
+                                     max_tokens=1024, system=system, messages=api_msgs,
+                                     output_config={"effort": "low"})
+    if resp.stop_reason == "refusal":
+        return "(Claude declined to answer that.)"
+    return "".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"
 
 
 class AuditFlag(BaseModel):

@@ -127,13 +127,18 @@ CREATE TABLE IF NOT EXISTS seg_reviews (      -- the user's edits to those judgm
     created REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS eval_runs (        -- chunk evaluation bookkeeping (spend accounting)
+CREATE TABLE IF NOT EXISTS eval_runs (        -- chunk evaluation bookkeeping + full transcript
     id INTEGER PRIMARY KEY,
     t0 REAL NOT NULL,
     t1 REAL NOT NULL,
     n_segments INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    system TEXT,                              -- exact system prompt used
+    prompt TEXT,                              -- exact user-message text (log + toggl)
+    shots TEXT,                               -- JSON [{path, label}] of screenshots sent
+    response TEXT,                            -- the model's structured response (JSON)
+    model TEXT
 );
 CREATE INDEX IF NOT EXISTS eval_runs_t0 ON eval_runs(t0);
 
@@ -192,6 +197,17 @@ def connect() -> sqlite3.Connection:
     vcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_evals)")}
     if vcols and "uncertain" not in vcols:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
+    if vcols and "run_id" not in vcols:
+        conn.execute("ALTER TABLE seg_evals ADD COLUMN run_id INTEGER REFERENCES eval_runs(id)")
+    rcols = {r[1] for r in conn.execute("PRAGMA table_info(eval_runs)")}
+    if rcols and "system" not in rcols:
+        # The full evaluation transcript, so a review chat can talk to "the one who decided":
+        # the exact system prompt, user prompt, screenshots sent, model, and the response.
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN system TEXT")
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN prompt TEXT")
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN shots TEXT")
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN response TEXT")
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN model TEXT")
     return conn
 
 

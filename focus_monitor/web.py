@@ -324,6 +324,19 @@ class SpanChatReq(BaseModel):
     messages: list[dict]
 
 
+class EvalChatReq(BaseModel):
+    messages: list[dict]
+
+
+@app.post("/api/segment/{segment_id}/evaluator-chat")
+def api_evaluator_chat(segment_id: int, req: EvalChatReq):
+    from . import evaluator
+    try:
+        return {"reply": evaluator.chat_reply(conn(), cfg, segment_id, req.messages)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.post("/api/span/chat")
 def api_span_chat(req: SpanChatReq):
     try:

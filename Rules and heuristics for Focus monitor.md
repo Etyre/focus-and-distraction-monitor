@@ -6,7 +6,7 @@
 * A **switch** is the transition between seguments.
 * A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea.  
   * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.  
-  * A focus span ends when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption.   
+  * A focus span ends when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).   
   * Attention interruptions that are less than 5 minutes long do not break the focus span.   
 * An **attention-interruption event**  or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.  
 * A **self-distraction event** is a sub-case of an attention-interruption event in which I seek out stimulation or distraction without a clear intent.  
@@ -62,6 +62,9 @@ The model can evaluate these lazily with a 15 minute delay, if that improves per
 
 ### Some rules and heuristics for evaluating which app transitions are attention-interruption events:
 
+It's the app's job to review the data and make intelligent judgements about  whether the focus of the user's attention has remained stable or has shifted. 
+
+* Toggl should be taken as a highly-weighted clue about the focus the user's intention. If a toggl entry labled with a task is likely to cover a focus span in which the users attention was focused on that task. But toggl data is not definitive. A toggl entry could be runnning, and the user might have gotten destracted or shifted focus to something else without having chanaged the time-tracking. Or it might be that the user is continually getting briefly distracted by interruptions, and the minimum amount of interupted time has not been reached. It's the app's job to review the data and make intelligent judgements about what is actually a span of time in which the user's attention is focused on a single object / project / task / intention / goal.
 * Flipping to my daily page in roam / logseq, is never an attention-interruption event. I often want to take metacognitive notes on my daily page, and when I have a stray thought while focusing on something else, my protocol is to jot it down on my daily page.  
 * Briefly filling out my presesnce check form is not an inturpution or a self-distraction event.
 * When I’m reading, I’ll typically go back and forth between the window with the text and the window with my notes. 
