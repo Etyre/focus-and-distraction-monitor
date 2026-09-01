@@ -150,6 +150,34 @@ def take_screenshot(cfg: Config, tag: str) -> str | None:
     return shots[0] if shots else None
 
 
+def active_display_index(app_name: str) -> int:
+    """Which display holds the frontmost app's window (0 = main/laptop). The primary
+    screenshot must be of the display the person is actually working on - with an external
+    monitor attached, that is often NOT the laptop screen."""
+    try:
+        import Quartz
+        wins = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID)
+        b = None
+        for w in wins:
+            if w.get("kCGWindowLayer", 1) == 0 and w.get("kCGWindowOwnerName") == app_name:
+                b = w.get("kCGWindowBounds")
+                break
+        if not b:
+            return 0
+        cx, cy = b["X"] + b["Width"] / 2, b["Y"] + b["Height"] / 2
+        err, ids, cnt = Quartz.CGGetActiveDisplayList(8, None, None)
+        for i in range(cnt or 0):
+            db_ = Quartz.CGDisplayBounds(ids[i])
+            if (db_.origin.x <= cx <= db_.origin.x + db_.size.width
+                    and db_.origin.y <= cy <= db_.origin.y + db_.size.height):
+                return i
+        return 0
+    except Exception:
+        return 0
+
+
 def cleanup_screenshots(cfg: Config) -> int:
     cutoff = time.time() - cfg.screenshot_retention_days * 86400
     n = 0
@@ -188,7 +216,8 @@ class Collector:
 
     def _open_segment(self, state: WindowState | None, at: float, idle: bool, neutral: bool = False) -> int:
         shots = [] if (idle or neutral) else take_screenshots(self.cfg, "first")
-        shot = shots[0] if shots else None
+        di = active_display_index(state.app) if (state and shots) else 0
+        shot = (shots[di] if di < len(shots) else shots[0]) if shots else None
         cur = self.conn.execute(
             "INSERT INTO segments(start, app, title, url, domain, first_screenshot, last_screenshot, idle, neutral)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
@@ -265,8 +294,9 @@ class Collector:
             if now - self.last_shot_time >= self.cfg.refresh_screenshot_seconds:
                 shots = take_screenshots(self.cfg, "last")
                 if shots:
+                    di = active_display_index(self.current_state.app) if self.current_state else 0
                     self.conn.execute("UPDATE segments SET last_screenshot=? WHERE id=?",
-                                      (shots[0], self.current_id))
+                                      (shots[di] if di < len(shots) else shots[0], self.current_id))
                     for i, name in enumerate(shots):
                         self.conn.execute("INSERT INTO segment_shots(segment_id, ts, path, display) VALUES (?,?,?,?)",
                                           (self.current_id, now, name, i))
