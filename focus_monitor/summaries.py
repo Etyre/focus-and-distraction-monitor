@@ -16,7 +16,7 @@ from .config import PRICE_INPUT, PRICE_OUTPUT, Config, load_config
 
 class SpanSummaryJudgement(BaseModel):
     summary: str = Field(description="1-2 factual sentences: what the person was actually doing.")
-    coherent: bool = Field(description="THE CHECK: a focus span means ONE project/task/intention held throughout, with contained interruptions under 5 minutes each. Is the stretch you just described plausibly one object of attention? False whenever your own description contradicts that - e.g. the first stretch is a different activity than the rest, or it is a sequence of unrelated things.")
+    coherent: bool = Field(description="THE CHECK: a focus span means ONE project/task/intention held throughout, with contained interruptions under 5 minutes each. Is the stretch you just described plausibly one object of attention? False whenever your own description contradicts that - e.g. the first stretch is a different activity than the rest, phrases like 'switched to' or 'from X on', or a sequence of unrelated things. (The reading->creative merge only excuses a shift when the writing grows out of the SAME material being read; moving to a different project is a different object.)")
     issue: str | None = Field(default=None, description="When coherent is false: one sentence naming the contradiction and, if apparent, where the real boundary lies.")
 
 log = logging.getLogger("summaries")

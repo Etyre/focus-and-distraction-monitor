@@ -71,6 +71,11 @@ sets switch_label (continuation | interruption | return) and, for interruption, 
 - For boundary doubts ("did a new piece of work start here?"), the split option is \
 switch_label='interruption', interruption_kind='focus_start' on the segment where the new work \
 would begin.
+- For coherence doubts (a span that contains TWO objects of attention), ask about the moment \
+the SECOND object begins - the split point named or implied in the doubt's reason - and you MUST \
+include an option affirming the split: switch_label='interruption', \
+interruption_kind='focus_start' on the segment where the second object begins (its id is \
+visible in the log). "Did a new piece of work start at <time>?" is the shape.
 - Options must be mutually exclusive and cover the plausible readings. Do not editorialize; \
 the person decides.
 
@@ -113,20 +118,47 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
         src = "audit" if (r["rationale"] or "").find("daily audit") >= 0 else "self_uncertain"
         out.append({"segment_id": r["segment_id"], "source": src,
                     "reason": (r["rationale"] or "")[-200:], "ts": r["start"]})
-    # coherence flags -> a question about the span's boundary, anchored on its first segment
+    # coherence flags -> a boundary question anchored at the CHANGEPOINT: the first segment
+    # of the longest stretch whose content differs from the span's opening content (asking at
+    # the span's head produces questions about the wrong end).
     for r in conn.execute("""
         SELECT s.start, s.end, s.issue FROM span_summaries s
         WHERE s.coherent = 0 AND s.start >= ?""", (t0,)).fetchall():
-        seg = conn.execute("""SELECT g.id FROM segments g
+        segs = conn.execute("""SELECT g.id, g.start, e.content,
+                                      rv.segment_id AS reviewed, q.id AS questioned
+            FROM segments g
+            LEFT JOIN seg_evals e ON e.segment_id = g.id
             LEFT JOIN seg_reviews rv ON rv.segment_id = g.id
             LEFT JOIN review_questions q ON q.segment_id = g.id
             WHERE g.start >= ? AND g.start < ? AND g.idle=0 AND g.neutral=0
-              AND rv.segment_id IS NULL AND q.id IS NULL ORDER BY g.start LIMIT 1""",
-            (r["start"] - 1, r["end"])).fetchone()
-        if seg:
-            out.append({"segment_id": seg["id"], "source": "coherence",
-                        "reason": f"span summary contradicts the one-object definition: {r['issue']}",
-                        "ts": r["start"]})
+            ORDER BY g.start""", (r["start"] - 1, r["end"])).fetchall()
+        real = [s for s in segs if s["content"] and s["content"] not in ("transition", "idle")]
+        # Changepoint = the boundary that best splits the span into two internally-homogeneous
+        # halves (duration-weighted): where the second object of attention begins.
+        def _dom_share(part):
+            from collections import Counter
+            c = Counter()
+            for s2 in part:
+                c[s2["content"]] += max((conn.execute("SELECT COALESCE(end,start)-start FROM segments WHERE id=?",
+                                                      (s2["id"],)).fetchone()[0]), 1.0)
+            tot = sum(c.values()) or 1.0
+            return max(c.values()) / tot, tot
+        anchor, best_score = None, -1.0
+        for i in range(1, len(real)):
+            ls, lw = _dom_share(real[:i])
+            rs, rw = _dom_share(real[i:])
+            score = (ls * lw + rs * rw) / (lw + rw)
+            if score > best_score:
+                best_score, anchor = score, real[i]
+        if anchor is None and segs:
+            anchor = segs[0]
+        if anchor is None or anchor["reviewed"] is not None or anchor["questioned"] is not None:
+            continue
+        hint = dt.datetime.fromtimestamp(anchor["start"]).strftime("%H:%M")
+        out.append({"segment_id": anchor["id"], "source": "coherence",
+                    "reason": (f"span summary contradicts the one-object definition: {r['issue']} "
+                               f"(likely split point: segment id={anchor['id']} at {hint})"),
+                    "ts": r["start"]})
     out.sort(key=lambda x: ({"coherence": 0, "audit": 1}.get(x["source"], 2), -x["ts"]))
     return out
 
@@ -188,6 +220,9 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                              "switch_label": o.switch_label,
                              "interruption_kind": o.interruption_kind, "content": o.content})
             if len(opts) < 2:
+                continue
+            if t["source"] == "coherence" and not any(o.get("interruption_kind") == "focus_start" for o in opts):
+                log.warning("rejecting coherence question without a split option (segment %d)", q.trigger_segment_id)
                 continue
             # Always offer the pass-through reading - the person may know they were only
             # travelling to another window, which the model rarely proposes on its own.
