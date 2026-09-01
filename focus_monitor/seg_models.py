@@ -285,3 +285,69 @@ def can_defer(sc: dict, combined: dict, cfg) -> bool:
         if max(combined[head].values()) < cfg.defer_confidence:
             return False
     return True
+
+
+# ---- spend-efficiency instrumentation ---------------------------------------------------------
+
+def efficiency_report(conn) -> dict:
+    """Where does LLM spend buy accuracy, and where do the cheap models already cover it?
+    Scored against the user's edits (ground truth). Per judgment head: local-only accuracy vs
+    with-LLM accuracy (the marginal lift the spend is buying), plus a deferral-threshold sweep
+    - 'if we deferred to the locals whenever they were >= t confident, what accuracy would we
+    keep and what fraction of LLM calls would we skip?' - so scaling down later is informed."""
+    import time as _t
+    rows = conn.execute("""
+        SELECT p.segment_id, p.model, p.p_content, p.p_switch, p.p_kind,
+               r.content, r.switch_label, r.interruption_kind
+        FROM seg_predictions p JOIN seg_reviews r ON r.segment_id = p.segment_id""").fetchall()
+    by_seg: dict = {}
+    for r in rows:
+        e = by_seg.setdefault(r["segment_id"], {"gold": {"content": r["content"], "switch": r["switch_label"],
+                                                         "kind": r["interruption_kind"]}, "preds": {}})
+        e["preds"][r["model"]] = {"content": json.loads(r["p_content"]), "switch": json.loads(r["p_switch"]),
+                                  "kind": json.loads(r["p_kind"] or "{}")}
+    heads_out = {}
+    sweeps = {}
+    for head in HEADS:
+        pts = []
+        for seg in by_seg.values():
+            gold = seg["gold"][head]
+            if not gold or gold not in HEADS[head]:
+                continue
+            local_preds = {m: seg["preds"][m][head] for m in ("heuristic", "learned") if m in seg["preds"]}
+            if not local_preds:
+                continue
+            lc = combine_head(local_preds, {m: DEFAULT_WEIGHTS.get(m, 0.35) for m in local_preds})
+            claude = seg["preds"].get("claude", {}).get(head)
+            pts.append({"local_top": max(lc, key=lc.get), "local_conf": max(lc.values()),
+                        "local_ok": max(lc, key=lc.get) == gold,
+                        "claude_ok": (max(claude, key=claude.get) == gold) if claude else None})
+        n = len(pts)
+        with_claude = [p2 for p2 in pts if p2["claude_ok"] is not None]
+        heads_out[head] = {
+            "n": n,
+            "local_acc": (sum(p2["local_ok"] for p2 in pts) / n) if n else None,
+            "llm_acc": (sum(p2["claude_ok"] for p2 in with_claude) / len(with_claude)) if with_claude else None,
+        }
+        if heads_out[head]["local_acc"] is not None and heads_out[head]["llm_acc"] is not None:
+            heads_out[head]["lift"] = heads_out[head]["llm_acc"] - heads_out[head]["local_acc"]
+        # deferral sweep: defer when local confidence >= t
+        curve = []
+        for t in (0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95):
+            defer = [p2 for p2 in with_claude if p2["local_conf"] >= t]
+            keep = [p2 for p2 in with_claude if p2["local_conf"] < t]
+            if not with_claude:
+                continue
+            acc = (sum(p2["local_ok"] for p2 in defer) + sum(p2["claude_ok"] for p2 in keep)) / len(with_claude)
+            curve.append({"threshold": t, "skipped_frac": len(defer) / len(with_claude), "policy_acc": acc})
+        sweeps[head] = curve
+    # component spend, last 7 days
+    week = _t.time() - 7 * 86400
+    spend = {}
+    for label, table in (("per-switch classifier", "predictions"), ("chunk evaluator", "eval_runs"),
+                         ("span summaries", "span_summaries"), ("review questions", "review_questions"),
+                         ("thread resolver", "thread_calls")):
+        spend[label] = float(conn.execute(
+            f"SELECT COALESCE(SUM(cost_usd),0) FROM {table} WHERE created >= ?", (week,)).fetchone()[0])
+    return {"heads": heads_out, "deferral_sweep": sweeps, "component_spend_7d": spend,
+            "reviewed_segments": len(by_seg)}

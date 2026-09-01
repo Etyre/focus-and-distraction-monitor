@@ -110,6 +110,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <div class="legend" style="margin:6px 0"><span><i class="sw" style="background:var(--m-claude)"></i>claude</span><span><i class="sw" style="background:var(--m-heuristic)"></i>heuristic</span><span><i class="sw" style="background:var(--m-learned)"></i>learned</span><span><i class="sw" style="background:var(--m-ensemble)"></i>ensemble</span></div>
     <div id="c-acc"></div></div>
   <div class="card"><b>Current ensemble weights</b> <span class="muted small">(from log-loss on the last 200 reviewed switches; defaults until ≥8 scored)</span><table id="weights"></table></div>
+  <div class="card"><b>Spend efficiency</b> <span class="muted small">— where extra spend buys accuracy, and where the cheap models already cover it</span><div id="efficiency" style="margin-top:8px"></div></div>
 </section>
 </main>
 <div class="tt" id="tt"></div>
@@ -628,7 +629,28 @@ document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&
     e.preventDefault();}},{passive:false});
 
 // ---- accuracy
+function fmtPct(v){return v==null?'–':Math.round(100*v)+'%';}
+async function loadEfficiency(){
+  let eff;try{eff=await api('/api/efficiency');}catch(e){return;}
+  const host=$('#efficiency');if(!host)return;
+  if(!eff.reviewed_segments||eff.reviewed_segments<5){host.innerHTML=`<div class="muted small">Needs more reviewed segments (have ${eff.reviewed_segments||0}). Every question you answer feeds this.</div>`;return;}
+  let h='<table><tr><th>judgment</th><th>n reviewed</th><th>cheap models alone</th><th>with LLM</th><th>lift the spend buys</th></tr>';
+  for(const [head,s] of Object.entries(eff.heads)){
+    const verdict=s.lift==null?'':(s.lift>0.05?`<span style="color:var(--taskchange)">+${Math.round(100*s.lift)}pts — spend earns its keep</span>`:(s.lift>-0.02?'<span class="muted">≈0 — cheap covers it; scale-down candidate</span>':`<span style="color:var(--distracted)">${Math.round(100*s.lift)}pts — locals beat the LLM here; investigate</span>`));
+    h+=`<tr><td>${head}</td><td>${s.n}</td><td>${fmtPct(s.local_acc)}</td><td>${fmtPct(s.llm_acc)}</td><td>${verdict}</td></tr>`;}
+  h+='</table>';
+  const firstCurve=Object.values(eff.deferral_sweep).find(c=>c.length);
+  if(firstCurve){
+    h+='<div style="margin-top:10px"><b>Deferral sweep</b> <span class="muted small">— "defer to cheap models when ≥t confident": accuracy kept vs LLM calls skipped</span><table><tr><th>head</th>'+firstCurve.map(c=>`<th>t=${c.threshold}</th>`).join('')+'</tr>';
+    for(const [head,curve] of Object.entries(eff.deferral_sweep)){
+      if(!curve.length)continue;
+      h+=`<tr><td>${head}</td>`+curve.map(c=>`<td>${fmtPct(c.policy_acc)} <span class="muted small">skip ${Math.round(100*c.skipped_frac)}%</span></td>`).join('')+'</tr>';}
+    h+='</table></div>';}
+  h+='<div style="margin-top:10px"><b>Component spend, last 7 days</b><table>'+Object.entries(eff.component_spend_7d).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${k}</td><td>$${v.toFixed(2)}</td></tr>`).join('')+'</table></div>';
+  host.innerHTML=h;
+}
 async function loadAccuracy(){
+  loadEfficiency();
   const a=await api('/api/accuracy?days=60');
   const tiles=[['Reviews so far',a.reviews],['Claude spend today',`$${a.spend_today.toFixed(2)} <span class="muted small">/ $${a.budget}</span>`]];
   for(const [m,s] of Object.entries(a.scores))tiles.push([`${m} accuracy`,`${Math.round(100*s.accuracy)}% <span class="muted small">weighted, n=${s.n}</span>`,s.accuracy_focus==null?'':`on focus-span switches: ${Math.round(100*s.accuracy_focus)}% (n=${s.n_focus})`]);

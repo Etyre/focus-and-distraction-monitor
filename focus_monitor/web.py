@@ -209,6 +209,12 @@ def api_span_review(r: SpanReview):
     return {"ok": True}
 
 
+@app.get("/api/efficiency")
+def api_efficiency():
+    from . import seg_models
+    return seg_models.efficiency_report(conn())
+
+
 @app.get("/api/review/queue")
 def api_review_queue(limit: int = 30, all: bool = False):
     c = conn()
