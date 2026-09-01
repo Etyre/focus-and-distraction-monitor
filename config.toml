@@ -6,7 +6,7 @@ min_segment_seconds = 3.0      # flickers shorter than this are merged away
 idle_seconds = 600             # no keyboard/mouse input for 10 min = away; the span ends when the inactivity began
                                # (also catches system sleep: a wall-clock gap between polls counts as inactivity)
 short_inactivity_seconds = 60  # pauses between 1 and 8 min are logged as short breaks (bathroom etc.), spans survive
-refresh_screenshot_seconds = 60
+refresh_screenshot_seconds = 30  # denser evidence for the evaluator
 screenshot_max_width = 1280
 screenshot_quality = 60
 screenshot_retention_days = 14
@@ -15,7 +15,7 @@ screenshot_retention_days = 14
 lookahead_seconds = 120        # wait so the model can see what you did AFTER the switch
 transit_seconds = 20           # a chain of windows each held < 20 s is ONE transition, judged once (origin -> where you settle)
 claude_model = "claude-opus-5"
-claude_effort = "medium"       # low | medium | high
+claude_effort = "high"         # accuracy is the only priority (user 2026-09-01)
 daily_budget_usd = 40.0            # generous: accuracy first (user 2026-09-01: "don't worry
                                    # about cost for now"); the hard multiple below is only a
                                    # runaway-bug brake
@@ -29,7 +29,9 @@ switch_claude_budget_fraction = 0.35  # per-switch Opus calls stop at this share
 # earned this accuracy on your last edits (per judgment head, needs this much feedback).
 defer_confidence = 0.85
 defer_accuracy = 0.85
-defer_min_feedback = 25
+defer_min_feedback = 10000     # deferral OFF while accuracy is the only priority - the local
+                               # models still run, get scored, and learn, but the LLM judges
+                               # every segment (lower this to re-enable earned deferral)
 daily_audit = true             # one end-of-day LLM sweep re-checks the whole day, flags errors
 # Frugality kicks in once the local models beat this accuracy on your last N reviews.
 frugal_accuracy_threshold = 0.85
