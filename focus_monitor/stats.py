@@ -326,13 +326,20 @@ SUBTYPES = ("creative_work", "focused_task", "reading", "planning", "other_focus
 
 
 def _span_review_for(rows, sp):
-    """The user's span review covering >= 50% of sp, if any."""
+    """The user's verdict on essentially THIS span. The overlap must cover >= 80% of BOTH the
+    span and the reviewed range: a verdict is about the span as it was shown, and must not
+    chase a substantially re-bounded span - e.g. "not a focus span" on a badly-assembled 41
+    minutes must not demote the genuine 30-minute span later corrected out of its middle."""
     best, best_ov = None, 0.0
     for r in rows:
         ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
         if ov > best_ov:
             best, best_ov = r, ov
-    return best if best is not None and best_ov >= 0.5 * (sp["end"] - sp["start"]) else None
+    if best is None:
+        return None
+    ok = (best_ov >= 0.8 * (sp["end"] - sp["start"])
+          and best_ov >= 0.8 * (best["end"] - best["start"]))
+    return best if ok else None
 
 
 def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) -> tuple[list, list]:
