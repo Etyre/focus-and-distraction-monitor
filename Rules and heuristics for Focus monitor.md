@@ -1,5 +1,7 @@
 [These rules should take priority over other documentation in this folder]
 
+Hand-coded rules may veto, never affirm; preserve the doc's logical form and scope exactly; audit existing code whenever a principle lands.
+
 ### Definitions: 
 
 * A **segment** is a period of time during which a particular window and tab is active on my computer.
@@ -24,6 +26,7 @@
     * If executing on a focused task block, I’ll usually be operating from a todo list, referring back to that list between tasks. Alternatively, I might be going back to my daily page for explicit metacognition about which task to do next.   
     * Computer activity can only count as Focused Task processing if there's a toggl entry running. 
       * It doesn't have to be the *same* continuous toggl entry. It could be that there's one there's one for processing email, followed by another for doing taxes, followed by another for returning amazon packages. Or maybe there's a single toggl entry labled "task processing". But if there's there's not a running toggl entry, it can't be focused task work.
+      * That does not imply the converse: just because a toggl entry is running does not make task segments focused. Judgement is required to evalate if a series of task segments are focused, unfocused, or distracted. 
       * Note that the absensece of a toggl entry disquailifes a span from being a *Focused* task span. But individual segments can and should still be tagged in the "task" category, regardless of whether there's a toggl running. Toggl is required as evidence of deliberate focus, not as evidence of task-nature.
   * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video, some software. etc.  
     * Creative work spans and focused task spans are mutually exclusive.  
