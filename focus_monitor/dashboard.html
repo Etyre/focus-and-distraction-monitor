@@ -474,7 +474,7 @@ async function loadSegments(){detailTarget='#segCard';
   if(id==null){try{id=(await api('/api/switch/latest')).id;}catch(e){}}
   if(id==null){$('#segCard').innerHTML='<div class="muted">No activity captured yet.</div>';return;}
   renderSwitch(id);}
-async function segNav(dir){if(!current)return;const r=await api(`/api/switch/${current.switch.id}/adjacent?dir=${dir}`);if(r.id!=null){pendingSwitch=r.id;detailTarget='#segCard';renderSwitch(r.id);}else{const c=$(detailTarget+' .navmsg');}}
+async function segNav(dir){if(!current)return;const r=await api(`/api/switch/${current.switch.id}/adjacent?dir=${dir}`);if(r.id!=null){pendingSwitch=r.id;renderSwitch(r.id);const want=dir==='prev'?1e9:0;if(SCRUB.shots.length)scrubTo(dir==='prev'?SCRUB.shots.length-1:0);}}
 function probBar(p){return `<div class="prob">${Object.entries(p).map(([k,v])=>`<i style="width:${(v*100).toFixed(1)}%;background:${labelColor[k]}"></i>`).join('')}</div>`;}
 function segLine(s){if(!s)return '<span class="muted">(none)</span>';const dur=((s.end||Date.now()/1000)-s.start)/60;
   return `<b>${esc(s.app)}</b> <span class="muted">${fmtT(s.start)} · ${dur.toFixed(1)} min</span><br>${esc(s.title)}${s.url?'<br><span class="muted small">'+esc(s.url.slice(0,140))+'</span>':''}`;}
@@ -490,11 +490,49 @@ function switchTL(f){
     const isCur=g.switch_id===f.switch.id;
     const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
-  // the switch itself: arrow + line at the exact boundary
-  s+=`<line x1="${x(ts)}" x2="${x(ts)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
-  s+=`<path d="M${x(ts)-6},4 L${x(ts)+6},4 L${x(ts)},15 Z" fill="var(--ink)"/>`;
+  // the switch marker doubles as a SCRUBBER: drag it (or use arrow keys) to step through
+  // every screenshot in this window; the panel below shows the capture at the marker.
+  s+=`<rect id="segHi" x="0" y="23" width="0" height="46" fill="none" stroke="var(--focus)" stroke-width="2.5" rx="2" style="display:none;pointer-events:none"/>`;
+  s+=`<line id="scrubLine" x1="${x(ts)}" x2="${x(ts)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
+  s+=`<path id="scrubHead" d="M${x(ts)-6},4 L${x(ts)+6},4 L${x(ts)},15 Z" fill="var(--ink)"/>`;
+  s+=`<rect id="scrubGrab" x="${x(ts)-10}" y="0" width="20" height="72" fill="transparent" style="cursor:grab"/>`;
   s+='</svg>';
   return `<div id="swTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div>`;
+}
+let SCRUB={shots:[],i:0,f:null};
+function scrubMap(){const ts=SCRUB.f.switch.ts;return{t0:ts-900,t1:ts+900,W:1000,L:14,R:14};}
+function scrubX(t){const m=scrubMap();return m.L+(t-m.t0)/(m.t1-m.t0)*(m.W-m.L-m.R);}
+function scrubTo(i){
+  if(!SCRUB.shots.length)return;
+  SCRUB.i=Math.max(0,Math.min(SCRUB.shots.length-1,i));
+  const s=SCRUB.shots[SCRUB.i];
+  const img=$('#scrubImg'),cap=$('#scrubCap');
+  if(img){img.src='/shot/'+s.path;}
+  const seg=(SCRUB.f.timeline||[]).find(g=>g.id===s.segment_id);
+  if(cap)cap.innerHTML=`<b>${SCRUB.i+1}/${SCRUB.shots.length}</b> · ${fmtT(s.ts)}${s.display?' · <b>external display</b>':''}${seg?'<br>'+esc(seg.app)+(seg.domain?' · '+esc(seg.domain):'')+(seg.content?' · <b>'+seg.content+'</b>':'')+(seg.title?'<br><span class="muted">'+esc(seg.title.slice(0,80))+'</span>':''):''}`;
+  const xv=scrubX(s.ts);
+  const ln=$('#scrubLine'),hd=$('#scrubHead'),gr=$('#scrubGrab'),hi=$('#segHi');
+  if(ln){ln.setAttribute('x1',xv);ln.setAttribute('x2',xv);}
+  if(hd)hd.setAttribute('d',`M${xv-6},4 L${xv+6},4 L${xv},15 Z`);
+  if(gr)gr.setAttribute('x',xv-10);
+  if(hi&&seg){const m=scrubMap();const x0=scrubX(Math.max(seg.clip_start,m.t0));const x1=scrubX(Math.min(seg.clip_end,m.t1));
+    hi.setAttribute('x',x0);hi.setAttribute('width',Math.max(2,x1-x0-1));hi.style.display='';}
+  else if(hi)hi.style.display='none';
+}
+function scrubBind(){
+  const svg=document.querySelector('#swTL svg'),gr=$('#scrubGrab');
+  if(!svg||!gr)return;
+  let dragging=false;
+  const move=e=>{if(!dragging)return;
+    const r=svg.getBoundingClientRect();const m=scrubMap();
+    const vx=(e.clientX-r.left)/r.width*m.W;
+    const t=m.t0+(vx-m.L)/(m.W-m.L-m.R)*(m.t1-m.t0);
+    let bi=0,bd=1e18;SCRUB.shots.forEach((s,i)=>{const d=Math.abs(s.ts-t);if(d<bd){bd=d;bi=i;}});
+    scrubTo(bi);e.preventDefault();};
+  gr.addEventListener('pointerdown',e=>{dragging=true;gr.setPointerCapture(e.pointerId);gr.style.cursor='grabbing';e.preventDefault();});
+  gr.addEventListener('pointermove',move);
+  gr.addEventListener('pointerup',e=>{dragging=false;gr.style.cursor='grab';});
+  gr.addEventListener('pointercancel',()=>{dragging=false;gr.style.cursor='grab';});
 }
 function switchTLBind(f){
   document.querySelectorAll('#swTL rect[data-ti]').forEach(r=>{const g=f.timeline[+r.dataset.ti];
@@ -513,6 +551,8 @@ async function segEdit(field,val){
 async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
 async function renderSwitch(id){
   const f=await api('/api/switch/'+id);current=f;
+  SCRUB={shots:f.timeline_shots||[],i:0,f:f};
+  {let bi=0,bd=1e18;SCRUB.shots.forEach((s,i)=>{const d=Math.abs(s.ts-f.switch.ts)+(s.ts<f.switch.ts?600:0);if(d<bd){bd=d;bi=i;}});SCRUB.i=bi;}
   const P=k=>({continuation:f.ensemble?.p_continuation,interruption:f.ensemble?.p_interruption,distraction:f.ensemble?.p_distraction,task_change:f.ensemble?.p_task_change});
   const ctxLine=f.ensemble?(f.ensemble.importance>=1?`<div style="margin:6px 0"><b style="color:var(--focus)">Leaving a ${Math.round(f.ensemble.focus_run_min)}-min focus span</b> <span class="muted small">— high priority</span></div>`:`<div class="muted small" style="margin:6px 0">Not in a focus span before this switch — low priority</div>`):'';
   const togglLine=`<div class="small" style="margin:4px 0">⏱ ${f.toggl?'Toggl: <b>'+esc(f.toggl.description||'(unnamed entry)')+'</b>'+(f.toggl.project?' · '+esc(f.toggl.project):''):'<span class="muted">no Toggl entry running at this moment</span>'}</div>`;
@@ -536,6 +576,7 @@ async function renderSwitch(id){
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
     ${switchTL(f)}
+    ${SCRUB.shots.length?`<div class="row" style="gap:12px;align-items:flex-start;margin:6px 0"><img id="scrubImg" style="max-width:52%;border-radius:6px;border:1px solid var(--grid)"><div class="small" id="scrubCap" style="flex:1"></div></div><div class="muted small" style="margin:0 0 8px">drag the ▾ marker or use ←/→ to step through every capture · ⌘←/⌘→ jump to the previous/next span</div>`:''}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
       <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img id="afterShot" src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}
@@ -552,6 +593,8 @@ async function renderSwitch(id){
       <div class="chatrow"><input id="chatinput" placeholder="e.g. Why did you label this passive? What instruction would have changed your judgment?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Ask</button></div>
     </div>`;
   switchTLBind(f);
+  scrubBind();
+  if(SCRUB.shots.length)scrubTo(SCRUB.i);
   renderChat(id);
 }
 async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});if(detailTarget==='#segCard')renderSwitch(id);else next();}
@@ -567,7 +610,12 @@ async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#
   try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
   catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderChat(id);}
-document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowLeft'){segNav('prev');e.preventDefault();}else if(h==='#segments'&&e.key==='ArrowRight'){segNav('next');e.preventDefault();}},{passive:false});
+document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if((h==='#segments'||h==='#review')&&current&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){
+    const dir=e.key==='ArrowRight'?1:-1;
+    if(e.metaKey||e.ctrlKey){const id=dir>0?current.next_span_switch:current.prev_span_switch;if(id!=null)renderSwitch(id);}
+    else if(SCRUB.shots.length){const ni=SCRUB.i+dir;if(ni<0)segNav('prev');else if(ni>=SCRUB.shots.length)segNav('next');else scrubTo(ni);}
+    else segNav(dir>0?'next':'prev');
+    e.preventDefault();}},{passive:false});
 
 // ---- accuracy
 async function loadAccuracy(){

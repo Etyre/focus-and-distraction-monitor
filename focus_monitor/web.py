@@ -287,8 +287,30 @@ def api_switch(switch_id: int):
                 "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
+        tl_ids = [s["id"] for s in full["timeline"]]
+        full["timeline_shots"] = []
+        if tl_ids:
+            qs2 = ",".join("?" * len(tl_ids))
+            full["timeline_shots"] = [dict(r) for r in c.execute(
+                f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs2}) ORDER BY ts",
+                tl_ids)]
+        if not full["timeline_shots"]:  # pre-shot-history segments
+            full["timeline_shots"] = [{"segment_id": s["id"], "ts": s["clip_start"],
+                                       "path": s["first_screenshot"], "display": 0}
+                                      for s in full["timeline"] if s.get("first_screenshot")]
         se = stats.spans_and_events(ctx_segs, conn=c)
         spans = se["focus_spans"] + se["disqualified"]
+        spans_sorted = sorted(spans, key=lambda s2: s2["start"])
+        def _first_switch(sp2):
+            for sg in sp2["segments"]:
+                r2 = c.execute("SELECT id FROM switches WHERE to_segment=? LIMIT 1", (sg["id"],)).fetchone()
+                if r2:
+                    return r2["id"]
+            return None
+        nxt = next((sp2 for sp2 in spans_sorted if sp2["start"] > ts + 1), None)
+        prv = next((sp2 for sp2 in reversed(spans_sorted) if sp2["start"] < ts - 1), None)
+        full["next_span_switch"] = _first_switch(nxt) if nxt else None
+        full["prev_span_switch"] = _first_switch(prv) if prv else None
         cand = next((sp for sp in spans if sp["start"] - 1 <= ts < sp["end"] + 1), None)
         rel = "inside"
         if cand is None:  # a span retroactively shortened ends just before the switch that left it
