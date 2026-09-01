@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segme
     interruption_kind TEXT,       -- when interruption: self_distraction | focus_start | detour
     uncertain INTEGER NOT NULL DEFAULT 0,  -- the evaluator was genuinely unsure -> flag for review
     rationale TEXT,
+    probs TEXT,                   -- resolved ensemble distributions {content:{},switch:{},kind:{}}
     created REAL NOT NULL
 );
 
@@ -167,7 +168,9 @@ CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finish
     end REAL NOT NULL,
     summary TEXT NOT NULL,
     cost_usd REAL NOT NULL DEFAULT 0,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    coherent INTEGER NOT NULL DEFAULT 1,      -- does the description fit "one object of attention"?
+    issue TEXT                                -- when not: what contradicts the span definition
 );
 CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
 """
@@ -199,6 +202,12 @@ def connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
     if vcols and "run_id" not in vcols:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN run_id INTEGER REFERENCES eval_runs(id)")
+    if vcols and "probs" not in vcols:
+        conn.execute("ALTER TABLE seg_evals ADD COLUMN probs TEXT")
+    scols = {r[1] for r in conn.execute("PRAGMA table_info(span_summaries)")}
+    if scols and "coherent" not in scols:
+        conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
+        conn.execute("ALTER TABLE span_summaries ADD COLUMN issue TEXT")
     rcols = {r[1] for r in conn.execute("PRAGMA table_info(eval_runs)")}
     if rcols and "system" not in rcols:
         # The full evaluation transcript, so a review chat can talk to "the one who decided":

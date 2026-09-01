@@ -8,8 +8,16 @@ import datetime as dt
 import logging
 import time
 
+from pydantic import BaseModel, Field
+
 from . import db
 from .config import PRICE_INPUT, PRICE_OUTPUT, Config, load_config
+
+
+class SpanSummaryJudgement(BaseModel):
+    summary: str = Field(description="1-2 factual sentences: what the person was actually doing.")
+    coherent: bool = Field(description="THE CHECK: a focus span means ONE project/task/intention held throughout, with contained interruptions under 5 minutes each. Is the stretch you just described plausibly one object of attention? False whenever your own description contradicts that - e.g. the first stretch is a different activity than the rest, or it is a sequence of unrelated things.")
+    issue: str | None = Field(default=None, description="When coherent is false: one sentence naming the contradiction and, if apparent, where the real boundary lies.")
 
 log = logging.getLogger("summaries")
 
@@ -79,7 +87,12 @@ PROMPT = """Below is the activity log of one hypothesized focus span ({t0}-{t1},
 Write a 1-2 sentence factual summary of what the person was actually doing, so they can later
 audit whether this really was focused work. Name the concrete sites, apps, or documents; be
 honest about drift, channel-surfing, or mixed activity; note whether a Toggl entry was running.
-No preamble - just the summary.
+
+Then CHECK your own description against the definition: a focus span holds ONE object of
+attention throughout (window-switching within one piece of work is fine; interruptions under
+5 minutes are contained). If what you just described is not plausibly one object of attention,
+say so (coherent=false) and name the contradiction - this triggers review of the span's
+boundaries.
 
 {log}"""
 
@@ -92,10 +105,14 @@ def generate(conn, cfg: Config, sp) -> bool:
     t0s = dt.datetime.fromtimestamp(sp["start"]).strftime("%H:%M")
     t1s = dt.datetime.fromtimestamp(sp["end"]).strftime("%H:%M")
     prompt = PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60, log=_span_log(sp))
-    resp = client.messages.create(
-        model=cfg.claude_model, max_tokens=300, output_config={"effort": "low"},
-        messages=[{"role": "user", "content": prompt}])
-    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    resp = client.beta.messages.parse(
+        model=cfg.claude_model, max_tokens=500, output_config={"effort": "low"},
+        messages=[{"role": "user", "content": prompt}],
+        output_format=SpanSummaryJudgement)
+    if resp.parsed_output is None:
+        return False
+    j: SpanSummaryJudgement = resp.parsed_output
+    text = j.summary.strip()
     if not text:
         return False
     cost = (resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
@@ -107,9 +124,12 @@ def generate(conn, cfg: Config, sp) -> bool:
             ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
             if ov >= 0.5 * (r["end"] - r["start"]) or ov >= 0.5 * (sp["end"] - sp["start"]):
                 conn.execute("DELETE FROM span_summaries WHERE id=?", (r["id"],))
-        conn.execute("INSERT INTO span_summaries(start, end, summary, cost_usd, created) VALUES (?,?,?,?,?)",
-                     (sp["start"], sp["end"], text, cost, time.time()))
-    log.info("summarized span %s-%s ($%.4f)", t0s, t1s, cost)
+        conn.execute("INSERT INTO span_summaries(start, end, summary, cost_usd, created, coherent, issue)"
+                     " VALUES (?,?,?,?,?,?,?)",
+                     (sp["start"], sp["end"], text, cost, time.time(), int(j.coherent),
+                      (j.issue or None) if not j.coherent else None))
+    log.info("summarized span %s-%s ($%.4f)%s", t0s, t1s, cost,
+             "" if j.coherent else " - COHERENCE ISSUE: " + (j.issue or ""))
     return True
 
 

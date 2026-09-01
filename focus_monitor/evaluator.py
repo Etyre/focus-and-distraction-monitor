@@ -194,9 +194,10 @@ class ChunkEvaluator:
             sw = max(comb["switch"], key=comb["switch"].get)
             k = max(comb["kind"], key=comb["kind"].get) if sw == "interruption" else None
             conn.execute(
-                "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (s["id"], c, sw, k, 0, "(deferred to local models - earned track record)", now))
+                "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (s["id"], c, sw, k, 0, "(deferred to local models - earned track record)",
+                 json.dumps(comb), now))
         target = [s for s in target if s["id"] not in deferred]
         if not target:
             log.info("chunk %s-%s: all %d segments deferred to local models ($0)",
@@ -288,9 +289,9 @@ class ChunkEvaluator:
                     unc = int(j.uncertain or max(comb["content"].values()) < 0.5
                               or max(comb["switch"].values()) < 0.5)
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created, run_id)"
-                        " VALUES (?,?,?,?,?,?,?,?)",
-                        (j.segment_id, rc, rsw, rk, unc, j.note, now, run_id))
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id)"
+                        " VALUES (?,?,?,?,?,?,?,?,?)",
+                        (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.

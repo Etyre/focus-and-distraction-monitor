@@ -48,6 +48,9 @@ def api_day(day: str | None = None):
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
         return row["summary"] if row else None
+    def _coherence(r):
+        row = _summ.lookup(c, r["start"], r["end"])
+        return row["issue"] if row is not None and not row["coherent"] else None
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
             "to_review": len(selected), "reviewed": reviewed,
             "short_breaks": stats.short_breaks(c, t0, t1),
@@ -58,6 +61,7 @@ def api_day(day: str | None = None):
                              "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
                              "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
+                             "coherence_issue": _coherence(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
                              "apps": _apps_by_time(r["segments"]),
                              "toggl": _toggl_with_coverage(c, r["start"], r["end"])}
@@ -118,6 +122,7 @@ def _apps_by_time(segments) -> list[str]:
 def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     from . import summaries as _summ
     row = _summ.lookup(c, sp["start"], sp["end"])
+    coherence_issue = (row["issue"] if row is not None and not row["coherent"] else None)
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
     keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
             "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
@@ -134,6 +139,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
             "summary": row["summary"] if row else None,
+            "coherence_issue": coherence_issue,
             "apps": _apps_by_time(sp["segments"]),
             "toggl": _toggl_with_coverage(c, sp["start"], sp["end"]),
             "toggl_entries": [{"start": max(e["start"], w0), "end": min(e["stop"] or time.time(), w1),

@@ -359,6 +359,7 @@ function renderSpanCard(sp,oneOff){
     ${spanTL(sp)}
     <div class="muted small" style="margin:2px 0 6px">hover a block for its capture · ▯ green tick = focus start · ▾ = interruption/distraction switch · click a block to open it</div>
     ${sp.summary?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">📝 ${esc(sp.summary)}</div>`:'<div class="muted small" style="margin:6px 0">summary not generated yet</div>'}
+    ${sp.coherence_issue?`<div class="small" style="margin:6px 0;padding:8px;border:1.5px solid var(--distracted);border-radius:6px;color:var(--distracted)">⚠ coherence check: ${esc(sp.coherence_issue)}</div>`:''}
     <div class="small" style="margin:4px 0">⏱ Toggl: ${sp.toggl.length?esc(sp.toggl.join(' · ')):'<span class="muted">no entries during this span</span>'}</div>
     <div class="muted small" style="margin:4px 0">Apps: ${esc(sp.apps.join(', '))}</div>
     <div style="margin-top:12px"><b>Was this a focus span?</b>

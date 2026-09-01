@@ -61,7 +61,14 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             return None
         g = lambda k: (u[k] if u is not None and u[k] else (e[k] if e is not None else None))
         unc = 0 if u is not None else int((e["uncertain"] if e is not None else 0) or 0)
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc
+        import json as _json
+        pr = None
+        if e is not None and e["probs"]:
+            try:
+                pr = _json.loads(e["probs"])
+            except ValueError:
+                pr = None
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -110,7 +117,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc = v
+            content, vsw, vkind, edited, v_unc, v_probs = v
             vsw = vsw or "continuation"
             if vsw == "continuation":
                 st = prev_state if prev_state != "idle" else "focus"
@@ -125,6 +132,11 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                      {"self_distraction": "distraction", "focus_start": "task_change",
                       "detour": "interruption"}.get(vkind or "detour", "interruption"))
             s["content"] = content
+            if edited:
+                s["eval_split_p"] = 1.0 if (vsw == "interruption" and vkind == "focus_start") else 0.0
+            elif v_probs:
+                s["eval_split_p"] = (v_probs.get("switch", {}).get("interruption", 0.0)
+                                     * v_probs.get("kind", {}).get("focus_start", 0.0))
             if r is not None:
                 s["activity"] = r["e_activity"]
             s.update(state=st, label=label, switch_id=(r["group_id"] or r["id"]) if r is not None else None,
@@ -391,6 +403,12 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         new_tg = first.get("tg_near_a") or first.get("toggl_id")
         if last_tg and new_tg and last_tg == new_tg:
             return True  # one declared Toggl intent spans the switch (Rules doc: Toggl glues tasks)
+        if first.get("eval_split_p") is not None:
+            # Evaluator-era segments carry the resolved ensemble confidence that this switch
+            # is a deliberate new-task start: p(interruption) * p(focus_start), two heads whose
+            # product understates joint confidence - so split at geometric mean >= 0.5, i.e.
+            # product >= 0.25. A user edit is exactly 1.0 / 0.0.
+            return first["eval_split_p"] < 0.25
         if first.get("source") == "review":
             return False  # a human-confirmed task change is authoritative
         if last_tg and new_tg and "task_execution" in (last.get("activity"), first.get("activity")):
