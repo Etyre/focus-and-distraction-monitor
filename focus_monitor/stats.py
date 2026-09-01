@@ -500,6 +500,18 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         # Fully-absorbed = zero interruptions AND a single object of attention - a focused-task
         # span is inherently task-switching, so it never counts (Rules doc).
         sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+        # The doc defines fully-absorbed as "a LENGTH of focus span with 0 interruption
+        # events" - a stretch, not only a whole span. Longest unbroken focus stretch:
+        best = cur = 0.0
+        for r_ in sp["runs"]:
+            if r_.get("gap_before"):
+                cur = 0.0
+            if r_["cat"] == "focus":
+                cur += r_["duration"]
+                best = max(best, cur)
+            elif r_["cat"] == "detour":
+                cur = 0.0
+        sp["absorbed_max_min"] = best / 60
         # Reading flowing into creative work is one span (Rules doc) but the timeline colors
         # each part by its own activity when both sides are substantial.
         fs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
@@ -570,7 +582,8 @@ def daily_metrics(conn, day: dt.date) -> dict:
         "short_break_min": sum(b["end"] - b["start"] for b in breaks) / 60,
         "day": day.isoformat(),
         "longest_focus_min": max((s["duration"] for s in focus), default=0) / 60,
-        "longest_absorbed_min": max((s["duration"] for s in focus if s.get("fully_absorbed")), default=0) / 60,
+        "longest_absorbed_min": max((s.get("absorbed_max_min", 0.0) for s in focus
+                                     if s.get("subtype") != "focused_task"), default=0.0),
         "fully_absorbed_spans": sum(1 for s in focus if s.get("fully_absorbed")),
         "total_focus_min": sum(s["focus_min"] for s in focus),
         "detours_in_spans": sum(len(s["detours"]) for s in focus),
