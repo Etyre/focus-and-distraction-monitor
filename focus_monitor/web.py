@@ -283,7 +283,7 @@ def api_switch(switch_id: int):
     full["timeline"] = []
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
-        keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+        keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
                 "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
