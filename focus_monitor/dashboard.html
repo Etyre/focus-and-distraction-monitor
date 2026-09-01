@@ -39,6 +39,7 @@ svg text{fill:var(--muted);font-size:11px}
 .tt{position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--axis);border-radius:6px;padding:8px 10px;font-size:12px;max-width:420px;box-shadow:0 4px 14px rgba(0,0,0,.15);display:none;z-index:10}
 table{border-collapse:collapse;width:100%} td,th{padding:6px 8px;border-bottom:1px solid var(--grid);text-align:left;vertical-align:top} th{color:var(--muted);font-weight:500;font-size:12px}
 .shots{display:grid;grid-template-columns:1fr 1fr;gap:10px} .shots img{width:100%;border:1px solid var(--grid);border-radius:6px}
+.shots img.thumb{width:auto;height:42px;cursor:pointer}
 .shots .cap{font-size:12px;color:var(--muted);margin-bottom:4px}
 .prob{display:flex;gap:4px;height:8px;border-radius:4px;overflow:hidden;background:var(--grid);margin:4px 0}
 .prob i{display:block;height:100%}
@@ -510,7 +511,7 @@ function scrubTo(i){
   if(!SCRUB.shots.length)return;
   SCRUB.i=Math.max(0,Math.min(SCRUB.shots.length-1,i));
   const s=SCRUB.shots[SCRUB.i];
-  const img=$('#scrubImg'),cap=$('#scrubCap');
+  const img=$('#afterShot'),cap=$('#scrubCap');
   if(img){img.src='/shot/'+s.path;}
   const seg=(SCRUB.f.timeline||[]).find(g=>g.id===s.segment_id);
   if(cap)cap.innerHTML=`<b>${SCRUB.i+1}/${SCRUB.shots.length}</b> · ${fmtT(s.ts)}${s.display?' · <b>external display</b>':''}${seg?'<br>'+esc(seg.app)+(seg.domain?' · '+esc(seg.domain):'')+(seg.content?' · <b>'+seg.content+'</b>':'')+(seg.title?'<br><span class="muted">'+esc(seg.title.slice(0,80))+'</span>':''):''}`;
@@ -580,11 +581,12 @@ async function renderSwitch(id){
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
     ${switchTL(f)}
-    ${SCRUB.shots.length?`<div class="row" style="gap:12px;align-items:flex-start;margin:6px 0"><img id="scrubImg" style="max-width:52%;border-radius:6px;border:1px solid var(--grid)"><div class="small" id="scrubCap" style="flex:1"></div></div><div class="muted small" style="margin:0 0 8px">drag the ▾ marker or use ←/→ to step through every capture · ⌘←/⌘→ jump to the previous/next span</div>`:''}
+    ${SCRUB.shots.length?`<div class="muted small" style="margin:2px 0 6px">drag the ▾ marker or use ←/→ to scrub every capture in this window (shown in the After slot) · ⌘←/⌘→ jump to the previous/next span</div>`:''}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
-      <div><div class="cap">After – ${segLine(f.to)}</div>${f.to.first_screenshot?`<img id="afterShot" src="/shot/${f.to.first_screenshot}">`:'<div class="muted">no screenshot</div>'}
-      ${(f.to_shots&&f.to_shots.length>1)?`<div class="row" style="gap:4px;flex-wrap:wrap;margin-top:4px">${f.to_shots.map(s=>`<img src="/shot/${s.path}" style="height:42px;border-radius:3px;cursor:pointer;border:1px solid var(--grid)" title="${fmtT(s.ts)}${s.display?' · external display':''}" onclick="document.getElementById('afterShot').src='/shot/${s.path}'">`).join('')}</div><div class="muted small">all captures of this segment — click to view${f.to_shots.some(s=>s.display)?' · includes external display':''}</div>`:''}</div>
+      <div><div class="cap">After – ${segLine(f.to)}</div>${(f.to.first_screenshot||SCRUB.shots.length)?`<img id="afterShot" src="/shot/${f.to.first_screenshot||SCRUB.shots[0].path}">`:'<div class="muted">no screenshot</div>'}
+      <div class="small" id="scrubCap" style="margin-top:2px"></div>
+      ${(f.to_shots&&f.to_shots.length>1)?`<div class="row" style="gap:4px;flex-wrap:wrap;margin-top:4px">${f.to_shots.map(s=>`<img class="thumb" src="/shot/${s.path}" title="${fmtT(s.ts)}${s.display?' · external display':''}" onclick="document.getElementById('afterShot').src='/shot/${s.path}'">`).join('')}</div><div class="muted small">all captures of this segment — click to view${f.to_shots.some(s=>s.display)?' · includes external display':''}</div>`:''}</div>
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
     ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid var(--taskchange);border-radius:6px"><b>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}</span><div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${f.question.options.map((o,i)=>`<button style="text-align:left" onclick="answerCardQuestion(${f.question.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}</div></div>`:''}
