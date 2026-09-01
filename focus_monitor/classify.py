@@ -239,6 +239,11 @@ class ClassifierService:
             summaries.ensure_summaries(self.conn, self.cfg)
         except Exception:
             log.exception("span summaries failed")
+        try:
+            from . import questions
+            questions.generate_pending(self.conn, self.cfg)
+        except Exception:
+            log.exception("question generation failed")
         return len(ids)
 
     def run(self, interval: float = 15.0):

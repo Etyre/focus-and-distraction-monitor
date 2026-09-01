@@ -330,6 +330,67 @@ class SpanChatReq(BaseModel):
     messages: list[dict]
 
 
+@app.get("/api/questions/queue")
+def api_questions_queue(limit: int = 30):
+    c = conn()
+    import json as _json
+    out = []
+    for r in c.execute("""SELECT q.*, g.start AS seg_start, g.app, g.title, g.domain,
+                                 (SELECT id FROM switches WHERE to_segment = q.segment_id LIMIT 1) AS switch_id
+                          FROM review_questions q JOIN segments g ON g.id = q.segment_id
+                          WHERE q.status = 'open' ORDER BY q.created DESC LIMIT ?""", (limit,)):
+        d = dict(r)
+        d["options"] = _json.loads(d["options"])
+        out.append(d)
+    return out
+
+
+class QAnswer(BaseModel):
+    option_index: int
+
+
+@app.post("/api/questions/{qid}/answer")
+def api_question_answer(qid: int, a: QAnswer):
+    import json as _json
+    c = conn()
+    q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
+    if not q:
+        raise HTTPException(404)
+    opts = _json.loads(q["options"])
+    if not (0 <= a.option_index < len(opts)):
+        raise HTTPException(400, "bad option")
+    o = opts[a.option_index]
+    with db.tx(c):
+        if o.get("switch_label") or o.get("content"):
+            prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
+            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, note, created)"
+                      " VALUES (?,?,?,?,?,?)",
+                      (o["segment_id"],
+                       o.get("content") or (prev["content"] if prev else None),
+                       o.get("switch_label") or (prev["switch_label"] if prev else None),
+                       o.get("interruption_kind") if o.get("switch_label") == "interruption" else (None if o.get("switch_label") else (prev["interruption_kind"] if prev else None)),
+                       f"(answered review question: {o['label']})", time.time()))
+            old = _NEW2OLD.get((o.get("switch_label"),
+                                o.get("interruption_kind") if o.get("switch_label") == "interruption" else None))
+            sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (o["segment_id"],)).fetchone()
+            if old and sw:
+                c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
+                          (sw["id"], old, o["label"], time.time()))
+                c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+        c.execute("UPDATE review_questions SET status='answered', answer=?, answered_at=? WHERE id=?",
+                  (o["label"], time.time(), qid))
+    return {"ok": True}
+
+
+@app.post("/api/questions/{qid}/dismiss")
+def api_question_dismiss(qid: int):
+    c = conn()
+    with db.tx(c):
+        c.execute("UPDATE review_questions SET status='dismissed', answered_at=? WHERE id=?",
+                  (time.time(), qid))
+    return {"ok": True}
+
+
 class EvalChatReq(BaseModel):
     messages: list[dict]
 

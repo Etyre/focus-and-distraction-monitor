@@ -162,6 +162,21 @@ CREATE TABLE IF NOT EXISTS span_reviews (     -- the user's verdict on each hypo
 );
 CREATE INDEX IF NOT EXISTS span_reviews_start ON span_reviews(start);
 
+CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review questions (primary review
+    id INTEGER PRIMARY KEY,                   --  stream): contextualized, options map to edits
+    segment_id INTEGER NOT NULL REFERENCES segments(id),  -- the segment whose judgment is in doubt
+    source TEXT NOT NULL,         -- self_uncertain | disagreement | coherence | audit
+    context TEXT NOT NULL,        -- 1-2 sentence narrative setting up the question
+    question TEXT NOT NULL,
+    options TEXT NOT NULL,        -- JSON [{label, segment_id, switch_label?, interruption_kind?, content?}]
+    status TEXT NOT NULL DEFAULT 'open',  -- open | answered | dismissed
+    answer TEXT,                  -- the chosen option's label
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL,
+    answered_at REAL
+);
+CREATE INDEX IF NOT EXISTS review_questions_status ON review_questions(status);
+
 CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finished (hypothesized) span
     id INTEGER PRIMARY KEY,
     start REAL NOT NULL,
@@ -299,4 +314,6 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     erow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM eval_runs WHERE created >= ?",
                         (start,)).fetchone()
-    return float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0])
+    qrow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM review_questions WHERE created >= ?",
+                        (start,)).fetchone()
+    return float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])

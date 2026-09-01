@@ -299,6 +299,8 @@ async function loadQueue(){
   if(pendingSpan!=null){const ts=pendingSpan;pendingSpan=null;
     try{const sp=await api('/api/span/at?ts='+ts);$('#queueCount').textContent='viewing selected span';renderSpanCard(sp,true);return;}
     catch(e){/* no span there any more — fall through to the queue */}}
+  qQueue=await api('/api/questions/queue');qqi=0;
+  if(qQueue.length){renderQuestion();return;}
   spanQueue=await api('/api/span/queue');sqi=0;
   if(spanQueue.length){renderSpanReview();return;}
   queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;
@@ -340,6 +342,30 @@ function spanTLBind(sp){
     r.addEventListener('mousemove',e=>showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'?'var(--focus)':'var(--interrupted)'}">${g.state}</span>${g.label?' · <span class="muted small">switch: '+g.label+'</span>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':''}`));
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
+}
+let qQueue=[],qqi=0;
+const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit'};
+function renderQuestion(){
+  const q=qQueue[qqi];if(!q)return loadQueue();
+  current=null; // keyboard 1-4 must not hit the switch-review path while a question is up
+  $('#queueCount').textContent=`${qQueue.length-qqi} question(s) — then ${spanQueue.length||'the'} span confirmations`;
+  $('#reviewCard').innerHTML=`
+    <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="qqi++;renderQuestion()">skip (s)</button></div></div>
+    <div class="small muted" style="margin:6px 0">${esc(q.app)}${q.domain?' · '+esc(q.domain):''}${q.title?' · '+esc(q.title.slice(0,70)):''} ${q.switch_id?`· <a href="#" onclick="openSegment(${q.switch_id});return false">open the capture</a>`:''}</div>
+    <div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">${esc(q.context)}</div>
+    <div style="margin:10px 0"><b>${esc(q.question)}</b></div>
+    <div class="row" style="flex-wrap:wrap;gap:6px;margin:8px 0">
+      ${q.options.map((o,i)=>`<button style="text-align:left" onclick="answerQuestion(${q.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}
+      <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>
+    </div>`;
+}
+async function answerQuestion(id,idx){
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx})});
+  qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
+}
+async function dismissQuestion(id){
+  await api(`/api/questions/${id}/dismiss`,{method:'POST'});
+  qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
 }
 let currentSpan=null,spanOneOff=false;
 function renderSpanReview(){
