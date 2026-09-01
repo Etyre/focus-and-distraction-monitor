@@ -212,12 +212,20 @@ class ChunkEvaluator:
                          (t0, t1, len(deferred), 0.0, now))
             return len(deferred)
         target_ids = {s["id"] for s in target}
+        all_ids = [s["id"] for s in segs if s["duration"] > 0]
+        rats = {}
+        if all_ids:
+            qsr = ",".join("?" * len(all_ids))
+            rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
+                f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", all_ids)
+                if r2["rationale"]}
         lines = []
         for s in segs:
             if s["duration"] <= 0:
                 continue
             mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else "(context) "
-            lines.append(mark + summaries.seg_line(s))
+            lines.append(mark + summaries.seg_line(s)
+                         + (f"  // prior judgment: {rats[s['id']][:80]}" if s["id"] in rats else ""))
         tg = toggl.entries_between(conn, t0 - CTX_S, t1 + CTX_S)
         tgtxt = "\n".join(f"  {dt.datetime.fromtimestamp(e['start']).strftime('%H:%M')}"
                           f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
@@ -452,12 +460,33 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
         conn.execute("INSERT INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
                      (key, 0, 0.0, time.time()))
         return 0
-    lines = [f"id={s['id']} [content={s.get('content') or '?'}] " + summaries.seg_line(s) for s in segs]
+    ids = [s["id"] for s in segs]
+    rats = {}
+    if ids:
+        qsr = ",".join("?" * len(ids))
+        rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
+            f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", ids)
+            if r2["rationale"]}
+    lines = [f"id={s['id']} [content={s.get('content') or '?'}] " + summaries.seg_line(s)
+             + (f"  // {rats[s['id']][:80]}" if s["id"] in rats else "") for s in segs]
+    content: list = []
+    if ids:
+        from .classifiers.claude_vision import _b64
+        qsr = ",".join("?" * len(ids))
+        shots = [dict(r2) for r2 in conn.execute(
+            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qsr}) ORDER BY ts", ids)]
+        step = max(1, len(shots) // 8)
+        for sh in shots[::step][:8]:
+            b = _b64(sh["path"])
+            if b:
+                content.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')} (segment id={sh['segment_id']}){' - EXTERNAL display' if sh.get('display') else ''}:"})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+    content.append({"type": "text", "text": AUDIT_PROMPT.format(log="\n".join(lines))})
     ev = _get()
     resp = ev.client.beta.messages.parse(
         model=cfg.claude_model, max_tokens=4000,
         system=ev._system_blocks(conn),
-        messages=[{"role": "user", "content": AUDIT_PROMPT.format(log="\n".join(lines))}],
+        messages=[{"role": "user", "content": content}],
         output_format=DayAudit,
         output_config={"effort": "low"},
         betas=["server-side-fallback-2026-07-01"],

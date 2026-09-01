@@ -109,7 +109,7 @@ and why - and note honestly when it's genuinely ambiguous. Their calibration fee
 has been far too optimistic about what counts as focused work; do not repeat that mistake. Don't lecture; \
 be a sharp, brief thinking partner.
 
-Span subtypes: creative_work, focused_task, reading, planning, other_focused.
+Span subtypes: creative_work, focused_task, reading, planning, other_focused, meeting.
 
 Their own rules and definitions (authoritative):
 {rules}
@@ -142,13 +142,27 @@ class SpanChat:
         if sp is None:
             raise ValueError("no span at that time")
         blocks: list[dict] = []
-        shots = [s for r in sp["runs"] for s in r["segments"] if s.get("first_screenshot")]
-        for i in sorted({0, len(shots) // 3, 2 * len(shots) // 3, len(shots) - 1} if shots else set()):
-            s = shots[i]
-            b = _b64(s["first_screenshot"])
+        sp_ids = [s["id"] for r in sp["runs"] for s in r["segments"]]
+        shot_rows = []
+        if sp_ids:
+            qs = ",".join("?" * len(sp_ids))
+            shot_rows = [dict(r2) for r2 in conn.execute(
+                f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", sp_ids)]
+        if not shot_rows:
+            shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
+                         for r in sp["runs"] for s in r["segments"] if s.get("first_screenshot")]
+        step = max(1, len(shot_rows) // 4)
+        for sh in shot_rows[::step][:4]:
+            b = _b64(sh["path"])
             if b:
-                blocks.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(s['clip_start']).strftime('%H:%M')} ({s['app']} - {(s.get('title') or '')[:60]}):"})
+                blocks.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')}{' - EXTERNAL display' if sh.get('display') else ''}:"})
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        rats = {}
+        if sp_ids:
+            qs = ",".join("?" * len(sp_ids))
+            rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
+                f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", sp_ids)
+                if r2["rationale"]}
         call = sp.get("disq_reason") and f"NOT focused work ({sp['disq_reason']})" or sp.get("subtype")
         row = summaries.lookup(conn, sp["start"], sp["end"])
 
@@ -175,7 +189,8 @@ class SpanChat:
             before = before[-120:]
         lines += [summaries.seg_line(s2) for s2 in before]
         lines.append(">>> START OF THE SPAN UNDER REVIEW <<<")
-        lines += [summaries.seg_line(s2) for s2 in inside]
+        lines += [summaries.seg_line(s2) + (f"  // {rats[s2['id']][:80]}" if s2["id"] in rats else "")
+                  for s2 in inside]
         lines.append(">>> END OF THE SPAN UNDER REVIEW <<<")
         lines += [summaries.seg_line(s2) for s2 in after[:120]]
         if len(after) > 120:

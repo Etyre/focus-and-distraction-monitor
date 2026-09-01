@@ -137,8 +137,15 @@ def generate(conn, cfg: Config, sp) -> bool:
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
     content.append({"type": "text", "text": PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60,
                                                           log="\n".join(lines))})
+    from .classifiers.claude_vision import _rules_doc
+    system = [{"type": "text", "text": ("You summarize hypothesized focus spans for a personal "
+              "attention monitor, and check them against the person's own rules.\n\n"
+              "Their rules and definitions (authoritative):\n" + _rules_doc()
+              + "\n\nAbout this person (their own words):\n" + (cfg.about_me.strip() or "(none)")),
+              "cache_control": {"type": "ephemeral"}}]
     resp = client.beta.messages.parse(
         model=cfg.claude_model, max_tokens=500, output_config={"effort": "low"},
+        system=system,
         messages=[{"role": "user", "content": content}],
         output_format=SpanSummaryJudgement)
     if resp.parsed_output is None:

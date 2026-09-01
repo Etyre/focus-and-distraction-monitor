@@ -200,8 +200,17 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
     trigs = _triggers(conn)[:MAX_TRIGGERS_PER_CALL]
     if not trigs:
         return 0
+    from .classifiers.claude_vision import _b64
+    content_blocks: list = []
     parts = []
     for i, t in enumerate(trigs):
+        sh = conn.execute("SELECT path, display FROM segment_shots WHERE segment_id=? ORDER BY ts LIMIT 1",
+                          (t["segment_id"],)).fetchone()
+        if sh:
+            b = _b64(sh["path"])
+            if b:
+                content_blocks.append({"type": "text", "text": f"Screenshot of DOUBT {i + 1}'s segment (id={t['segment_id']}){' - EXTERNAL display' if sh['display'] else ''}:"})
+                content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         seg_ctx = stats.labelled_segments(conn, t["ts"] - 1200, t["ts"] + 1200)
         ctx_ids = [s["id"] for s in seg_ctx]
         rats = {}
@@ -220,13 +229,13 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                f"kind={ev['interruption_kind']} - {ev['rationale']}") if ev else "(no judgment)"
         parts.append(f"DOUBT {i + 1} - segment id={t['segment_id']} (source: {t['source']}; {t['reason']})\n"
                      f"{cur}\nSurrounding activity (>>> marks the segment in doubt):\n" + "\n".join(lines))
-    prompt = ("\n\n".join(parts)
-              + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id).")
+    content_blocks.append({"type": "text", "text": "\n\n".join(parts)
+              + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id)."})
     system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
     resp = _client().beta.messages.parse(
         model=cfg.claude_model, max_tokens=4000,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": content_blocks}],
         output_format=QuestionBatch,
         output_config={"effort": "low"},
         betas=["server-side-fallback-2026-07-01"],
