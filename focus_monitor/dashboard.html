@@ -344,7 +344,7 @@ function spanTLBind(sp){
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
 }
 let qQueue=[],qqi=0;
-const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit'};
+const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';
   const t0=q.seg_start-900,t1=q.seg_end+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
@@ -402,6 +402,10 @@ async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,i
   try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k]})});CHAT[k].push({role:'assistant',text:r.reply});}
   catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderQChat();}
+async function answerCardQuestion(id,idx){
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx})});
+  if(current)renderSwitch(current.switch.id);
+}
 async function answerQuestion(id,idx){
   const note=($('#qNote')&&$('#qNote').value.trim())||null;
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
@@ -583,6 +587,7 @@ async function renderSwitch(id){
       ${(f.to_shots&&f.to_shots.length>1)?`<div class="row" style="gap:4px;flex-wrap:wrap;margin-top:4px">${f.to_shots.map(s=>`<img src="/shot/${s.path}" style="height:42px;border-radius:3px;cursor:pointer;border:1px solid var(--grid)" title="${fmtT(s.ts)}${s.display?' · external display':''}" onclick="document.getElementById('afterShot').src='/shot/${s.path}'">`).join('')}</div><div class="muted small">all captures of this segment — click to view${f.to_shots.some(s=>s.display)?' · includes external display':''}</div>`:''}</div>
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
+    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid var(--taskchange);border-radius:6px"><b>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}</span><div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${f.question.options.map((o,i)=>`<button style="text-align:left" onclick="answerCardQuestion(${f.question.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}</div></div>`:''}
     ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>

@@ -268,6 +268,12 @@ def api_switch(switch_id: int):
     full["after"] = [dict(r) for r in db.segments_after(c, full["to"]["start"], 4)]
     ts = full["switch"]["ts"]
     to_id = full["to"]["id"]
+    import json as _json
+    qrow = c.execute("SELECT * FROM review_questions WHERE segment_id=? AND status='open' LIMIT 1", (to_id,)).fetchone()
+    full["question"] = None
+    if qrow:
+        full["question"] = dict(qrow)
+        full["question"]["options"] = _json.loads(full["question"]["options"])
     full["to_shots"] = [dict(r) for r in c.execute(
         "SELECT ts, path, display FROM segment_shots WHERE segment_id=? ORDER BY ts", (to_id,))]
     full["to_eval"] = (lambda r: dict(r) if r else None)(

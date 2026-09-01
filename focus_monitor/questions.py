@@ -159,7 +159,27 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
                     "reason": (f"span summary contradicts the one-object definition: {r['issue']} "
                                f"(likely split point: segment id={anchor['id']} at {hint})"),
                     "ts": r["start"]})
-    out.sort(key=lambda x: ({"coherence": 0, "audit": 1}.get(x["source"], 2), -x["ts"]))
+    # Every switch the legacy ensemble flags for review (stakes x uncertainty) gets an
+    # LLM-framed question too - never a raw label prompt.
+    from . import stats as _stats
+    from .config import day_bounds, logical_date
+    today = logical_date()
+    for i in range(3):
+        d0, d1 = day_bounds(today - dt.timedelta(days=i))
+        for sid in _stats.select_for_review(conn, d0, d1, 8):
+            row = conn.execute("""
+                SELECT s.to_segment AS seg, s.ts, e.label FROM switches s
+                LEFT JOIN ensemble e ON e.switch_id = s.id
+                LEFT JOIN seg_reviews rv ON rv.segment_id = s.to_segment
+                LEFT JOIN review_questions q ON q.segment_id = s.to_segment
+                WHERE s.id = ? AND rv.segment_id IS NULL AND q.id IS NULL""", (sid,)).fetchone()
+            if row:
+                out.append({"segment_id": row["seg"], "source": "ensemble",
+                            "reason": f"the switch models flagged this as high-stakes and uncertain (their call: {row['label']})",
+                            "ts": row["ts"]})
+    seen: set = set()
+    out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
+    out.sort(key=lambda x: ({"coherence": 0, "audit": 1, "ensemble": 2}.get(x["source"], 3), -x["ts"]))
     return out
 
 
