@@ -103,16 +103,43 @@ boundaries.
 
 
 def generate(conn, cfg: Config, sp) -> bool:
-    """Write and store a summary for one finished span. Returns True on success."""
+    """Write and store a summary for one finished span. The summarizer gets the evaluator's
+    per-segment rationales and a few sampled screenshots, not just window titles - Terminal
+    windows and untitled docs carry no activity information in their titles."""
     client = _get_client()
     if client is None:
         return False
     t0s = dt.datetime.fromtimestamp(sp["start"]).strftime("%H:%M")
     t1s = dt.datetime.fromtimestamp(sp["end"]).strftime("%H:%M")
-    prompt = PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60, log=_span_log(sp))
+    segs = [s for r_ in sp["runs"] for s in r_["segments"]]
+    ids = [s["id"] for s in segs]
+    rats = {}
+    if ids:
+        qs = ",".join("?" * len(ids))
+        rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
+            f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", ids)
+            if r2["rationale"]}
+    lines = [seg_line(s) + (f"  // {rats[s['id']][:90]}" if s["id"] in rats else "") for s in segs]
+    if len(lines) > 150:
+        lines = lines[:75] + [f"  ... {len(lines) - 150} segments elided ..."] + lines[-75:]
+    content: list = []
+    if ids:
+        from .classifiers.claude_vision import _b64
+        qs = ",".join("?" * len(ids))
+        shots = [dict(r2) for r2 in conn.execute(
+            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", ids)]
+        step = max(1, len(shots) // 4)
+        for sh in shots[::step][:4]:
+            b = _b64(sh["path"])
+            if b:
+                where = " - EXTERNAL display" if sh.get("display") else ""
+                content.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')}{where}:"})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+    content.append({"type": "text", "text": PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60,
+                                                          log="\n".join(lines))})
     resp = client.beta.messages.parse(
         model=cfg.claude_model, max_tokens=500, output_config={"effort": "low"},
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": content}],
         output_format=SpanSummaryJudgement)
     if resp.parsed_output is None:
         return False
