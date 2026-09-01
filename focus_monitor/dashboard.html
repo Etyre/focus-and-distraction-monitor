@@ -497,6 +497,8 @@ function switchTL(f){
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
   // the switch marker doubles as a SCRUBBER: drag it (or use arrow keys) to step through
   // every screenshot in this window; the panel below shows the capture at the marker.
+  // fixed red line: the exact switch under review (does not move; the scrub marker does)
+  s+=`<line x1="${x(ts)}" x2="${x(ts)}" y1="10" y2="74" stroke="var(--distracted)" stroke-width="2"/>`;
   s+=`<rect id="segHi" x="0" y="23" width="0" height="46" fill="none" stroke="var(--focus)" stroke-width="2.5" rx="2" style="display:none;pointer-events:none"/>`;
   s+=`<line id="scrubLine" x1="${x(ts)}" x2="${x(ts)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
   s+=`<path id="scrubHead" d="M${x(ts)-6},4 L${x(ts)+6},4 L${x(ts)},15 Z" fill="var(--ink)"/>`;
@@ -581,7 +583,7 @@ async function renderSwitch(id){
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
     ${switchTL(f)}
-    ${SCRUB.shots.length?`<div class="muted small" style="margin:2px 0 6px">drag the ▾ marker or use ←/→ to scrub every capture in this window (shown in the After slot) · ⌘←/⌘→ jump to the previous/next span</div>`:''}
+    ${SCRUB.shots.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or use ←/→ to scrub every capture (shown in the After slot) · ⌘←/⌘→ jump to the previous/next span</div>`:''}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
       <div><div class="cap">After – ${segLine(f.to)}</div>${(f.to.first_screenshot||SCRUB.shots.length)?`<img id="afterShot" src="/shot/${f.to.first_screenshot||SCRUB.shots[0].path}">`:'<div class="muted">no screenshot</div>'}
