@@ -345,20 +345,62 @@ function spanTLBind(sp){
 }
 let qQueue=[],qqi=0;
 const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit'};
+function qTL(q){
+  const segs=q.timeline||[];if(!segs.length)return '';
+  const t0=q.seg_start-900,t1=q.seg_end+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
+  let s=`<svg viewBox="0 0 ${W} 92" style="width:100%;display:block" xmlns="http://www.w3.org/2000/svg" font-size="12" fill="var(--ink2)">`;
+  const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
+  for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="22" y2="70" stroke="var(--grid)"/><text x="${x(t)}" y="86" text-anchor="middle">${fmtT(t)}</text>`;
+  segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
+    const pend=!g.content&&g.state!=='idle';
+    const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
+    const isQ=g.id===q.segment_id;
+    const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isQ?'stroke="var(--interrupted)" stroke-width="2"':'';
+    s+=`<rect data-qi="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${isQ?1:0.8}" ${isQ?'stroke="var(--ink)" stroke-width="2"':unfB} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
+  s+=`<line x1="${x(q.seg_start)}" x2="${x(q.seg_start)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
+  s+=`<path d="M${x(q.seg_start)-6},4 L${x(q.seg_start)+6},4 L${x(q.seg_start)},15 Z" fill="var(--ink)"/>`;
+  s+='</svg>';
+  return `<div id="qTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div><div class="muted small" style="margin:2px 0 6px">▾ the segment in question · hover any block for its capture · click to open</div>`;
+}
+function qTLBind(q){
+  document.querySelectorAll('#qTL rect[data-qi]').forEach(r=>{const g=q.timeline[+r.dataset.qi];
+    r.addEventListener('mousemove',e=>showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''}${g.content?' · <b>'+g.content+'</b>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title)+'':''}${g.toggl_id?'<br><span class="small">⏱ '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':''}`));
+    r.addEventListener('mouseleave',hideTT);
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
+}
+let currentQSeg=null;
 function renderQuestion(){
   const q=qQueue[qqi];if(!q)return loadQueue();
   current=null; // keyboard 1-4 must not hit the switch-review path while a question is up
+  currentQSeg=q.segment_id;
   $('#queueCount').textContent=`${qQueue.length-qqi} question(s) — then ${spanQueue.length||'the'} span confirmations`;
   $('#reviewCard').innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="qqi++;renderQuestion()">skip (s)</button></div></div>
     <div class="small muted" style="margin:6px 0">${esc(q.app)}${q.domain?' · '+esc(q.domain):''}${q.title?' · '+esc(q.title.slice(0,70)):''} ${q.switch_id?`· <a href="#" onclick="openSegment(${q.switch_id});return false">open the capture</a>`:''}</div>
+    ${qTL(q)}
     <div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">${esc(q.context)}</div>
     <div style="margin:10px 0"><b>${esc(q.question)}</b></div>
     <div class="row" style="flex-wrap:wrap;gap:6px;margin:8px 0">
       ${q.options.map((o,i)=>`<button style="text-align:left" onclick="answerQuestion(${q.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}
       <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
+      <b>Ask the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context</span>
+      <div id="qchatlog" class="chatlog"></div>
+      <div class="chatrow"><input id="qchatinput" placeholder="e.g. I think I was just passing through here — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Ask</button></div>
     </div>`;
+  qTLBind(q);
+  renderQChat();
 }
+function renderQChat(){const log=$('#qchatlog');if(!log)return;
+  log.innerHTML=(CHAT['q'+currentQSeg]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
+  log.scrollTop=log.scrollHeight;}
+async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,inp=$('#qchatinput'),t=inp.value.trim();if(!t)return;
+  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:t});inp.value='';renderQChat();
+  const log=$('#qchatlog');log.innerHTML+='<div class="cmsg pending2">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
+  try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k]})});CHAT[k].push({role:'assistant',text:r.reply});}
+  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
+  renderQChat();}
 async function answerQuestion(id,idx){
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx})});
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();

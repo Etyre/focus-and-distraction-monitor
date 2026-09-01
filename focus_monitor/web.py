@@ -330,17 +330,25 @@ class SpanChatReq(BaseModel):
     messages: list[dict]
 
 
+QCTX_S = 900.0  # timeline context on each side of a question's segment (matches ~what the generator saw)
+
+
 @app.get("/api/questions/queue")
 def api_questions_queue(limit: int = 30):
     c = conn()
     import json as _json
     out = []
-    for r in c.execute("""SELECT q.*, g.start AS seg_start, g.app, g.title, g.domain,
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+            "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+    for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
+                                 g.app, g.title, g.domain,
                                  (SELECT id FROM switches WHERE to_segment = q.segment_id LIMIT 1) AS switch_id
                           FROM review_questions q JOIN segments g ON g.id = q.segment_id
                           WHERE q.status = 'open' ORDER BY q.created DESC LIMIT ?""", (limit,)):
         d = dict(r)
         d["options"] = _json.loads(d["options"])
+        segs = stats.labelled_segments(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
+        d["timeline"] = [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0]
         out.append(d)
     return out
 

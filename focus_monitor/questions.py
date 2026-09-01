@@ -189,6 +189,13 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                              "interruption_kind": o.interruption_kind, "content": o.content})
             if len(opts) < 2:
                 continue
+            # Always offer the pass-through reading - the person may know they were only
+            # travelling to another window, which the model rarely proposes on its own.
+            if not any(o.get("content") == "transition" for o in opts):
+                opts.append({"label": "Just passing through - a transition on my way to something else",
+                             "segment_id": q.trigger_segment_id,
+                             "switch_label": "continuation", "interruption_kind": None,
+                             "content": "transition"})
             conn.execute(
                 "INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
                 " VALUES (?,?,?,?,?,?,?)",
