@@ -58,7 +58,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 <body>
 <header>
   <h1>Focus Monitor</h1>
-  <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a></nav>
+  <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a><a href="#efforts" data-view="efforts">Efforts</a></nav>
   <span id="status" class="muted small"></span>
 </header>
 <main>
@@ -83,6 +83,13 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <span class="muted small">← / → to step through activity captures · click any box on the Day timeline to jump here · edit the label or ask Claude, same as Review</span>
   </div>
   <div id="segCard" class="card"></div>
+</section>
+
+<section id="view-efforts" class="hidden">
+  <div class="card"><b>Effort comparison</b> <span class="muted small">— every judgment call repeated at lower efforts, same prompt; click a row for trials, a trial for the literal side-by-side</span>
+    <div id="effSummary" style="margin-top:8px"></div></div>
+  <div class="card hidden" id="effTrialsCard"><b id="effTrialsTitle">Trials</b><div id="effTrials" style="margin-top:8px"></div></div>
+  <div class="card hidden" id="effDetailCard"><b>Side-by-side</b><div id="effDetail" style="margin-top:8px"></div></div>
 </section>
 
 <section id="view-trends" class="hidden">
@@ -132,7 +139,7 @@ async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await 
 // ---- routing
 function show(v){document.querySelectorAll('section').forEach(s=>s.classList.toggle('hidden',s.id!=='view-'+v));
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
-  ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy})[v]();}
+  ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy,efforts:loadEfforts})[v]();}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
 document.addEventListener('keydown',e=>{if((location.hash||'#day')!=='#day'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='+'||e.key==='='){zoomView(0.33);e.preventDefault();}
@@ -668,6 +675,38 @@ async function loadAccuracy(){
   $('#weights').innerHTML='<tr><th>model</th><th>scored</th><th>accuracy (importance-weighted)</th><th>on focus-span switches</th><th>log-loss</th></tr>'+Object.entries(w).map(([m,s])=>`<tr><td>${m}</td><td>${s.n}</td><td>${Math.round(100*s.accuracy)}%</td><td>${s.accuracy_focus==null?'–':Math.round(100*s.accuracy_focus)+'% (n='+s.n_focus+')'}</td><td>${s.logloss.toFixed(3)}</td></tr>`).join('');
 }
 
+async function loadEfforts(){
+  const rows=await api('/api/efforts/summary');
+  const host=$('#effSummary');
+  $('#effTrialsCard').classList.add('hidden');$('#effDetailCard').classList.add('hidden');
+  if(!rows.length){host.innerHTML='<div class="muted small">No effort trials yet — they accumulate as the evaluator, summarizer, and daily audit run.</div>';return;}
+  let h='<table><tr><th>role</th><th>model · effort</th><th></th><th>n</th><th>agreement w/ primary</th><th>judge: equivalent</th><th>material diffs</th><th>avg cost</th></tr>';
+  for(const r of rows){
+    h+=`<tr style="cursor:pointer" onclick="loadEffTrials('${r.role}','${r.effort}')"><td>${r.role.replace(/_/g,' ')}</td><td>${r.model} · <b>${r.effort}</b></td><td>${r.is_primary?'<span class="muted small">primary</span>':''}</td><td>${r.n}</td><td>${r.is_primary?'–':(r.avg_agree==null?'–':Math.round(100*r.avg_agree)+'%')}</td><td>${r.is_primary?'–':(r.equiv_rate==null?'–':Math.round(100*r.equiv_rate)+'%')}</td><td>${r.is_primary?'–':(r.n_material||0)}</td><td>$${(r.avg_cost||0).toFixed(3)}</td></tr>`;}
+  h+='</table>';
+  host.innerHTML=h;
+}
+async function loadEffTrials(role,effort){
+  const ts=await api(`/api/efforts/trials?role=${role}&effort=${effort}&limit=50`);
+  $('#effTrialsCard').classList.remove('hidden');
+  $('#effTrialsTitle').textContent=`Trials — ${role.replace(/_/g,' ')} @ ${effort}`;
+  $('#effTrials').innerHTML='<table><tr><th>when</th><th>ref</th><th>agreement</th><th>judge</th><th>cost</th><th></th></tr>'+
+    ts.map(t=>`<tr><td>${new Date(t.created*1000).toLocaleString()}</td><td class="small muted">${esc(String(t.ref||''))}</td><td>${t.is_primary?'primary':(t.agree==null?'–':Math.round(100*t.agree)+'%')}</td><td>${t.judge_verdict||'–'}</td><td>$${t.cost_usd.toFixed(3)}</td><td><button class="small" onclick="loadEffDetail(${t.id})">compare</button></td></tr>`).join('')+'</table>';
+}
+async function loadEffDetail(id){
+  const d=await api('/api/efforts/trial/'+id);
+  $('#effDetailCard').classList.remove('hidden');
+  let h='';
+  if(d.prompt)h+=`<details><summary class="muted small">the shared prompt</summary><pre style="white-space:pre-wrap;font-size:11px;max-height:300px;overflow:auto">${esc(d.prompt)}</pre></details>`;
+  h+=`<div style="display:grid;grid-template-columns:repeat(${Math.min(d.siblings.length,3)},1fr);gap:10px;margin-top:8px">`;
+  for(const s of d.siblings){
+    let body='';
+    try{body=JSON.stringify(JSON.parse(s.response),null,1);}catch(e){body=s.response;}
+    h+=`<div style="border:1px solid ${s.is_primary?'var(--focus)':'var(--grid)'};border-radius:6px;padding:8px"><b>${s.effort}</b> ${s.is_primary?'<span class="muted small">(primary — what the system used)</span>':`<span class="muted small">agree ${s.agree==null?'–':Math.round(100*s.agree)+'%'} · judge: ${s.judge_verdict||'–'}</span>`}${s.agree_detail?`<div class="small" style="margin:4px 0;color:var(--ink2)">${esc(s.agree_detail)}</div>`:''}<pre style="white-space:pre-wrap;font-size:11px;max-height:400px;overflow:auto">${esc(body)}</pre></div>`;}
+  h+='</div>';
+  $('#effDetail').innerHTML=h;
+  $('#effDetailCard').scrollIntoView({behavior:'smooth'});
+}
 show(location.hash.slice(1)||'day');
 setInterval(()=>{if((location.hash||'#day')==='#day')loadDay();},60000);
 </script>

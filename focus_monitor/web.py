@@ -215,6 +215,27 @@ def api_efficiency():
     return seg_models.efficiency_report(conn())
 
 
+@app.get("/api/efforts/summary")
+def api_efforts_summary():
+    from . import efforts
+    return efforts.summary(conn())
+
+
+@app.get("/api/efforts/trials")
+def api_efforts_trials(role: str | None = None, effort: str | None = None, limit: int = 50):
+    from . import efforts
+    return efforts.trials(conn(), role, effort, limit)
+
+
+@app.get("/api/efforts/trial/{trial_id}")
+def api_efforts_trial(trial_id: int):
+    from . import efforts
+    d = efforts.trial_detail(conn(), trial_id)
+    if not d:
+        raise HTTPException(404)
+    return d
+
+
 @app.get("/api/review/queue")
 def api_review_queue(limit: int = 30, all: bool = False):
     c = conn()

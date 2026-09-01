@@ -150,6 +150,21 @@ def generate(conn, cfg: Config, sp) -> bool:
         output_format=SpanSummaryJudgement)
     if resp.parsed_output is None:
         return False
+    from . import efforts as _eff
+
+    def _scall(eff):
+        return client.beta.messages.parse(
+            model=cfg.claude_model, max_tokens=500, output_config={"effort": eff},
+            system=system, messages=[{"role": "user", "content": content}],
+            output_format=SpanSummaryJudgement)
+
+    def _scmp(a, b):
+        agree = 1.0 if a.coherent == b.coherent else 0.0
+        return agree, f"coherent: {a.coherent} vs {b.coherent}"
+
+    _eff.run_shadows(conn, cfg, client, "span_summarizer", f"span:{t0s}-{t1s}",
+                     "medium", resp, _scall, _scmp,
+                     prompt_text=PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60, log="(span log)")[:300])
     j: SpanSummaryJudgement = resp.parsed_output
     text = j.summary.strip()
     if not text:

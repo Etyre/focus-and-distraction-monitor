@@ -320,6 +320,31 @@ class ChunkEvaluator:
         log.info("chunk %s-%s: %d/%d segments judged, %d deferred ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), cost)
+        # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
+        if resp.parsed_output is not None and extra is None:
+            from . import efforts as _eff
+
+            def _call(eff):
+                return self.client.beta.messages.parse(
+                    model=self.cfg.claude_model, max_tokens=8000,
+                    system=self._system_blocks(conn),
+                    messages=[{"role": "user", "content": content}],
+                    output_format=ChunkJudgement,
+                    output_config={"effort": eff},
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+
+            def _cmp(a, b):
+                pa = {j.segment_id: (j.content, j.switch, j.interruption_kind) for j in a.segments}
+                pb = {j.segment_id: (j.content, j.switch, j.interruption_kind) for j in b.segments}
+                keys = set(pa) & set(pb)
+                if not keys:
+                    return 0.0, "no overlapping segments"
+                same = sum(1 for k in keys if pa[k] == pb[k])
+                diffs = [f"id={k}: {pa[k]} vs {pb[k]}" for k in keys if pa[k] != pb[k]][:6]
+                return same / len(keys), ("; ".join(diffs) or "all verdicts identical")
+
+            _eff.run_shadows(conn, self.cfg, self.client, "segment_evaluator", str(run_id),
+                             self.cfg.claude_effort, resp, _call, _cmp)
         return n + len(deferred)
 
 
@@ -494,6 +519,29 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
     cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
             + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
             + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
+    if resp.parsed_output is not None:
+        from . import efforts as _eff
+
+        def _acall(eff):
+            return ev.client.beta.messages.parse(
+                model=cfg.claude_model, max_tokens=4000,
+                system=ev._system_blocks(conn),
+                messages=[{"role": "user", "content": content}],
+                output_format=DayAudit,
+                output_config={"effort": eff},
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+
+        def _acmp(a, b):
+            fa = {(f.segment_id, f.field) for f in a.flags}
+            fb = {(f.segment_id, f.field) for f in b.flags}
+            union = fa | fb
+            if not union:
+                return 1.0, "both flagged nothing"
+            same = len(fa & fb) / len(union)
+            return same, f"flags primary={sorted(fa)} vs {sorted(fb)}"
+
+        _eff.run_shadows(conn, cfg, ev.client, "daily_audit", key, cfg.claude_effort,
+                         resp, _acall, _acmp, prompt_text=AUDIT_PROMPT.format(log="(day log, see audit)")[:200])
     n = 0
     ids = {s["id"] for s in evaluated}
     with db.tx(conn):
@@ -512,12 +560,15 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
     return n
 
 
-def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float = 36 * 3600) -> int:
+def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float | None = None) -> int:
     """Evaluate the oldest unevaluated stretch that is at least LAZY_S old. Called from the
     classifier loop; also usable for backfill with a longer lookback and more chunks."""
     cfg = cfg or load_config()
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
+    if lookback_s is None:  # default scope: the current logical day only (user 2026-09-01)
+        from .config import day_bounds, logical_date
+        lookback_s = time.time() - day_bounds(logical_date())[0]
     horizon = time.time() - LAZY_S
     done = 0
     for _ in range(max_chunks):

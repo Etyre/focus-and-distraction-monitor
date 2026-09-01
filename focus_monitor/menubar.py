@@ -99,6 +99,7 @@ class FocusMenuBar(rumps.App):
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=lambda _: self.dashboard.show("day")),
             rumps.MenuItem("Review Uncertain Switches", callback=lambda _: self.dashboard.show("review")),
+            rumps.MenuItem("Effort Comparison", callback=lambda _: self.dashboard.show("efforts")),
             None,
             self.status_item, self.focus_item, self.events_item, self.queue_item, self.spend_item, None,
             self.pause_item,
