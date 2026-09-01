@@ -64,6 +64,8 @@ def seg_line(s) -> str:
     what = (s.get("app") or "") + ((" " + s["domain"]) if s.get("domain") else "")
     title = (s.get("title") or "")[:70]
     bits = [t, "%4.1fm" % (s["duration"] / 60), s.get("state", ""), what, title]
+    if s.get("content"):
+        bits.append(f"<{s['content']}>")
     if s.get("label") and s["label"] != "continuation":
         bits.append(f"<switch: {s['label']}>")
     if s.get("activity"):
@@ -84,9 +86,12 @@ def _span_log(sp) -> str:
 
 
 PROMPT = """Below is the activity log of one hypothesized focus span ({t0}-{t1}, {mins:.0f} min).
-Write a 1-2 sentence factual summary of what the person was actually doing, so they can later
-audit whether this really was focused work. Name the concrete sites, apps, or documents; be
-honest about drift, channel-surfing, or mixed activity; note whether a Toggl entry was running.
+Write a 1-2 sentence factual summary of what the person was actually DOING - the undertaking,
+not the window inventory: "editing the date page of your personal site (VS Code + Terminal +
+checking the rendered pages)" rather than "cycling between Code, Terminal, and Chrome". Infer
+the activity from titles, content labels, and patterns, with epistemic markers ("apparently",
+"likely") when inferring. Name the concrete sites, apps, or documents as evidence; be honest
+about drift, channel-surfing, or mixed activity; note whether a Toggl entry was running.
 
 Then CHECK your own description against the definition: a focus span holds ONE object of
 attention throughout (window-switching within one piece of work is fine; interruptions under

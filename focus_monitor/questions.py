@@ -57,6 +57,13 @@ every segment of the person's day (content + whether the switch into it shifted 
 attention), but some judgments are in doubt. For each DOUBT presented, you write ONE question \
 the person can answer in seconds, with 2-4 natural-language options.
 
+DESCRIBE THE ACTIVITY, NOT THE WINDOWS. The context must say what the person was DOING - the
+undertaking - inferred from titles, content labels, and the per-segment rationales (after //
+in the log): "you were editing your personal site - coding in VS Code, running it in Terminal, \
+checking the rendered pages" rather than "going back and forth between Code, Terminal, and \
+elityre.com". Use epistemic markers ("apparently", "likely") when inferring. Window names are \
+evidence, not the description.
+
 THE FRAMING RULE (the person's own words): if they were writing, briefly checked email, then \
 started a long Claude conversation, the pertinent question is NOT "did your attention shift \
 between email and Claude?" (trivially yes) - it is "You were writing, then briefly went to your \
@@ -196,8 +203,17 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
     parts = []
     for i, t in enumerate(trigs):
         seg_ctx = stats.labelled_segments(conn, t["ts"] - 1200, t["ts"] + 1200)
+        ctx_ids = [s["id"] for s in seg_ctx]
+        rats = {}
+        if ctx_ids:
+            qs = ",".join("?" * len(ctx_ids))
+            rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
+                f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", ctx_ids)
+                if r2["rationale"]}
         lines = [("  >>> " if s["id"] == t["segment_id"] else "      ")
-                 + f"id={s['id']} " + summaries.seg_line(s) for s in seg_ctx if s["duration"] > 0]
+                 + f"id={s['id']} " + summaries.seg_line(s)
+                 + (f"  // {rats[s['id']][:90]}" if s["id"] in rats else "")
+                 for s in seg_ctx if s["duration"] > 0]
         ev = conn.execute("SELECT content, switch_label, interruption_kind, rationale FROM seg_evals WHERE segment_id=?",
                           (t["segment_id"],)).fetchone()
         cur = (f"current judgment: content={ev['content']}, switch={ev['switch_label']}, "
