@@ -355,6 +355,7 @@ def api_questions_queue(limit: int = 30):
 
 class QAnswer(BaseModel):
     option_index: int
+    note: str | None = None
 
 
 @app.post("/api/questions/{qid}/answer")
@@ -377,16 +378,16 @@ def api_question_answer(qid: int, a: QAnswer):
                        o.get("content") or (prev["content"] if prev else None),
                        o.get("switch_label") or (prev["switch_label"] if prev else None),
                        o.get("interruption_kind") if o.get("switch_label") == "interruption" else (None if o.get("switch_label") else (prev["interruption_kind"] if prev else None)),
-                       f"(answered review question: {o['label']})", time.time()))
+                       (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time()))
             old = _NEW2OLD.get((o.get("switch_label"),
                                 o.get("interruption_kind") if o.get("switch_label") == "interruption" else None))
             sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (o["segment_id"],)).fetchone()
             if old and sw:
                 c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
-                          (sw["id"], old, o["label"], time.time()))
+                          (sw["id"], old, (a.note.strip() if a.note and a.note.strip() else o["label"]), time.time()))
                 c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
-        c.execute("UPDATE review_questions SET status='answered', answer=?, answered_at=? WHERE id=?",
-                  (o["label"], time.time(), qid))
+        c.execute("UPDATE review_questions SET status='answered', answer=?, note=?, answered_at=? WHERE id=?",
+                  (o["label"], (a.note.strip() or None) if a.note else None, time.time(), qid))
     return {"ok": True}
 
 

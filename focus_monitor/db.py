@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review question
     options TEXT NOT NULL,        -- JSON [{label, segment_id, switch_label?, interruption_kind?, content?}]
     status TEXT NOT NULL DEFAULT 'open',  -- open | answered | dismissed
     answer TEXT,                  -- the chosen option's label
+    note TEXT,                    -- the user's free-text context, fed to model precedents
     cost_usd REAL NOT NULL DEFAULT 0,
     created REAL NOT NULL,
     answered_at REAL
@@ -224,6 +225,9 @@ def connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
         conn.execute("ALTER TABLE span_summaries ADD COLUMN issue TEXT")
     rcols = {r[1] for r in conn.execute("PRAGMA table_info(eval_runs)")}
+    qcols = {r[1] for r in conn.execute("PRAGMA table_info(review_questions)")}
+    if qcols and "note" not in qcols:
+        conn.execute("ALTER TABLE review_questions ADD COLUMN note TEXT")
     if rcols and "system" not in rcols:
         # The full evaluation transcript, so a review chat can talk to "the one who decided":
         # the exact system prompt, user prompt, screenshots sent, model, and the response.

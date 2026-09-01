@@ -384,6 +384,7 @@ function renderQuestion(){
       ${q.options.map((o,i)=>`<button style="text-align:left" onclick="answerQuestion(${q.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}
       <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>
     </div>
+    <textarea id="qNote" rows="2" placeholder="optional note — context the model should know (saved with your answer, used as a precedent)"></textarea>
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
       <b>Ask the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context</span>
       <div id="qchatlog" class="chatlog"></div>
@@ -402,7 +403,8 @@ async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,i
   catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderQChat();}
 async function answerQuestion(id,idx){
-  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx})});
+  const note=($('#qNote')&&$('#qNote').value.trim())||null;
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
 }
 async function dismissQuestion(id){
