@@ -167,7 +167,7 @@ def api_span_queue(days: int = 7):
         day_segs = stats.labelled_segments(c, t0, t1)
         se = stats.spans_and_events(day_segs, conn=c)
         for sp in sorted(se["focus_spans"] + se["disqualified"], key=lambda s: s["start"]):
-            if sp.get("confirmed") or sp.get("ended_by") == "ongoing":
+            if sp.get("confirmed") or sp.get("ended_by") in ("ongoing", "awaiting evaluation"):
                 continue
             out.append(_span_payload(c, sp, day.isoformat(), day_segs))
     return out

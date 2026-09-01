@@ -391,6 +391,22 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         cfg = load_config()
         min_focus_min = min_focus_min if min_focus_min is not None else cfg.min_focus_span_min
         break_min = break_min if break_min is not None else cfg.break_min
+    # Spans are LAZILY evaluated, like segments (user rule 2026-09-01): never assemble a span
+    # over not-yet-evaluated segments - wait for their verdicts instead of guessing and later
+    # shrinking the span. Truncate assembly at the evaluation frontier: the last segment with a
+    # verdict (eval or user review). Windows with no verdicts at all (legacy history) keep the
+    # legacy behavior.
+    frontier_ts = None
+    last_v = None
+    for i, s in enumerate(segs):
+        if s.get("source") in ("eval", "review"):
+            last_v = i
+    if last_v is not None and last_v < len(segs) - 1:
+        tail = segs[last_v + 1:]
+        if any(s.get("source") not in ("eval", "review") and s["state"] != "idle"
+               and not s.get("neutral") and s["duration"] > 0 for s in tail):
+            frontier_ts = segs[last_v]["clip_end"]
+            segs = segs[:last_v + 1]
     runs = _runs3(segs)
     break_s = break_min * 60
 
@@ -497,6 +513,10 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         return out
 
     spans = _assemble(runs)
+    if frontier_ts is not None:
+        for sp in spans:
+            if abs(sp["end"] - frontier_ts) <= MAX_GAP and sp["ended_by"] in ("ongoing", "gap (not recorded)"):
+                sp["ended_by"] = "awaiting evaluation"
 
     qualifying = [sp for sp in spans if sp["focus_min"] >= min_focus_min]
     short = [sp for sp in spans if sp["focus_min"] < min_focus_min]

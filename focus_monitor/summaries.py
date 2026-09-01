@@ -202,7 +202,7 @@ def ensure_summaries(conn, cfg: Config | None = None, max_new: int = 2) -> int:
     for sp in se["focus_spans"] + se["disqualified"]:
         if done >= max_new:
             break
-        if sp.get("ended_by") == "ongoing":
+        if sp.get("ended_by") in ("ongoing", "awaiting evaluation"):
             continue
         if lookup(conn, sp["start"], sp["end"]) is not None:
             continue
