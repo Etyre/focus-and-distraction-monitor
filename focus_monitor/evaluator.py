@@ -84,7 +84,12 @@ person settles. Transitions are never attention shifts in themselves; their swit
 2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
 editor<->terminal, stepping through desktops to find something; also staying within one ongoing \
-distraction session).
+distraction session). Special case, FOCUSED TASK blocks: moving from one discrete task to the \
+next (email -> taxes -> errands) is continuation of the block ONLY when a Toggl entry is \
+running AND the pattern looks like focused task processing - operating from a todo list, \
+returning to it between tasks, efficient execution. A running Toggl entry alone is NOT \
+sufficient (people forget timers); and without a running entry, task-to-task hopping is never \
+one block - judge each shift on its own.
    - interruption: the object of attention changed.
    - return: coming back to the object they were on before an interruption.
 3. interruption_kind - ONLY for switch='interruption':

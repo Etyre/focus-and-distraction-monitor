@@ -406,27 +406,27 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             return True
         if not r.get("focus_start"):
             return True  # continuation-type focus = same task
-        # A user edit is absolute: it outranks every glue heuristic below.
-        if first.get("source") == "review" and first.get("eval_split_p") is not None:
-            return first["eval_split_p"] < 0.5
-        last_tg = last.get("tg_near_b") or last.get("toggl_id")
-        # Same-entry glue requires the entry to be RUNNING at the new segment's start -
-        # stopping a Toggl entry declares the END of that intent, and the near-slack must not
-        # glue new work to an entry that ended at the boundary.
-        new_tg_running = first.get("toggl_id")
-        new_tg = first.get("tg_near_a") or first.get("toggl_id")
-        if last_tg and new_tg_running and last_tg == new_tg_running:
-            return True  # one declared Toggl intent spans the switch (Rules doc: Toggl glues tasks)
         if first.get("eval_split_p") is not None:
-            # Evaluator-era segments carry the resolved ensemble confidence that this switch
-            # is a deliberate new-task start: p(interruption) * p(focus_start), two heads whose
-            # product understates joint confidence - so split at geometric mean >= 0.5, i.e.
-            # product >= 0.25. A user edit is exactly 1.0 / 0.0.
-            return first["eval_split_p"] < 0.25
+            # The judgment belongs to the model (and above it, the user). Whether task-to-task
+            # switching under a running Toggl entry is one focused-task block is the
+            # EVALUATOR's call (its prompt carries the rule: Toggl is necessary, never
+            # sufficient); a user edit is exactly 1.0 / 0.0.
+            thr = 0.5 if first.get("source") == "review" else 0.25
+            return first["eval_split_p"] < thr
+        # ---- legacy fallback only (segments never judged by the evaluator) ----
+        # Toggl glue is TASK-SCOPED: the Rules doc's stitching rule applies to focused-task
+        # blocks only, and a running entry is a necessary condition, not sufficient.
+        last_tg = last.get("tg_near_b") or last.get("toggl_id")
+        new_tg_running = first.get("toggl_id")  # entry must be RUNNING at the new segment's
+        new_tg = first.get("tg_near_a") or first.get("toggl_id")  # start; a stop ends the intent
+        task_ctx = ("task_execution" in (last.get("activity"), first.get("activity"))
+                    or "task" in (last.get("content"), first.get("content")))
+        if last_tg and new_tg_running and last_tg == new_tg_running and task_ctx:
+            return True  # task block under one running entry
         if first.get("source") == "review":
             return False  # a human-confirmed task change is authoritative
-        if last_tg and new_tg and "task_execution" in (last.get("activity"), first.get("activity")):
-            return True  # a series of Toggl entries in a focused-task block stays one span
+        if last_tg and new_tg and task_ctx:
+            return True  # a series of Toggl entries over task churn stays one block
         if last.get("activity") == "reading" and first.get("activity") in ("writing", "coding"):
             return True  # reading flowing into creative work stays one span (Rules doc)
         return (first.get("probs") or {}).get("task_change", 0.0) < 0.7
