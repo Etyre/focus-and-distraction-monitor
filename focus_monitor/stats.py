@@ -70,7 +70,8 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                 pr = None
         u_sw = u is not None and bool(u["switch_label"])
         u_kind = u is not None and bool(u["interruption_kind"])
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind
+        ante = g("antecedent_id")
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -119,7 +120,10 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind = v
+            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante = v
+            # Thread pointer: meaningful only for continuation/return (an interruption IS
+            # the birth of a new thread).
+            s["antecedent_id"] = v_ante if vsw in (None, "continuation", "return") else None
             vsw = vsw or "continuation"
             if vsw == "continuation":
                 st = prev_state if prev_state != "idle" else "focus"
@@ -424,6 +428,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             segs = segs[:last_v + 1]
     runs = _runs3(segs)
     break_s = break_min * 60
+    ante_of = {s["id"]: s.get("antecedent_id") for s in segs}
 
     def _same_task(sp, r, away=()):
         """Is focus run r the same task as span sp? (returning to the exact window/site, a
@@ -436,6 +441,20 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         last = last_run["segments"][-1]
         if (first["app"], first["domain"]) == (last["app"], last["domain"]):
             return True
+        # Stated thread pointer first: where the evaluator (or the user) named an antecedent,
+        # following the chain answers the membership question directly - no guessing. The
+        # chain lands in the span's focus segments (same task), in the away material (a rival
+        # thread), or peters out (fall through to the heuristics below).
+        sp_ids = {sg["id"] for run in sp["runs"] if run["cat"] == "focus" for sg in run["segments"]}
+        away_ids = {sg["id"] for run in away for sg in run["segments"]}
+        a, hops = first.get("antecedent_id"), 0
+        while a is not None and hops < 20:
+            if a in sp_ids:
+                return True
+            if a in away_ids:
+                return False
+            a = ante_of.get(a)
+            hops += 1
         if not r.get("focus_start"):
             # Continuation/return judgments are CHAINED - they continue whatever came
             # immediately before, which is not the span once `away` holds a focus run already

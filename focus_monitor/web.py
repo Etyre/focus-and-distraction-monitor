@@ -535,12 +535,17 @@ def api_question_answer(qid: int, a: QAnswer):
     with db.tx(c):
         if o.get("switch_label") or o.get("content"):
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
-            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, note, created)"
-                      " VALUES (?,?,?,?,?,?)",
+            osw = o.get("switch_label")
+            ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id"))
+                    if osw in ("continuation", "return")
+                    else (None if osw else (prev["antecedent_id"] if prev else None)))
+            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created)"
+                      " VALUES (?,?,?,?,?,?,?)",
                       (o["segment_id"],
                        o.get("content") or (prev["content"] if prev else None),
-                       o.get("switch_label") or (prev["switch_label"] if prev else None),
-                       o.get("interruption_kind") if o.get("switch_label") == "interruption" else (None if o.get("switch_label") else (prev["interruption_kind"] if prev else None)),
+                       osw or (prev["switch_label"] if prev else None),
+                       o.get("interruption_kind") if osw == "interruption" else (None if osw else (prev["interruption_kind"] if prev else None)),
+                       ante,
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time()))
             from . import propagation
             propagation.note_event(c, o["segment_id"])
@@ -612,7 +617,17 @@ class SegEvalReview(BaseModel):
     content: str | None = None
     switch_label: str | None = None
     interruption_kind: str | None = None
+    antecedent_id: int | None = None  # thread pointer, for continuation/return assertions
     note: str | None = None
+
+
+def _valid_antecedent(c, segment_id: int, ante: int | None) -> int | None:
+    """An antecedent must name a real segment that starts before this one; else None."""
+    if ante is None or ante == segment_id:
+        return None
+    row = c.execute("""SELECT (SELECT start FROM segments WHERE id=?) < g.start AS earlier
+                       FROM segments g WHERE g.id=?""", (ante, segment_id)).fetchone()
+    return ante if row and row["earlier"] else None
 
 
 # The user's edit of the evaluator's judgment maps onto the legacy 4-label review scheme so the
@@ -636,9 +651,11 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
     if not c.execute("SELECT 1 FROM segments WHERE id=?", (segment_id,)).fetchone():
         raise HTTPException(404)
     with db.tx(c):
-        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, note, created)"
-                  " VALUES (?,?,?,?,?,?)",
-                  (segment_id, r.content, r.switch_label, r.interruption_kind, r.note, time.time()))
+        ante = (_valid_antecedent(c, segment_id, r.antecedent_id)
+                if r.switch_label in ("continuation", "return") else None)
+        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created)"
+                  " VALUES (?,?,?,?,?,?,?)",
+                  (segment_id, r.content, r.switch_label, r.interruption_kind, ante, r.note, time.time()))
         if r.content or r.switch_label:
             from . import propagation
             propagation.note_event(c, segment_id)

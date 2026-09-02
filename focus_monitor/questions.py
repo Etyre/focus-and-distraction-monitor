@@ -37,6 +37,7 @@ class QOption(BaseModel):
     label: str = Field(description="The answer in the person's own terms, e.g. 'a continuation of the essay writing'.")
     segment_id: int = Field(description="The segment this option's edit applies to.")
     switch_label: str | None = Field(default=None, description="continuation | interruption | return, when the option settles the thread relation.")
+    antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (interruption) and content-only options.")
     interruption_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
 
@@ -93,6 +94,10 @@ into a label choice.
 Rules for options:
 - Natural language first ("a continuation of the essay work"), schema underneath: each option \
 sets switch_label (a thread relation) or a content label.
+- A SAME-thread option (continuation/return) also names its antecedent_id: the id of the \
+segment in thread A that the person would be agreeing this continues (pick the nearest \
+A-thread segment visible in the log). This makes the answer an edge in the thread graph, \
+not just a label.
 - For boundary and coherence doubts (a stretch that may contain TWO objects of attention), ask \
 about the moment the SECOND object would begin - the split point named or implied in the \
 doubt's reason - and you MUST include an option asserting the separate thread: \
@@ -280,8 +285,9 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                     continue
                 # Kinds are never solicited: the person asserts the thread relation; the app
                 # derives detour/focus_start/self_distraction from what the thread became.
+                ante = o.antecedent_id if o.switch_label in ("continuation", "return") else None
                 opts.append({"label": o.label, "segment_id": o.segment_id,
-                             "switch_label": o.switch_label,
+                             "switch_label": o.switch_label, "antecedent_id": ante,
                              "interruption_kind": None, "content": o.content})
             if len(opts) < 2:
                 continue

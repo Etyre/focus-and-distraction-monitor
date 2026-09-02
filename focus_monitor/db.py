@@ -249,6 +249,13 @@ def connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN run_id INTEGER REFERENCES eval_runs(id)")
     if vcols and "probs" not in vcols:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN probs TEXT")
+    if vcols and "antecedent_id" not in vcols:
+        # Thread primitive: the nearest EARLIER segment of the same attentional thread
+        # (continuation/return); NULL for a new thread. Thread identity = the transitive chain.
+        conn.execute("ALTER TABLE seg_evals ADD COLUMN antecedent_id INTEGER")
+    rvcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
+    if rvcols and "antecedent_id" not in rvcols:
+        conn.execute("ALTER TABLE seg_reviews ADD COLUMN antecedent_id INTEGER")
     scols = {r[1] for r in conn.execute("PRAGMA table_info(span_summaries)")}
     if scols and "coherent" not in scols:
         conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
