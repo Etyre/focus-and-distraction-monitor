@@ -40,11 +40,16 @@ CTX_S = 10 * 60           # context shown on each side of the chunk
 MAX_SHOTS = 8
 
 
+class AnteCand(BaseModel):
+    segment_id: int
+    p: float = Field(description="Probability this is the right attachment GIVEN the segment continues an existing thread (the candidates' probabilities sum to ~1).")
+
+
 class SegJudgement(BaseModel):
     segment_id: int
     content: str = Field(description="One of: creative, task, reading, planning, other, passive, meeting, idle, transition.")
     switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
-    antecedent_id: int | None = Field(default=None, description="When switch is continuation or return: the id of the NEAREST EARLIER segment belonging to the same thread - the thing this segment continues (thread identity follows the chain, so reaching the nearest member is enough). When switch is interruption (a new thread): null.")
+    antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is interruption (a new thread).")
     interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
     note: str = Field(description="One short sentence of reasoning.")
@@ -93,13 +98,16 @@ sufficient (people forget timers); and without a running entry, task-to-task hop
 one block - judge each shift on its own.
    - interruption: the object of attention changed.
    - return: coming back to the object they were on before an interruption.
-   For continuation and return, ALSO name the antecedent: antecedent_id = the id of the nearest \
+   For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
 EARLIER segment (visible in the log) belonging to the SAME thread - the thing this segment \
 continues. For a continuation that is normally the immediately preceding non-transition segment; \
 for a return, the segment they left when the interruption began. Thread identity follows the \
 chain of antecedents, so the nearest member is enough - never reach further back than needed. \
-This pointer is the primary statement of thread structure; make it consistent with your switch \
-judgment.
+Probabilities are CONDITIONAL on the segment continuing an existing thread (whether it does at \
+all is your switch judgment) and sum to ~1 across candidates. Usually one candidate carries \
+essentially all the mass; when you are genuinely torn between two attachments, say so with a \
+runner-up (and rarely a third). This pointer is the primary statement of thread structure; \
+make it consistent with your switch judgment.
 3. interruption_kind - ONLY for switch='interruption'. These are RETROSPECTIVE judgments: you \
 see what came after, so name what the shift BECAME, not what it looked like in the moment.
    - self_distraction: the time away became stimulation-seeking/consumption (passive content, \
@@ -316,16 +324,24 @@ class ChunkEvaluator:
                     rk = max(comb["kind"], key=comb["kind"].get) if rsw == "interruption" else None
                     unc = int(j.uncertain or max(comb["content"].values()) < 0.5
                               or max(comb["switch"].values()) < 0.5)
-                    # Antecedent (thread pointer): stored raw from the evaluator, never
-                    # ensembled - the local heads cannot represent "which thread". Valid only
-                    # if it names a real, EARLIER segment in this window; else dropped.
-                    ante = j.antecedent_id
-                    if ante is not None and not (ante in seg_starts and ante != j.segment_id
-                            and seg_starts[ante] < seg_starts.get(j.segment_id, 0)):
-                        log.warning("dropping invalid antecedent %s for segment %d", ante, j.segment_id)
-                        ante = None
+                    # Antecedents (thread pointers): stored raw from the evaluator, never
+                    # ensembled - the local heads cannot represent "which thread". Ranked
+                    # candidates (top + runner-up + third) with probabilities conditional on
+                    # same-thread; a candidate must name a real, EARLIER segment in window.
+                    cands = []
+                    for cand in (j.antecedents or [])[:3]:
+                        if (cand.segment_id in seg_starts and cand.segment_id != j.segment_id
+                                and seg_starts[cand.segment_id] < seg_starts.get(j.segment_id, 0)):
+                            cands.append((cand.segment_id, min(max(cand.p, 0.0), 1.0)))
+                        else:
+                            log.warning("dropping invalid antecedent %s for segment %d",
+                                        cand.segment_id, j.segment_id)
                     if rsw == "interruption":
-                        ante = None  # a new thread has no antecedent
+                        cands = []  # a new thread has no antecedent
+                    cands.sort(key=lambda x: -x[1])
+                    ante = cands[0][0] if cands else None
+                    if cands:
+                        comb["antecedent"] = {str(i): p for i, p in cands}
                     conn.execute(
                         "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?)",

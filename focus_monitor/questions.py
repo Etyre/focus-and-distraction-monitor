@@ -209,6 +209,26 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
                             "reason": f"the switch models flagged this as high-stakes and uncertain (their call: {row['label']})",
                             "ts": row["ts"]})
     seen: set = set()
+    # Low-margin thread links: the evaluator was torn about WHICH thread a segment continues
+    # - exactly the ambiguity the person is ground truth for (a canonical thread question).
+    for r in conn.execute("""
+        SELECT e.segment_id, e.probs, g.start FROM seg_evals e
+        JOIN segments g ON g.id = e.segment_id
+        LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
+        LEFT JOIN review_questions q ON q.segment_id = e.segment_id
+        WHERE g.start >= ? AND e.probs IS NOT NULL
+          AND e.switch_label IN ('continuation','return')
+          AND rv.segment_id IS NULL AND q.id IS NULL
+        ORDER BY g.start DESC LIMIT 400""", (time.time() - 2 * 86400,)).fetchall():
+        try:
+            ap = json.loads(r["probs"]).get("antecedent") or {}
+        except ValueError:
+            continue
+        if ap and max(ap.values()) < 0.6:
+            out.append({"segment_id": r["segment_id"], "source": "thread_link",
+                        "reason": (f"the evaluator was torn about which thread this continues "
+                                   f"(top attachment only {max(ap.values()):.0%} confident)"),
+                        "ts": r["start"]})
     out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
     out.sort(key=lambda x: ({"coherence": 0, "propagation": 1, "audit": 2, "ensemble": 3}.get(x["source"], 4), -x["ts"]))
     return out

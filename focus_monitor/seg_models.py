@@ -289,6 +289,41 @@ def can_defer(sc: dict, combined: dict, cfg) -> bool:
 
 # ---- spend-efficiency instrumentation ---------------------------------------------------------
 
+def antecedent_rank_report(conn) -> dict:
+    """When the user pins a thread edge, where did their antecedent land in the evaluator's
+    ranked candidates? Thread-ROOT equivalence, not strict id match (pointing at a different
+    member of the right thread is a hit). rank3 hits are the evidence for extending the
+    candidate list to 5; persistent misses mean the candidates are not covering the truth."""
+    import json as _json
+    ante = {r[0]: r[1] for r in conn.execute(
+        "SELECT segment_id, antecedent_id FROM seg_evals WHERE antecedent_id IS NOT NULL")}
+
+    def root(i):
+        hops = 0
+        while i in ante and hops < 30:
+            i = ante[i]
+            hops += 1
+        return i
+
+    counts = {"rank1": 0, "rank2": 0, "rank3": 0, "miss": 0, "n": 0}
+    for r in conn.execute("""SELECT r.antecedent_id ua, e.probs FROM seg_reviews r
+                             JOIN seg_evals e ON e.segment_id = r.segment_id
+                             WHERE r.antecedent_id IS NOT NULL AND e.probs IS NOT NULL"""):
+        try:
+            ap = _json.loads(r["probs"]).get("antecedent") or {}
+        except ValueError:
+            continue
+        if not ap:
+            continue
+        ranked = [int(k) for k, _ in sorted(ap.items(), key=lambda kv: -kv[1])]
+        ur = root(r["ua"])
+        hit = next((i for i, cand in enumerate(ranked[:3])
+                    if cand == r["ua"] or root(cand) == ur), None)
+        counts["miss" if hit is None else f"rank{hit + 1}"] += 1
+        counts["n"] += 1
+    return counts
+
+
 def efficiency_report(conn) -> dict:
     """Where does LLM spend buy accuracy, and where do the cheap models already cover it?
     Scored against the user's edits (ground truth). Per judgment head: local-only accuracy vs

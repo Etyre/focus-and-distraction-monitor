@@ -275,7 +275,10 @@ def api_span_review(r: SpanReview):
 @app.get("/api/efficiency")
 def api_efficiency():
     from . import seg_models
-    return seg_models.efficiency_report(conn())
+    c = conn()
+    rep = seg_models.efficiency_report(c)
+    rep["antecedent_ranks"] = seg_models.antecedent_rank_report(c)
+    return rep
 
 
 @app.get("/api/efforts/summary")
