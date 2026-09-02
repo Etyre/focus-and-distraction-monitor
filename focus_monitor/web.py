@@ -33,13 +33,16 @@ def api_day(day: str | None = None):
     t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
     se = stats.spans_and_events(segs, conn=c)
-    selected = set(stats.select_for_review(c, t0, t1, cfg.max_reviews_per_day))
-    # Switch reviews wait until the containing span is confirmed (two-tier review).
-    unconf = [(sp["start"], sp["end"]) for sp in se["focus_spans"] + se["disqualified"]
-              if not sp.get("confirmed")]
+    # "Needs review" marks the PRIMARY review stream: segments with an open question, or an
+    # unresolved uncertainty flag (evaluator self-doubt, audit, feedback propagation). Not
+    # gated behind span confirmation - questions are tier one.
+    qsegs = {r[0] for r in c.execute("SELECT segment_id FROM review_questions WHERE status='open'")}
+    usegs = {r[0] for r in c.execute("""SELECT e.segment_id FROM seg_evals e
+        LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
+        WHERE e.uncertain = 1 AND rv.segment_id IS NULL""")}
     for s in segs:
-        gated = any(a - 1 <= s["clip_start"] < b + 1 for a, b in unconf)
-        s["needs_review"] = s.get("switch_id") in selected and s.get("source") != "review" and not gated
+        s["needs_review"] = (s["id"] in qsegs or s["id"] in usegs) and s.get("source") != "review"
+    selected = {s["id"] for s in segs if s["needs_review"]}
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
@@ -56,7 +59,7 @@ def api_day(day: str | None = None):
         return row["title"] if row is not None else None
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
             "spend_total": db.spend_total(c), "budget_total": cfg.total_budget_usd,
-            "to_review": len(selected), "reviewed": reviewed,
+            "to_review": len(selected), "reviewed": reviewed,  # open questions + unresolved flags today
             "short_breaks": stats.short_breaks(c, t0, t1),
             "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
                        "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
