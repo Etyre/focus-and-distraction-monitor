@@ -241,6 +241,11 @@ class ClassifierService:
         except Exception:
             log.exception("span summaries failed")
         try:
+            from . import propagation
+            propagation.process_pending(self.conn, self.cfg)
+        except Exception:
+            log.exception("feedback propagation failed")
+        try:
             from . import questions
             questions.generate_pending(self.conn, self.cfg)
         except Exception:

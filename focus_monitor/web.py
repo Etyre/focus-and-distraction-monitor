@@ -440,6 +440,8 @@ def api_question_answer(qid: int, a: QAnswer):
                        o.get("switch_label") or (prev["switch_label"] if prev else None),
                        o.get("interruption_kind") if o.get("switch_label") == "interruption" else (None if o.get("switch_label") else (prev["interruption_kind"] if prev else None)),
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time()))
+            from . import propagation
+            propagation.note_event(c, o["segment_id"])
             old = _NEW2OLD.get((o.get("switch_label"),
                                 o.get("interruption_kind") if o.get("switch_label") == "interruption" else None))
             sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (o["segment_id"],)).fetchone()
@@ -528,6 +530,9 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
         c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, note, created)"
                   " VALUES (?,?,?,?,?,?)",
                   (segment_id, r.content, r.switch_label, r.interruption_kind, r.note, time.time()))
+        if r.content or r.switch_label:
+            from . import propagation
+            propagation.note_event(c, segment_id)
         old = _NEW2OLD.get((r.switch_label, r.interruption_kind if r.switch_label == "interruption" else None))
         sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (segment_id,)).fetchone()
         if old and sw:

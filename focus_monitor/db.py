@@ -178,6 +178,16 @@ CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review question
 );
 CREATE INDEX IF NOT EXISTS review_questions_status ON review_questions(status);
 
+CREATE TABLE IF NOT EXISTS feedback_events (  -- user corrections queued for propagation:
+    id INTEGER PRIMARY KEY,                   --  does this feedback apply to other segments?
+    segment_id INTEGER NOT NULL REFERENCES segments(id),
+    processed INTEGER NOT NULL DEFAULT 0,
+    n_applied INTEGER NOT NULL DEFAULT 0,
+    n_flagged INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS effort_trials (   -- every judgment call is shadowed at lower
     id INTEGER PRIMARY KEY,                  --  efforts; same prompt, compared and kept
     role TEXT NOT NULL,          -- segment_evaluator | span_summarizer | daily_audit
@@ -334,7 +344,7 @@ def reviews_with_context(conn, limit: int | None = None) -> list[dict]:
 def spend_total(conn) -> float:
     """All Claude spend, ever, across every cost table."""
     total = 0.0
-    for t in ("predictions", "span_summaries", "thread_calls", "eval_runs", "review_questions"):
+    for t in ("predictions", "span_summaries", "thread_calls", "eval_runs", "review_questions", "feedback_events"):
         total += float(conn.execute(f"SELECT COALESCE(SUM(cost_usd),0) FROM {t}").fetchone()[0])
     total += float(conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM effort_trials WHERE is_primary=0").fetchone()[0])
     return total
@@ -354,4 +364,7 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     frow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM effort_trials WHERE created >= ? AND is_primary=0",
                         (start,)).fetchone()
-    return float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0]) + float(frow[0])
+    prow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM feedback_events WHERE created >= ?",
+                        (start,)).fetchone()
+    return (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
+            + float(frow[0]) + float(prow[0]))
