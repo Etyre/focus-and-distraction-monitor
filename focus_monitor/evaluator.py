@@ -388,6 +388,36 @@ def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> in
     return n
 
 
+def derive_kind(conn, cfg: Config | None = None, segment_id: int = 0, note: str | None = None) -> int:
+    """The person ruled a segment a SEPARATE THREAD (switch='interruption') without choosing a
+    kind - by design: thread identity is theirs, but whether that thread became a sustained
+    object (focus_start) or not (detour) is derived from the recorded data. Re-judge the
+    stretch with their ruling in hand. Their switch verdict is sacred (seg_reviews outranks
+    field-by-field); only the derived kind shows through the review's NULL kind."""
+    cfg = cfg or load_config()
+    g = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
+    if not g:
+        return 0
+    t0 = g["start"] - 300
+    t1 = min((g["end"] or g["start"]) + 2400, time.time() - 60)  # after-context decides the kind
+    extra = (f"The person has RULED that segment id={segment_id} began a SEPARATE thread from "
+             f"what preceded it (their ruling is authoritative - do not relitigate it"
+             + (f"; their note: {note}" if note else "") + "). "
+             f"Your job is the derived half: given the recorded record of what FOLLOWED, judge "
+             f"what that thread became - interruption_kind='focus_start' if it became a "
+             f"sustained object of focused attention, 'detour' if it stayed brief or never "
+             f"cohered, 'self_distraction' if it became consumption. Re-judge the affected "
+             f"segments' kinds (and downstream switches like returns) accordingly.")
+    try:
+        n = _get().evaluate_chunk(conn, t0, t1, extra=extra)
+        log.info("kind derivation after thread ruling on segment %d: %d segments re-judged",
+                 segment_id, n)
+        return n
+    except Exception:
+        log.exception("kind derivation failed for segment %d", segment_id)
+        return 0
+
+
 def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
     """Talk to "the one who made the decision": reconstitute the EXACT evaluation conversation
     (same system prompt, same user message with the same screenshots, its actual response), then

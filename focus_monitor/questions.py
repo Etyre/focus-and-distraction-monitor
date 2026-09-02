@@ -36,9 +36,9 @@ MAX_TRIGGERS_PER_CALL = 6
 class QOption(BaseModel):
     label: str = Field(description="The answer in the person's own terms, e.g. 'a continuation of the essay writing'.")
     segment_id: int = Field(description="The segment this option's edit applies to.")
-    switch_label: str | None = Field(default=None, description="continuation | interruption | return, when the option settles the switch judgment.")
-    interruption_kind: str | None = Field(default=None, description="self_distraction | focus_start | detour, when switch_label is 'interruption'.")
-    content: str | None = Field(default=None, description="A content label, when the option settles content.")
+    switch_label: str | None = Field(default=None, description="continuation | interruption | return, when the option settles the thread relation.")
+    interruption_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
+    content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
 
 
 class GeneratedQuestion(BaseModel):
@@ -71,18 +71,33 @@ email. Then you started talking to Claude. Was talking to Claude a continuation 
 task, or a shift in your focus of attention?" Always frame against the WORK THREAD, naming what \
 they were doing, skipping over contained detours.
 
+WHAT TO ASK (the person's own division of labor): the person is ground truth for INTENTION and \
+for AMBIGUOUS CONTENT - nothing else. Two canonical thread forms:
+  1. "You were doing A, then switched to B. Was B part of the A task, or a separate thread?" \
+- same thread: switch_label='continuation'; separate thread: switch_label='interruption'.
+  2. "You were doing A, briefly went to B, then switched to C. Was C the same thread/intention \
+as A, or something different?" - same: switch_label='return'; different: \
+switch_label='interruption'.
+Content questions are equally welcome when content is the doubt: "was drafting that Signal \
+message routine correspondence ('other') or writing you were absorbed in ('creative')?" - each \
+option sets a content label.
+In general, do NOT ask the person whether something was "a quick detour or the start of a new \
+focus" - that answer mixes two facts: whether it was a separate thread (theirs to say) and \
+whether it went on long and coherently enough to be its own span (the app records the data and \
+derives this). Options therefore never set interruption_kind; asserting 'interruption' is \
+enough - the app derives the kind from what followed. The standing exception: a confusion or \
+uncertainty the system genuinely cannot resolve from its data should always be surfaced to the \
+person - but then the question must name the actual confusion in its own terms, not launder it \
+into a label choice.
+
 Rules for options:
 - Natural language first ("a continuation of the essay work"), schema underneath: each option \
-sets switch_label (continuation | interruption | return) and, for interruption, the kind \
-(self_distraction | focus_start | detour); or a content label when content is what's in doubt.
-- For boundary doubts ("did a new piece of work start here?"), the split option is \
-switch_label='interruption', interruption_kind='focus_start' on the segment where the new work \
-would begin.
-- For coherence doubts (a span that contains TWO objects of attention), ask about the moment \
-the SECOND object begins - the split point named or implied in the doubt's reason - and you MUST \
-include an option affirming the split: switch_label='interruption', \
-interruption_kind='focus_start' on the segment where the second object begins (its id is \
-visible in the log). "Did a new piece of work start at <time>?" is the shape.
+sets switch_label (a thread relation) or a content label.
+- For boundary and coherence doubts (a stretch that may contain TWO objects of attention), ask \
+about the moment the SECOND object would begin - the split point named or implied in the \
+doubt's reason - and you MUST include an option asserting the separate thread: \
+switch_label='interruption' on the segment where it begins (its id is visible in the log). \
+"Was <activity> at <time> a separate piece of work, or still part of <thread A>?" is the shape.
 - Options must be mutually exclusive and cover the plausible readings. Do not editorialize; \
 the person decides.
 
@@ -261,16 +276,16 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             for o in q.options:
                 if o.switch_label is not None and o.switch_label not in SWITCHES:
                     continue
-                if o.interruption_kind is not None and o.interruption_kind not in KINDS:
-                    continue
                 if o.content is not None and o.content not in CONTENTS:
                     continue
+                # Kinds are never solicited: the person asserts the thread relation; the app
+                # derives detour/focus_start/self_distraction from what the thread became.
                 opts.append({"label": o.label, "segment_id": o.segment_id,
                              "switch_label": o.switch_label,
-                             "interruption_kind": o.interruption_kind, "content": o.content})
+                             "interruption_kind": None, "content": o.content})
             if len(opts) < 2:
                 continue
-            if t["source"] == "coherence" and not any(o.get("interruption_kind") == "focus_start" for o in opts):
+            if t["source"] == "coherence" and not any(o.get("switch_label") == "interruption" for o in opts):
                 log.warning("rejecting coherence question without a split option (segment %d)", q.trigger_segment_id)
                 continue
             # Always offer the pass-through reading - the person may know they were only

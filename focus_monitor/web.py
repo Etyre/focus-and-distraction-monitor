@@ -49,6 +49,22 @@ def _kick_question_generation():
     threading.Thread(target=_run, daemon=True, name="qgen-on-demand").start()
 
 
+def _kick_kind_derivation(segment_id: int, note: str | None = None):
+    """The person asserted 'separate thread' without a kind - the kind is the app's to derive
+    (from what the thread became). Run the evaluator's derivation pass in the background."""
+    def _run():
+        try:
+            from . import evaluator
+            c2 = db.connect()
+            try:
+                evaluator.derive_kind(c2, cfg, segment_id, note)
+            finally:
+                c2.close()
+        except Exception:
+            log.exception("kind derivation kick failed for segment %d", segment_id)
+    threading.Thread(target=_run, daemon=True, name="kind-derive").start()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
@@ -540,6 +556,8 @@ def api_question_answer(qid: int, a: QAnswer):
         # The answer resolves the doubt this question was generated for, even when the chosen
         # option edits a different segment - otherwise the needs-review dot never goes away.
         c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
+    if o.get("switch_label") == "interruption" and not o.get("interruption_kind"):
+        _kick_kind_derivation(o["segment_id"], a.note)
     return {"ok": True}
 
 
@@ -630,6 +648,8 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
             c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
                       (sw["id"], old, r.note, time.time()))
             c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+    if r.switch_label == "interruption" and not r.interruption_kind:
+        _kick_kind_derivation(segment_id, r.note)
     return {"ok": True}
 
 
