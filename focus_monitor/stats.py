@@ -410,18 +410,32 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     runs = _runs3(segs)
     break_s = break_min * 60
 
-    def _same_task(sp, r):
+    def _same_task(sp, r, away=()):
         """Is focus run r the same task as span sp? (returning to the exact window/site, a
         continuation-type focus, or a task-change the model is not confident about -> same task.)"""
         focus_runs = [x for x in sp["runs"] if x["cat"] == "focus"]
         if not focus_runs:
             return False
         first = r["segments"][0]
-        last = focus_runs[-1]["segments"][-1]
+        last_run = focus_runs[-1]
+        last = last_run["segments"][-1]
         if (first["app"], first["domain"]) == (last["app"], last["domain"]):
             return True
         if not r.get("focus_start"):
-            return True  # continuation-type focus = same task
+            # Continuation/return judgments are CHAINED - they continue whatever came
+            # immediately before, which is not the span once `away` holds a focus run already
+            # refused as a different task (postmortem 2026-09-02: a 19-second detour split a
+            # new task in two, and the second half - labeled a mere continuation - was glued
+            # back onto the old span, burying a correctly judged boundary and making the
+            # user's own split ruling ineffective). With a rival thread in away, a
+            # non-focus_start run rejoins the span only by returning to its surfaces.
+            away_focus = [x for x in away if x["cat"] == "focus"]
+            if not away_focus:
+                return True  # continuation-type focus with no rival thread = the span continuing
+            span_ctxs = {(sg["app"], sg["domain"]) for sg in last_run["segments"]}
+            if (first["app"], first["domain"]) in span_ctxs:
+                return True   # back on the span's own surfaces
+            return False      # continues the away thread (chain semantics)
         if first.get("eval_split_p") is not None:
             # The judgment belongs to the model (and above it, the user). Whether task-to-task
             # switching under a running Toggl entry is one focused-task block is the
@@ -488,7 +502,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if r["cat"] == "idle":
                 out.append(_finalize(cur, reason() if away else "away"))
                 return out + _assemble((away + rs[i + 1:]) if away else rs[i + 1:])
-            if r["cat"] == "focus" and _same_task(cur, r):
+            if r["cat"] == "focus" and _same_task(cur, r, away):
                 if away:
                     if away_s() < break_s:  # brief diversion -> contained interruption(s), span continues
                         for ar in away:
