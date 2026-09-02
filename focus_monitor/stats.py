@@ -662,16 +662,20 @@ def daily_metrics(conn, day: dt.date) -> dict:
     segs = labelled_segments(conn, t0, t1)
     se = spans_and_events(segs, conn=conn)
     focus = se["focus_spans"]
+    # Meetings are focus, but their own kind: counted separately, never in "total focus".
+    work = [s for s in focus if s.get("subtype") != "meeting"]
+    meetings = [s for s in focus if s.get("subtype") == "meeting"]
     breaks = short_breaks(conn, t0, t1)
     return {
         "short_breaks": len(breaks),
         "short_break_min": sum(b["end"] - b["start"] for b in breaks) / 60,
         "day": day.isoformat(),
-        "longest_focus_min": max((s["duration"] for s in focus), default=0) / 60,
-        "longest_absorbed_min": max((s.get("absorbed_max_min", 0.0) for s in focus
+        "longest_focus_min": max((s["duration"] for s in work), default=0) / 60,
+        "longest_absorbed_min": max((s.get("absorbed_max_min", 0.0) for s in work
                                      if s.get("subtype") != "focused_task"), default=0.0),
-        "fully_absorbed_spans": sum(1 for s in focus if s.get("fully_absorbed")),
-        "total_focus_min": sum(s["focus_min"] for s in focus),
+        "fully_absorbed_spans": sum(1 for s in work if s.get("fully_absorbed")),
+        "total_focus_min": sum(s["focus_min"] for s in work),
+        "meeting_focus_min": sum(s["focus_min"] for s in meetings),
         "detours_in_spans": sum(len(s["detours"]) for s in focus),
         "detour_min_in_spans": sum(s["detour_min"] for s in focus),
         # An attention-interruption event = any diversion inside a focus span (self-distraction included).
