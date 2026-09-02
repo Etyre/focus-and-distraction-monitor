@@ -247,7 +247,11 @@ class ClassifierService:
             log.exception("feedback propagation failed")
         try:
             from . import questions
-            questions.generate_pending(self.conn, self.cfg)
+            # Drain the whole backlog: a burst of flags (audit sweep, propagation) must have
+            # its questions composed this cycle, not 6 per cycle - the review page needs them.
+            for _ in range(5):
+                if questions.generate_pending(self.conn, self.cfg) == 0:
+                    break
         except Exception:
             log.exception("question generation failed")
         return len(ids)

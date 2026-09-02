@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import threading
 import time
 from pathlib import Path
 
@@ -15,10 +17,36 @@ from .config import DATA_DIR, load_config, logical_date
 app = FastAPI(title="Focus Monitor")
 cfg = load_config()
 HTML = (Path(__file__).parent / "dashboard.html").read_text()
+log = logging.getLogger("web")
 
 
 def conn():
     return db.connect()
+
+
+_qgen_busy = threading.Lock()
+
+
+def _kick_question_generation():
+    """Generate questions for flagged-but-questionless segments right now, in the background -
+    opening the review queue must not wait minutes for the classifier loop to catch up."""
+    if not _qgen_busy.acquire(blocking=False):
+        return  # a generation pass is already running
+    def _run():
+        try:
+            from . import questions
+            c2 = db.connect()
+            try:
+                for _ in range(3):  # drain a burst; stop as soon as a pass yields nothing
+                    if questions.generate_pending(c2, cfg) == 0:
+                        break
+            finally:
+                c2.close()
+        except Exception:
+            log.exception("on-demand question generation failed")
+        finally:
+            _qgen_busy.release()
+    threading.Thread(target=_run, daemon=True, name="qgen-on-demand").start()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -322,6 +350,15 @@ def api_switch(switch_id: int):
     if qrow:
         full["question"] = dict(qrow)
         full["question"]["options"] = _json.loads(full["question"]["options"])
+    else:
+        # Flagged but no question composed yet: start composing now so a reload has it.
+        flagged = c.execute("""SELECT 1 FROM seg_evals e LEFT JOIN seg_reviews r ON r.segment_id=e.segment_id
+                               LEFT JOIN review_questions q ON q.segment_id=e.segment_id
+                               WHERE e.segment_id=? AND e.uncertain=1 AND r.segment_id IS NULL
+                               AND q.id IS NULL""", (to_id,)).fetchone()
+        if flagged:
+            full["question_pending"] = True
+            _kick_question_generation()
     full["to_shots"] = [dict(r) for r in c.execute(
         "SELECT ts, path, display FROM segment_shots WHERE segment_id=? ORDER BY ts", (to_id,))]
     full["to_eval"] = (lambda r: dict(r) if r else None)(
@@ -433,6 +470,33 @@ def api_questions_queue(limit: int = 30):
                                "description": e["description"], "project": e["project"]}
                               for e in toggl.entries_between(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)]
         out.append(d)
+    # Flagged segments whose question hasn't been composed yet: show them as pending cards
+    # (the person opened the queue - the question must exist NOW) and start generating.
+    try:
+        from . import questions as _q
+        pending = _q._triggers(c)[:8]
+        for t in pending:
+            g = c.execute("SELECT * FROM segments WHERE id=?", (t["segment_id"],)).fetchone()
+            if not g:
+                continue
+            seg_start, seg_end = g["start"], g["end"] or g["start"]
+            segs = stats.labelled_segments(c, seg_start - QCTX_S, seg_end + QCTX_S)
+            out.append({
+                "id": None, "pending": True, "segment_id": t["segment_id"], "source": t["source"],
+                "context": t["reason"], "question": None, "options": [],
+                "seg_start": seg_start, "seg_end": seg_end,
+                "app": g["app"], "title": g["title"], "domain": g["domain"],
+                "switch_id": (lambda r: r["id"] if r else None)(c.execute(
+                    "SELECT id FROM switches WHERE to_segment=? LIMIT 1", (t["segment_id"],)).fetchone()),
+                "timeline": [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0],
+                "toggl_entries": [{"start": max(e["start"], seg_start - QCTX_S),
+                                   "end": min(e["stop"] or time.time(), seg_end + QCTX_S),
+                                   "description": e["description"], "project": e["project"]}
+                                  for e in toggl.entries_between(c, seg_start - QCTX_S, seg_end + QCTX_S)]})
+        if pending:
+            _kick_question_generation()
+    except Exception:
+        log.exception("pending-question placeholders failed")
     return out
 
 

@@ -114,13 +114,15 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     """Doubts worth a question, newest first, deduped against existing questions/reviews."""
     t0 = time.time() - lookback_s
     out = []
+    # No time cutoff on uncertainty flags: every flag lights a needs-review dot on the
+    # timeline, and every dot must have a question waiting - however old the segment.
     rows = conn.execute("""
         SELECT e.segment_id, e.uncertain, e.rationale, g.start
         FROM seg_evals e JOIN segments g ON g.id = e.segment_id
         LEFT JOIN seg_reviews r ON r.segment_id = e.segment_id
         LEFT JOIN review_questions q ON q.segment_id = e.segment_id
-        WHERE g.start >= ? AND e.uncertain = 1 AND r.segment_id IS NULL AND q.id IS NULL
-        ORDER BY g.start DESC""", (t0,)).fetchall()
+        WHERE e.uncertain = 1 AND r.segment_id IS NULL AND q.id IS NULL
+        ORDER BY g.start DESC""").fetchall()
     for r in rows:
         rat = r["rationale"] or ""
         src = ("audit" if "daily audit" in rat
