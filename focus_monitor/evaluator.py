@@ -10,10 +10,10 @@ judges:
   2. SWITCH - what the switch INTO the segment was, attention-wise:
      continuation (no shift of the object of attention) | interruption (a shift) |
      return (coming back to the pre-interruption object)
-  3. For interruptions, the KIND:
-     self_distraction (stimulation-seeking; usual when the target is passive consumption) |
-     focus_start (deliberately starting a new piece of focused work) |
-     detour (a reactive/task-adjacent shift that is neither)
+  3. For interruptions, the KIND - a retrospective judgment of what the shift BECAME:
+     self_distraction (it became stimulation-seeking/consumption) |
+     focus_start (it became a sustained new object of focused attention) |
+     detour (it didn't become either - brief, or never cohered into one focused thing)
 
 The user audits and edits these (seg_reviews); edits are authoritative for state derivation
 and are fed back to the evaluator as few-shot corrections, so it learns over time."""
@@ -92,13 +92,18 @@ sufficient (people forget timers); and without a running entry, task-to-task hop
 one block - judge each shift on its own.
    - interruption: the object of attention changed.
    - return: coming back to the object they were on before an interruption.
-3. interruption_kind - ONLY for switch='interruption':
-   - self_distraction: seeking stimulation without clear intent (usually when the target content \
-is passive; going to a blocked site; absent-mindedly opening feeds/shopping/dating apps).
-   - focus_start: deliberately starting a NEW piece of focused work (often marked by starting a \
-Toggl entry, opening a todo list, or settling into new material with notes).
-   - detour: a reactive or task-adjacent shift that is neither - answering a message, a stray \
-question, a quick errand.
+3. interruption_kind - ONLY for switch='interruption'. These are RETROSPECTIVE judgments: you \
+see what came after, so name what the shift BECAME, not what it looked like in the moment.
+   - self_distraction: the time away became stimulation-seeking/consumption (passive content, \
+feeds, a blocked site, absent-minded shopping/dating apps) - regardless of how long it lasted.
+   - focus_start: the shift became a SUSTAINED new object of focused attention - the person \
+settled into a new piece of work and stayed with it. Markers like a fresh Toggl entry, a todo \
+list, or note-taking are supporting evidence, but what settles the label is what actually \
+followed. A deliberate, work-like shift the person abandoned within a few minutes to return \
+to the prior work is a detour, not a focus_start, however intentional it looked.
+   - detour: the shift did NOT become a new sustained object - either brief (they soon returned \
+to what they were doing) or the time away never cohered into one focused thing (answering a \
+message, a stray question, a quick errand, unfocused bouncing between surfaces).
 
 Judge each segment in the context of the whole stretch - what came before AND after it. A flip to \
 a notes app mid-video does not make the video session work; a quick message check inside a writing \
