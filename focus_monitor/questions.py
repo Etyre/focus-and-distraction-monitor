@@ -122,7 +122,9 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
         WHERE g.start >= ? AND e.uncertain = 1 AND r.segment_id IS NULL AND q.id IS NULL
         ORDER BY g.start DESC""", (t0,)).fetchall()
     for r in rows:
-        src = "audit" if (r["rationale"] or "").find("daily audit") >= 0 else "self_uncertain"
+        rat = r["rationale"] or ""
+        src = ("audit" if "daily audit" in rat
+               else "propagation" if "your correction" in rat else "self_uncertain")
         out.append({"segment_id": r["segment_id"], "source": src,
                     "reason": (r["rationale"] or "")[-200:], "ts": r["start"]})
     # coherence flags -> a boundary question anchored at the CHANGEPOINT: the first segment
@@ -186,7 +188,7 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
                             "ts": row["ts"]})
     seen: set = set()
     out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
-    out.sort(key=lambda x: ({"coherence": 0, "audit": 1, "ensemble": 2}.get(x["source"], 3), -x["ts"]))
+    out.sort(key=lambda x: ({"coherence": 0, "propagation": 1, "audit": 2, "ensemble": 3}.get(x["source"], 4), -x["ts"]))
     return out
 
 

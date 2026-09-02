@@ -40,13 +40,25 @@ def api_day(day: str | None = None):
     usegs = {r[0] for r in c.execute("""SELECT e.segment_id FROM seg_evals e
         LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
         WHERE e.uncertain = 1 AND rv.segment_id IS NULL""")}
+    qsrc = {r[0]: r[1] for r in c.execute("SELECT segment_id, source FROM review_questions WHERE status='open'")}
+    urat = {r[0]: (r[1] or "") for r in c.execute("""SELECT e.segment_id, e.rationale FROM seg_evals e
+        LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
+        WHERE e.uncertain = 1 AND rv.segment_id IS NULL""")}
+    def _tier(sid):
+        srcq = qsrc.get(sid, "")
+        rat = urat.get(sid, "")
+        if srcq in ("coherence", "audit") or "daily audit" in rat or "your correction" in rat:
+            return "high"
+        return "routine"
     for s in segs:
         s["needs_review"] = (s["id"] in qsegs or s["id"] in usegs) and s.get("source") != "review"
+        if s["needs_review"]:
+            s["review_tier"] = _tier(s["id"])
     selected = {s["id"] for s in segs if s["needs_review"]}
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "toggl_id", "toggl_desc")} for s in segs]
+                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "toggl_id", "toggl_desc", "review_tier")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])

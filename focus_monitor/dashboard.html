@@ -253,7 +253,8 @@ function renderTimeline(){
   const flags=[],seen=new Set();
   segs.forEach(g=>{if(g.needs_review&&!seen.has(g.switch_id)&&vis(g.clip_start,g.clip_start+1)){seen.add(g.switch_id);flags.push(g);}});
   s+=`<text x="${L}" y="114" fill="var(--distracted)">Needs review</text>`;
-  flags.forEach((g,i)=>{const cx=xc(g.clip_start);s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="0.5"/><circle data-flag="${g.switch_id}" cx="${cx}" cy="108" r="5" fill="var(--distracted)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"/>`;});
+  flags.forEach((g,i)=>{const cx=xc(g.clip_start);const hi=g.review_tier==='high';
+    s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="${hi?0.5:0.18}"/><circle data-flag="${g.switch_id}" cx="${cx}" cy="108" r="${hi?5:2.5}" fill="var(--distracted)" opacity="${hi?1:0.45}" stroke="var(--surface)" stroke-width="${hi?1.5:0.8}" style="cursor:pointer"/>`;});
   s+='</svg>';
   el_render(el_get(),s,d,segs,flags);
 }
@@ -354,7 +355,7 @@ function spanTLBind(sp){
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
 }
 let qQueue=[],qqi=0;
-const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)'};
+const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';
   const t0=q.seg_start-900,t1=q.seg_end+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
