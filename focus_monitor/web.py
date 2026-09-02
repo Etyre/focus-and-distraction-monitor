@@ -331,6 +331,9 @@ def api_switch(switch_id: int):
     te = next((e for e in toggl.entries_between(c, ts - 1, ts + 1)
                if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts)), None)
     full["toggl"] = {"description": te["description"], "project": te["project"], "tags": te["tags"]} if te else None
+    full["toggl_entries"] = [{"start": max(e["start"], ts - 900), "end": min(e["stop"] or time.time(), ts + 900),
+                              "description": e["description"], "project": e["project"]}
+                             for e in toggl.entries_between(c, ts - 900, ts + 900)]
     # The span this switch lands in (qualifying or disqualified), for audit context.
     from . import summaries as _summ
     full["span"] = None
@@ -425,6 +428,10 @@ def api_questions_queue(limit: int = 30):
         d["options"] = _json.loads(d["options"])
         segs = stats.labelled_segments(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
         d["timeline"] = [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0]
+        d["toggl_entries"] = [{"start": max(e["start"], d["seg_start"] - QCTX_S),
+                               "end": min(e["stop"] or time.time(), d["seg_end"] + QCTX_S),
+                               "description": e["description"], "project": e["project"]}
+                              for e in toggl.entries_between(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)]
         out.append(d)
     return out
 

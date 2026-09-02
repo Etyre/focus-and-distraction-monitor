@@ -354,12 +354,23 @@ function spanTLBind(sp){
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
 }
+function togglTrack(entries,x,t0,t1,L,yText,yBar,emptyMsg){
+  // Toggl track under a review timeline: whichever entry was running, same idiom as spanTL
+  let s=`<text x="${L}" y="${yText}" font-size="10" fill="var(--muted)">Toggl</text>`;
+  (entries||[]).forEach(e=>{if(e.end<=t0||e.start>=t1)return;
+    const x0=x(Math.max(e.start,t0)),w=Math.max(2,x(Math.min(e.end,t1))-x0-1);
+    const label=e.description||'(unnamed entry)';
+    s+=`<rect x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" fill="var(--m-ensemble)" opacity="0.7"><title>⏱ ${esc(label)}${e.project?' · '+esc(e.project):''} — ${fmtT(e.start)}–${fmtT(e.end)}</title></rect>`;
+    if(w>70)s+=`<text x="${x0+4}" y="${yBar+9}" font-size="9" fill="#fff" pointer-events="none">${esc(label.slice(0,Math.floor(w/6)))}</text>`;});
+  if(!(entries||[]).length)s+=`<text x="${L+44}" y="${yBar+10}" font-size="10" fill="var(--muted)">${emptyMsg}</text>`;
+  return s;
+}
 let qQueue=[],qqi=0;
 const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';
   const t0=q.seg_start-900,t1=q.seg_end+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
-  let s=`<svg viewBox="0 0 ${W} 92" style="width:100%;display:block" xmlns="http://www.w3.org/2000/svg" font-size="12" fill="var(--ink2)">`;
+  let s=`<svg viewBox="0 0 ${W} 122" style="width:100%;display:block" xmlns="http://www.w3.org/2000/svg" font-size="12" fill="var(--ink2)">`;
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="22" y2="70" stroke="var(--grid)"/><text x="${x(t)}" y="86" text-anchor="middle">${fmtT(t)}</text>`;
   segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
@@ -370,6 +381,7 @@ function qTL(q){
     s+=`<rect data-qi="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${isQ?1:0.8}" ${isQ?'stroke="var(--ink)" stroke-width="2"':unfB} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
   s+=`<line x1="${x(q.seg_start)}" x2="${x(q.seg_start)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
   s+=`<path d="M${x(q.seg_start)-6},4 L${x(q.seg_start)+6},4 L${x(q.seg_start)},15 Z" fill="var(--ink)"/>`;
+  s+=togglTrack(q.toggl_entries,x,t0,t1,L,98,102,'no Toggl entry in this window');
   s+='</svg>';
   return `<div id="qTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div><div class="muted small" style="margin:2px 0 6px">▾ the segment in question · hover any block for its capture · click to open</div>`;
 }
@@ -496,7 +508,7 @@ function segLine(s){if(!s)return '<span class="muted">(none)</span>';const dur=(
 function switchTL(f){
   const ts=f.switch.ts,t0=ts-900,t1=ts+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
   const segs=f.timeline||[];if(!segs.length)return '';
-  let s=`<svg viewBox="0 0 ${W} 92" style="width:100%;display:block" xmlns="http://www.w3.org/2000/svg" font-size="12" fill="var(--ink2)">`;
+  let s=`<svg viewBox="0 0 ${W} 122" style="width:100%;display:block" xmlns="http://www.w3.org/2000/svg" font-size="12" fill="var(--ink2)">`;
   const step=Math.max(60,Math.round((t1-t0)/8/60)*60);
   for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step)s+=`<line x1="${x(t)}" x2="${x(t)}" y1="22" y2="70" stroke="var(--grid)"/><text x="${x(t)}" y="86" text-anchor="middle">${fmtT(t)}</text>`;
   segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
@@ -505,6 +517,7 @@ function switchTL(f){
     const isCur=g.switch_id===f.switch.id;
     const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
+  s+=togglTrack(f.toggl_entries,x,t0,t1,L,98,102,'no Toggl entry in this window');
   // the switch marker doubles as a SCRUBBER: drag it (or use arrow keys) to step through
   // every screenshot in this window; the panel below shows the capture at the marker.
   // fixed red line: the exact switch under review (does not move; the scrub marker does)
