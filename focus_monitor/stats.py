@@ -68,7 +68,9 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                 pr = _json.loads(e["probs"])
             except ValueError:
                 pr = None
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr
+        u_sw = u is not None and bool(u["switch_label"])
+        u_kind = u is not None and bool(u["interruption_kind"])
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -117,7 +119,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc, v_probs = v
+            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind = v
             vsw = vsw or "continuation"
             if vsw == "continuation":
                 st = prev_state if prev_state != "idle" else "focus"
@@ -132,8 +134,21 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                      {"self_distraction": "distraction", "focus_start": "task_change",
                       "detour": "interruption"}.get(vkind or "detour", "interruption"))
             s["content"] = content
-            if edited:
-                s["eval_split_p"] = 1.0 if (vsw == "interruption" and vkind == "focus_start") else 0.0
+            # Split confidence: 1.0/0.0 only for the fields the USER actually set. A
+            # content-only edit must not harden the model's probabilistic split, and a
+            # switch-only "separate thread" ruling leaves sustainment (the kind) to the
+            # app's derived half - p(interruption)=1 by ruling, so split = p(kind=focus_start).
+            if u_sw:
+                s["split_user"] = True
+                if vsw != "interruption":
+                    s["eval_split_p"] = 0.0
+                elif u_kind:
+                    s["eval_split_p"] = 1.0 if vkind == "focus_start" else 0.0
+                else:
+                    kp = (v_probs or {}).get("kind", {})
+                    s["eval_split_p"] = (kp.get("focus_start", 0.0) if kp else
+                                         (1.0 if vkind == "focus_start" else
+                                          0.0 if vkind else 0.5))
             elif v_probs:
                 s["eval_split_p"] = (v_probs.get("switch", {}).get("interruption", 0.0)
                                      * v_probs.get("kind", {}).get("focus_start", 0.0))
@@ -440,8 +455,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             # The judgment belongs to the model (and above it, the user). Whether task-to-task
             # switching under a running Toggl entry is one focused-task block is the
             # EVALUATOR's call (its prompt carries the rule: Toggl is necessary, never
-            # sufficient); a user edit is exactly 1.0 / 0.0.
-            thr = 0.5 if first.get("source") == "review" else 0.25
+            # sufficient). The stricter threshold applies only when the USER set the switch -
+            # a content-only edit leaves the split a model judgment at the model threshold.
+            thr = 0.5 if first.get("split_user") else 0.25
             return first["eval_split_p"] < thr
         # ---- legacy fallback only (segments never judged by the evaluator) ----
         # Toggl glue is TASK-SCOPED: the Rules doc's stitching rule applies to focused-task
