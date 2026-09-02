@@ -473,6 +473,9 @@ def api_question_answer(qid: int, a: QAnswer):
                 c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
         c.execute("UPDATE review_questions SET status='answered', answer=?, note=?, answered_at=? WHERE id=?",
                   (o["label"], (a.note.strip() or None) if a.note else None, time.time(), qid))
+        # The answer resolves the doubt this question was generated for, even when the chosen
+        # option edits a different segment - otherwise the needs-review dot never goes away.
+        c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     return {"ok": True}
 
 
@@ -482,6 +485,8 @@ def api_question_dismiss(qid: int):
     with db.tx(c):
         c.execute("UPDATE review_questions SET status='dismissed', answered_at=? WHERE id=?",
                   (time.time(), qid))
+        c.execute("""UPDATE seg_evals SET uncertain=0 WHERE segment_id =
+                     (SELECT segment_id FROM review_questions WHERE id=?)""", (qid,))
     return {"ok": True}
 
 
