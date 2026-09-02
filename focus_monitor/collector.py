@@ -259,6 +259,12 @@ class Collector:
         now = time.time()
         gap = now - self.last_tick if self.last_tick else 0.0  # large gap => the process was suspended (system sleep)
         self.last_tick = now
+        if self.current_id is not None and gap < self.cfg.idle_seconds:
+            # Flush the open segment's end every tick: an unclean kill (dev restart, crash)
+            # must cost at most one poll interval - not the whole segment. (2026-09-02: seven
+            # dev restarts during long Terminal stretches each truncated an open ~25-minute
+            # segment to a 1-second sliver via _recover.)
+            self.conn.execute("UPDATE segments SET end=? WHERE id=?", (now, self.current_id))
         if self.paused:
             if not self.current_idle:  # record the pause as away time so spans break cleanly
                 self._switch_to(None, now, True)
