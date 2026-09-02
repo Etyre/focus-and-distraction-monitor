@@ -559,9 +559,12 @@ function switchTLBind(f){
 let segEvalSel=null;
 function evalBtns(cur,vals,names,field){return vals.map(v=>`<button class="small" style="${cur===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEdit('${field}','${v}')">${names[v]||v}</button>`).join(' ');}
 async function segEdit(field,val){
-  segEvalSel[field]=segEvalSel[field]===val?null:val;
-  if(field==='switch_label'&&val!=='interruption')segEvalSel.interruption_kind=null;
-  await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(segEvalSel)});
+  if(field!=='note'){
+    segEvalSel[field]=segEvalSel[field]===val?null:val;
+    if(field==='switch_label'&&val!=='interruption')segEvalSel.interruption_kind=null;
+  }
+  const note=($('#segNoteEv')&&$('#segNoteEv').value.trim())||null;
+  await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...segEvalSel,note:note})});
   renderSwitch(current.switch.id);
 }
 async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
@@ -582,6 +585,7 @@ async function renderSwitch(id){
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
+    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
