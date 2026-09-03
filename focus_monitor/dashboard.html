@@ -264,6 +264,20 @@ function renderTimeline(){
   el_render(el_get(),s,d,segs,flags);
 }
 function el_get(){return $('#timeline');}
+// Hovering the timeline shows the capture NEAREST the cursor's time, not the segment's first
+// shot - moving across a block scrubs through its captures. Shot lists load lazily per segment.
+const SEGSHOTS={};
+function shotNearest(g,t){
+  const c=SEGSHOTS[g.id];
+  if(c===undefined){SEGSHOTS[g.id]='loading';
+    api(`/api/segment/${g.id}/shots`).then(rows=>{SEGSHOTS[g.id]=rows;}).catch(()=>{SEGSHOTS[g.id]=[];});
+    return g.first_screenshot;}
+  if(c==='loading'||!c.length)return g.first_screenshot;
+  const f=c.find(s2=>s2.path===g.first_screenshot);const actD=f?f.display:0;
+  let pool=c.filter(s2=>s2.display===actD);if(!pool.length)pool=c;
+  let best=pool[0];for(const s2 of pool)if(Math.abs(s2.ts-t)<Math.abs(best.ts-t))best=s2;
+  return best.path;
+}
 function el_render(el,s,d,segs,flags){
   el.innerHTML=s;
   const spanOf=t=>d.focus_spans.find(sp=>t>=sp.start-1&&t<sp.end+1);
@@ -272,7 +286,10 @@ function el_render(el,s,d,segs,flags){
     r.addEventListener('mousemove',e=>{const sp0=spanOf(g.clip_start);const dq=g.state==='focus'&&!sp0&&disqOf(g.clip_start);const kind=g.source==='neutral'?'neutral (presence check)':(!g.content&&g.state!=='idle')?'pending evaluation (runs ~15 min behind)':g.state==='focus'?(sp0?subName[sp0.subtype]:(dq?'unfocused — '+(dq.reason||''):'focus')):(g.state==='idle'?'idle (away)':'unfocused');
       const holder=sp0||disqOf(g.clip_start);
       const spanStart=holder&&Math.abs(g.clip_start-holder.start)<1;
-      showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
+      const bb=el.querySelector('svg').getBoundingClientRect();
+      const tCur=TL.view0+((e.clientX-bb.left)/bb.width*1200-8)/(1200-16)*(TL.view1-TL.view0);
+      const shot=shotNearest(g,Math.max(g.clip_start,Math.min(g.clip_end,tCur)))||g.first_screenshot;
+      showTT(e,`${shot?`<img src="/shot/${shot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;

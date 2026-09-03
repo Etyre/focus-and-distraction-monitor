@@ -641,6 +641,14 @@ _NEW2OLD = {("continuation", None): "continuation", ("return", None): "task_chan
             ("interruption", "detour"): "interruption"}
 
 
+@app.get("/api/segment/{segment_id}/shots")
+def api_segment_shots(segment_id: int):
+    """All captures of one segment - the timeline hover scrubs through these by cursor time."""
+    c = conn()
+    return [dict(r) for r in c.execute(
+        "SELECT ts, path, display FROM segment_shots WHERE segment_id=? ORDER BY ts", (segment_id,))]
+
+
 @app.post("/api/segment/{segment_id}/eval-review")
 def api_seg_eval_review(segment_id: int, r: SegEvalReview):
     from .evaluator import CONTENTS, KINDS, SWITCHES
