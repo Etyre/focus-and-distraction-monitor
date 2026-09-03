@@ -387,7 +387,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
             sp["confirmed"] = True
             if r["subtype"] in SUBTYPES:
                 sp["subtype"] = r["subtype"]
-            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
             keep_q.append(sp)
     for sp in disqualified:
         r = _span_review_for(rows, sp)
@@ -395,7 +395,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
             sp["confirmed"] = True
             sp["subtype"] = r["subtype"] if r["subtype"] in SUBTYPES else "other_focused"
             sp.pop("disq_reason", None)
-            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
             keep_q.append(sp)
         else:
             sp["confirmed"] = r is not None
@@ -585,7 +585,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         sp["subtype"] = span_subtype(sp, _cfg)
         # Fully-absorbed = zero interruptions AND a single object of attention - a focused-task
         # span is inherently task-switching, so it never counts (Rules doc).
-        sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] != "focused_task"
+        sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
         # The doc defines fully-absorbed as "a LENGTH of focus span with 0 interruption
         # events" - a stretch, not only a whole span. Longest unbroken focus stretch:
         best = cur = 0.0
