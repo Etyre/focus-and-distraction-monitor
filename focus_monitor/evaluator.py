@@ -72,7 +72,9 @@ activity's nature only - whether a Toggl timer is running is NOT part of this ju
    - correspondence: communicating with people in writing - chatting on Signal/Messages/\
 WhatsApp/Slack, reading and answering email, replying to comments or DMs. The exchange itself \
 is the activity. (A live voice/video call is 'meeting'; a message that is really a piece of \
-writing the person is absorbed in composing can be 'creative'.) Correspondence is interactive, \
+writing the person is absorbed in composing can be 'creative'.) Opening a chat only to fetch a \
+link, file, or reference on the way to a task is NOT correspondence - no exchange is happening - \
+it is 'transition' (or 'task'), whatever the app. Correspondence is interactive, \
 so on its own it is never part of a focus span - but label the segment's nature regardless: \
 email processed between other tasks under a running Toggl entry is still 'correspondence' \
 content, and the span logic decides that it belongs to the task block.
