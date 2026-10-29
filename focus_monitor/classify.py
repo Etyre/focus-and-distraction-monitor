@@ -231,6 +231,7 @@ class ClassifierService:
         try:
             from . import evaluator
             evaluator.run_pending(self.conn, self.cfg)  # supersedes the per-switch thread resolver
+            evaluator.run_reevaluations(self.conn, self.cfg)  # stretches whose Toggl entries changed later
             evaluator.daily_audit(self.conn, self.cfg)  # once a day; a fast no-op otherwise
             evaluator.refine_incoherent(self.conn, self.cfg)  # auto-correct model-vs-model findings
         except Exception:
@@ -254,6 +255,12 @@ class ClassifierService:
                     break
         except Exception:
             log.exception("question generation failed")
+        try:
+            # Review priority (stakes x uncertainty) for new/stale questions - no model calls.
+            from . import questions
+            questions.score_questions(self.conn, limit=80)
+        except Exception:
+            log.exception("question scoring failed")
         return len(ids)
 
     def run(self, interval: float = 15.0):

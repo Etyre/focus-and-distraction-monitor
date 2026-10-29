@@ -70,7 +70,9 @@ class ReviewChat:
         return blocks
 
     def reply(self, conn, switch_id: int, messages: list[dict]) -> str:
-        return _run_chat(self.client, self.cfg, self.system, self._context_blocks(conn, switch_id), messages)
+        text, cost = _run_chat(self.client, self.cfg, self.system, self._context_blocks(conn, switch_id), messages)
+        log_exchange(conn, "switch", str(switch_id), messages, text, cost, self.cfg.claude_model)
+        return text
 
 
 def _run_chat(client, cfg, system, ctx_blocks, messages) -> str:
@@ -84,16 +86,47 @@ def _run_chat(client, cfg, system, ctx_blocks, messages) -> str:
         else:
             api_msgs.append({"role": role, "content": text})
     if not api_msgs:
-        return ""
+        return "", 0.0
     resp = client.messages.create(
         model=cfg.claude_model, max_tokens=1024,
         system=system,
         messages=api_msgs,
         output_config={"effort": "low"},
     )
+    from .classifiers.claude_vision import _cost
+    cost = _cost(resp.usage)
     if resp.stop_reason == "refusal":
-        return "(Claude declined to answer that.)"
-    return "".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"
+        return "(Claude declined to answer that.)", cost
+    return ("".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"), cost
+
+
+def log_exchange(conn, kind: str, ref: str, messages: list[dict], reply: str, cost: float,
+                 model: str | None, question_id: int | None = None,
+                 proposal: dict | None = None) -> int:
+    """Persist the latest question and Claude's answer. The client sends the whole thread each
+    turn; only the final user message is new, so that is what gets written (plus the reply).
+    Returns the id of the stored reply (the handle for applying any proposal it carries)."""
+    import json as _json
+    import time as _t
+    last = next((m for m in reversed(messages) if m.get("role") != "assistant"), None)
+    now = _t.time()
+    with conn:
+        if last is not None and (last.get("text") or "").strip():
+            conn.execute("INSERT INTO chat_messages(kind, ref, role, text, question_id, created) VALUES (?,?,?,?,?,?)",
+                         (kind, ref, "user", last["text"].strip(), question_id, now))
+        cur = conn.execute("INSERT INTO chat_messages(kind, ref, role, text, question_id, model, cost_usd, created, proposal)"
+                           " VALUES (?,?,?,?,?,?,?,?,?)",
+                           (kind, ref, "assistant", reply, question_id, model, cost, now + 0.001,
+                            _json.dumps(proposal) if proposal else None))
+        return int(cur.lastrowid)
+
+
+def history(conn, kind: str, ref: str) -> list[dict]:
+    import json as _json
+    return [{"id": r["id"], "role": r["role"], "text": r["text"], "created": r["created"],
+             "proposal": _json.loads(r["proposal"]) if r["proposal"] else None}
+            for r in conn.execute(
+        "SELECT id, role, text, created, proposal FROM chat_messages WHERE kind=? AND ref=? ORDER BY created, id", (kind, ref))]
 
 
 SPAN_SYSTEM = """You are helping this person review their own attention-monitoring log. They are looking at ONE \
@@ -109,7 +142,8 @@ and why - and note honestly when it's genuinely ambiguous. Their calibration fee
 has been far too optimistic about what counts as focused work; do not repeat that mistake. Don't lecture; \
 be a sharp, brief thinking partner.
 
-Span subtypes: creative_work, focused_task, reading, planning, other_focused, meeting.
+Span subtypes: creative_work, focused_task, reading, planning, other_focused, meeting. (Correspondence - chat, email - \
+is interactive, never a focus span on its own; only email processed inside a Toggl-covered task block belongs to that span.)
 
 Their own rules and definitions (authoritative):
 {rules}
@@ -208,4 +242,6 @@ class SpanChat:
         return blocks
 
     def reply(self, conn, start: float, end: float, messages: list[dict]) -> str:
-        return _run_chat(self.client, self.cfg, self.system, self._context_blocks(conn, start, end), messages)
+        text, cost = _run_chat(self.client, self.cfg, self.system, self._context_blocks(conn, start, end), messages)
+        log_exchange(conn, "span", str(round(start)), messages, text, cost, self.cfg.claude_model)
+        return text

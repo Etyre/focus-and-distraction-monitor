@@ -1,0 +1,17 @@
+{
+  "_disabled_hooks_note": "The Stop hook below auto-restarted the app whenever source changed; disabled 2026-10-06 because a restart wipes in-app state mid-review. To re-enable, rename \"_disabled_hooks\" back to \"hooks\".",
+  "_disabled_hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && .venv/bin/python -m focus_monitor restart --if-stale --hook",
+            "timeout": 30,
+            "statusMessage": "Restarting Focus Monitor if its source changed"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -5,7 +5,7 @@ import datetime as dt
 import logging
 import threading
 
-from .config import DATA_DIR, load_api_key, load_config
+from .config import DATA_DIR, load_api_key, load_config, screenshot_file
 
 
 def main():
@@ -23,7 +23,13 @@ def main():
     s = sub.add_parser("stats", help="print daily metrics")
     s.add_argument("--days", type=int, default=7)
     sub.add_parser("check", help="check permissions / API access")
+    rs = sub.add_parser("restart", help="ask the running menu bar app to relaunch itself (picks up source edits)")
+    rs.add_argument("--if-stale", action="store_true", help="only when a source file is newer than the running process")
+    rs.add_argument("--hook", action="store_true", help="print Claude Code hook JSON (silent when nothing happened)")
     args = ap.parse_args()
+
+    if args.cmd == "restart":
+        return restart_app(if_stale=args.if_stale, hook=args.hook)
 
     from .config import ensure_dirs
     ensure_dirs()
@@ -71,7 +77,7 @@ def main():
         print("active window:", w or "FAILED - grant Accessibility/Automation permission to your terminal")
         print("idle seconds:", idle_seconds())
         shot = take_screenshot(cfg, "check")
-        print("screenshot:", (DATA_DIR / "screenshots" / shot) if shot else "FAILED - grant Screen Recording permission")
+        print("screenshot:", screenshot_file(shot) if shot else "FAILED - grant Screen Recording permission")
         try:
             import anthropic
             client = anthropic.Anthropic()
@@ -79,6 +85,40 @@ def main():
             print("claude:", m.id, "ok")
         except Exception as e:
             print("claude: FAILED -", e)
+
+
+
+
+def restart_app(if_stale: bool, hook: bool) -> None:
+    """POST /api/restart on the running app and report. With --hook, emit Claude Code hook output:
+    a systemMessage when the app restarted or refused to, nothing when there was nothing to do."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    cfg = load_config()
+    url = f"http://{cfg.web_host}:{cfg.web_port}/api/restart"
+    body = json.dumps({"only_if_stale": if_stale}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            res = json.load(r)
+    except urllib.error.HTTPError as e:
+        res = json.load(e)
+    except (urllib.error.URLError, OSError):
+        res = {"restarted": False, "reason": "app not running"}
+
+    reason = res.get("reason") or res.get("detail") or "unexpected response"
+    if res.get("restarted"):
+        msg = "Focus Monitor restarted to pick up source changes" + \
+              (" (dashboard reopened)" if res.get("reopen") else "")
+    elif reason in ("up to date", "app not running"):
+        msg = None if hook else f"not restarted: {reason}"
+    else:
+        msg = f"Focus Monitor NOT restarted: {reason}"
+    if msg is None:
+        return
+    print(json.dumps({"systemMessage": msg}) if hook else msg)
 
 
 if __name__ == "__main__":

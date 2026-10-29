@@ -80,11 +80,15 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 CREATE TABLE IF NOT EXISTS seg_evals (        -- the chunk evaluator's per-segment judgments
     segment_id INTEGER PRIMARY KEY REFERENCES segments(id),
-    content TEXT NOT NULL,        -- creative | task | reading | planning | other | passive
+    content TEXT NOT NULL,        -- creative | task | correspondence | reading | planning | other | passive
+                                  --   | meeting | idle | transition
     switch_label TEXT,            -- nature of the switch INTO this segment:
                                   --   continuation | interruption | return
     interruption_kind TEXT,       -- when interruption: self_distraction | focus_start | detour
     uncertain INTEGER NOT NULL DEFAULT 0,  -- the evaluator was genuinely unsure -> flag for review
+    hybrid INTEGER NOT NULL DEFAULT 0,     -- the activity happened INSIDE a live discussion (reading a
+                                           --  bill with someone on a call): content stays the activity,
+                                           --  but it is not independent focus
     rationale TEXT,
     probs TEXT,                   -- resolved ensemble distributions {content:{},switch:{},kind:{}}
     created REAL NOT NULL
@@ -125,7 +129,8 @@ CREATE TABLE IF NOT EXISTS seg_reviews (      -- the user's edits to those judgm
     switch_label TEXT,
     interruption_kind TEXT,
     note TEXT,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    hybrid INTEGER                            -- 1/0 = the person ruled on 'inside a live discussion'; NULL = unset
 );
 
 CREATE TABLE IF NOT EXISTS eval_runs (        -- chunk evaluation bookkeeping + full transcript
@@ -174,9 +179,35 @@ CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review question
     note TEXT,                    -- the user's free-text context, fed to model precedents
     cost_usd REAL NOT NULL DEFAULT 0,
     created REAL NOT NULL,
-    answered_at REAL
+    answered_at REAL,
+    answer_index INTEGER,         -- which option was chosen (so the card can show it and let it be changed)
+    undo TEXT                     -- JSON: what the answer overwrote, so a changed/cleared answer restores it
 );
 CREATE INDEX IF NOT EXISTS review_questions_status ON review_questions(status);
+
+CREATE TABLE IF NOT EXISTS chat_messages (    -- every in-app conversation with Claude, verbatim
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,           -- evaluator (about a segment) | switch | span
+    ref TEXT NOT NULL,            -- segment id / switch id / span start (unix seconds, rounded)
+    role TEXT NOT NULL,           -- user | assistant
+    text TEXT NOT NULL,
+    question_id INTEGER,          -- the review question on screen when asked, if any
+    model TEXT,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created REAL NOT NULL,
+    proposal TEXT                 -- JSON: a judgment/rule the evaluator proposed in this reply, and whether it was applied
+);
+CREATE INDEX IF NOT EXISTS chat_messages_ref ON chat_messages(kind, ref, created);
+
+CREATE TABLE IF NOT EXISTS reeval_queue (     -- stretches whose upstream data changed after they
+    id INTEGER PRIMARY KEY,                   --  were judged (e.g. a Toggl entry corrected later):
+    t0 REAL NOT NULL,                         --  the evaluator re-judges them, oldest first
+    t1 REAL NOT NULL,
+    reason TEXT NOT NULL,
+    created REAL NOT NULL,
+    done_to REAL,                             -- progress: re-judged up to here (chunk by chunk)
+    done_at REAL
+);
 
 CREATE TABLE IF NOT EXISTS feedback_events (  -- user corrections queued for propagation:
     id INTEGER PRIMARY KEY,                   --  does this feedback apply to other segments?
@@ -256,6 +287,10 @@ def connect() -> sqlite3.Connection:
     rvcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
     if rvcols and "antecedent_id" not in rvcols:
         conn.execute("ALTER TABLE seg_reviews ADD COLUMN antecedent_id INTEGER")
+    if vcols and "hybrid" not in vcols:
+        conn.execute("ALTER TABLE seg_evals ADD COLUMN hybrid INTEGER NOT NULL DEFAULT 0")
+    if rvcols and "hybrid" not in rvcols:
+        conn.execute("ALTER TABLE seg_reviews ADD COLUMN hybrid INTEGER")  # NULL = the person did not say
     scols = {r[1] for r in conn.execute("PRAGMA table_info(span_summaries)")}
     if scols and "coherent" not in scols:
         conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
@@ -268,6 +303,24 @@ def connect() -> sqlite3.Connection:
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(review_questions)")}
     if qcols and "note" not in qcols:
         conn.execute("ALTER TABLE review_questions ADD COLUMN note TEXT")
+    if "answer_index" not in qcols:
+        conn.execute("ALTER TABLE review_questions ADD COLUMN answer_index INTEGER")
+        conn.execute("ALTER TABLE review_questions ADD COLUMN undo TEXT")
+    if qcols and "priority" not in qcols:
+        # Review priority = stakes (how far the day's headline metrics could move depending on
+        # the answer, in minute-equivalents) x the model's uncertainty. Recomputed when the day
+        # changes (scored_at older than the day's latest judgment or review).
+        conn.execute("ALTER TABLE review_questions ADD COLUMN stakes REAL")
+        conn.execute("ALTER TABLE review_questions ADD COLUMN stakes_detail TEXT")
+        conn.execute("ALTER TABLE review_questions ADD COLUMN uncertainty REAL")
+        conn.execute("ALTER TABLE review_questions ADD COLUMN priority REAL")
+        conn.execute("ALTER TABLE review_questions ADD COLUMN scored_at REAL")
+    cmcols = {r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")}
+    if cmcols and "proposal" not in cmcols:
+        conn.execute("ALTER TABLE chat_messages ADD COLUMN proposal TEXT")
+    rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
+    if rqcols and "done_to" not in rqcols:
+        conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")
     if rcols and "system" not in rcols:
         # The full evaluation transcript, so a review chat can talk to "the one who decided":
         # the exact system prompt, user prompt, screenshots sent, model, and the response.
@@ -351,10 +404,33 @@ def reviews_with_context(conn, limit: int | None = None) -> list[dict]:
 def spend_total(conn) -> float:
     """All Claude spend, ever, across every cost table."""
     total = 0.0
-    for t in ("predictions", "span_summaries", "thread_calls", "eval_runs", "review_questions", "feedback_events"):
+    for t in _COST_TABLES:
         total += float(conn.execute(f"SELECT COALESCE(SUM(cost_usd),0) FROM {t}").fetchone()[0])
     total += float(conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM effort_trials WHERE is_primary=0").fetchone()[0])
     return total
+
+
+_COST_TABLES = ("predictions", "span_summaries", "thread_calls", "eval_runs", "review_questions", "feedback_events",
+                "audit_runs", "chat_messages")
+
+
+def spend_daily_avg(conn, days: int = 30) -> float:
+    """Rolling average Claude spend per day over the last `days` days. With less history than
+    that, averages over the days since the first recorded spend (at least one)."""
+    now = time.time()
+    start = now - days * 86400
+    total, oldest = 0.0, None
+    for t in _COST_TABLES + ("effort_trials",):
+        extra = " AND is_primary=0" if t == "effort_trials" else ""
+        total += float(conn.execute(f"SELECT COALESCE(SUM(cost_usd),0) FROM {t} WHERE created >= ?{extra}",
+                                    (start,)).fetchone()[0])
+        first = conn.execute(f"SELECT MIN(created) FROM {t} WHERE cost_usd > 0{extra}").fetchone()[0]
+        if first is not None:
+            oldest = first if oldest is None else min(oldest, first)
+    if oldest is None:
+        return 0.0
+    span_days = days if oldest <= start else max(1.0, (now - oldest) / 86400)
+    return total / span_days
 
 
 def spend_today(conn) -> float:
@@ -373,5 +449,7 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     prow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM feedback_events WHERE created >= ?",
                         (start,)).fetchone()
+    arow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM audit_runs WHERE created >= ?", (start,)).fetchone()
+    crow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM chat_messages WHERE created >= ?", (start,)).fetchone()
     return (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
-            + float(frow[0]) + float(prow[0]))
+            + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]))

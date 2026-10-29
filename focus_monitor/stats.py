@@ -30,7 +30,11 @@ def logical_today() -> dt.date:
     return logical_date()
 
 
-def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
+def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
+    """Segments in [t0,t1) with their resolved judgment and state. `overrides` ({segment_id:
+    {content, switch_label, interruption_kind, antecedent_id, hybrid}}) simulates a user review
+    of those segments in memory - what the day would look like if an answer were given - without
+    touching the database."""
     from .config import load_config
     cfg = load_config()
     now = time.time()
@@ -52,6 +56,21 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         f"SELECT * FROM seg_evals WHERE segment_id IN ({q})", ids)}
     rv = {r["segment_id"]: r for r in conn.execute(
         f"SELECT * FROM seg_reviews WHERE segment_id IN ({q})", ids)}
+    if overrides:
+        blank = {"segment_id": None, "content": None, "switch_label": None, "interruption_kind": None,
+                 "antecedent_id": None, "note": None, "created": now, "hybrid": None}
+        for sid, o in overrides.items():
+            if sid not in ids:
+                continue
+            base = dict(rv[sid]) if sid in rv else dict(blank, segment_id=sid)
+            for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid"):
+                if o.get(k) is not None:
+                    base[k] = o[k]
+            if o.get("switch_label") == "interruption":
+                base["antecedent_id"] = None
+                if o.get("interruption_kind") is None:
+                    base["interruption_kind"] = None
+            rv[sid] = base
 
     def verdict(seg_id):
         """(content, switch, kind, user_edited, uncertain) - the user's edit overrides the
@@ -72,7 +91,8 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         u_kind = u is not None and bool(u["interruption_kind"])
         ante = g("antecedent_id")
         u_ante = u is not None and bool(u["antecedent_id"])
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante, u_ante
+        hyb = (u["hybrid"] if u is not None and u["hybrid"] is not None else (e["hybrid"] if e is not None else 0))
+        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante, u_ante, int(hyb or 0)
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -121,7 +141,8 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante = v
+            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb = v
+            s["hybrid"] = v_hyb
             # Thread pointer: meaningful only for continuation/return (an interruption IS
             # the birth of a new thread). Link confidence: 1.0 for a user-pinned edge, else
             # the evaluator's conditional p for its top candidate (0.85 for pre-prob rows).
@@ -141,6 +162,11 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
                       "detour": "interrupted"}.get(vkind or "detour", "interrupted")
             if content == "passive":
                 st = "distracted"  # Rules doc: passive consumption never counts toward focus
+            elif content == "correspondence" and st == "focus" and not s.get("toggl_id"):
+                # Rules doc: focus spans are independent work, never interactive - chatting or
+                # answering mail is a diversion, not focus. The one exception is correspondence
+                # processed inside a Toggl-covered task block, which rides along with that span.
+                st = "interrupted"
             label = ("continuation" if vsw in ("continuation", "return") else
                      {"self_distraction": "distraction", "focus_start": "task_change",
                       "detour": "interruption"}.get(vkind or "detour", "interruption"))
@@ -166,6 +192,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             if r is not None:
                 s["activity"] = r["e_activity"]
             s.update(state=st, label=label, switch_id=(r["group_id"] or r["id"]) if r is not None else None,
+                     own_switch_id=r["id"] if r is not None else None,  # ungrouped: the switch INTO this segment
                      uncertain=v_unc, source="review" if edited else "eval")
         elif r is None:  # first segment, or a return to the same window after a neutral one
             st = prev_state if prev_state != "idle" else "focus"
@@ -195,7 +222,7 @@ def labelled_segments(conn, t0: float, t1: float) -> list[dict]:
             else:
                 st = STATE_OF[label]
             s["activity"] = r["e_activity"]
-            s.update(state=st, label=label, switch_id=r["group_id"] or r["id"],
+            s.update(state=st, label=label, switch_id=r["group_id"] or r["id"], own_switch_id=r["id"],
                      uncertain=0 if transit else int(r["uncertain"] or 0),
                      source="transit" if transit else ("review" if r["r_label"] else ("model" if r["e_label"] else "pending")),
                      probs=None if r["e_label"] is None else {
@@ -241,8 +268,8 @@ def _runs(segs: list[dict], state: str, new_run_on_label: str | None = None) -> 
 
 
 def span_subtype(sp: dict, cfg) -> str | None:
-    """Classify a focus span into one of five kinds (Rules doc + user categories):
-    creative_work, focused_task, reading, planning, other_focused. Prefers Claude's per-switch
+    """Classify a focus span into one of its kinds (Rules doc + user categories):
+    creative_work, focused_task, reading, planning, other_focused, meeting. Prefers Claude's per-switch
     `activity` tag; falls back to app/Toggl heuristics.
 
     Hard rules (Rules doc) - failing either gate means the span is NOT focused work of any
@@ -270,7 +297,10 @@ def span_subtype(sp: dict, cfg) -> str | None:
     ACT2SUB = {"writing": "creative_work", "coding": "creative_work", "task_execution": "focused_task",
                "reading": "reading", "planning": "planning", "browsing": "other_focused", "other": "other_focused"}
     CONTENT2SUB = {"creative": "creative_work", "task": "focused_task", "reading": "reading",
-                   "planning": "planning", "other": "other_focused", "meeting": "meeting"}
+                   "planning": "planning", "other": "other_focused", "meeting": "meeting",
+                   # focus-state correspondence only exists under a running Toggl entry (see
+                   # labelled_segments), where it is part of a task block
+                   "correspondence": "focused_task"}
     grp = Counter()
     for s in fsegs:
         c = s.get("content")
@@ -387,7 +417,8 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
             sp["confirmed"] = True
             if r["subtype"] in SUBTYPES:
                 sp["subtype"] = r["subtype"]
-            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+            sp["fully_absorbed"] = (len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+                                    and not sp.get("hybrid_min"))
             keep_q.append(sp)
     for sp in disqualified:
         r = _span_review_for(rows, sp)
@@ -395,7 +426,8 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
             sp["confirmed"] = True
             sp["subtype"] = r["subtype"] if r["subtype"] in SUBTYPES else "other_focused"
             sp.pop("disq_reason", None)
-            sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+            sp["fully_absorbed"] = (len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+                                    and not sp.get("hybrid_min"))
             keep_q.append(sp)
         else:
             sp["confirmed"] = r is not None
@@ -583,9 +615,19 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     _cfg = _lc()
     for sp in qualifying:
         sp["subtype"] = span_subtype(sp, _cfg)
+        # Hybrid span: the activity (reading, task, ...) happened inside a live discussion for
+        # most of it. It keeps its activity subtype but is not INDEPENDENT focus - it is counted
+        # with meetings, and can never be fully absorbed.
+        fs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
+        ftot = sum(s["duration"] for s in fs) or 1.0
+        hyb_s = sum(s["duration"] for s in fs if s.get("hybrid"))
+        sp["hybrid_min"] = hyb_s / 60   # minutes of this span that were inside a live discussion
+        sp["hybrid"] = hyb_s / ftot >= 0.5
         # Fully-absorbed = zero interruptions AND a single object of attention - a focused-task
-        # span is inherently task-switching, so it never counts (Rules doc).
-        sp["fully_absorbed"] = len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+        # span is inherently task-switching, so it never counts (Rules doc). Nor does any span
+        # that was partly carried on with someone else.
+        sp["fully_absorbed"] = (len(sp["detours"]) == 0 and sp["subtype"] not in ("focused_task", "meeting")
+                                and hyb_s == 0)
         # The doc defines fully-absorbed as "a LENGTH of focus span with 0 interruption
         # events" - a stretch, not only a whole span. Longest unbroken focus stretch:
         best = cur = 0.0
@@ -657,14 +699,17 @@ def short_breaks(conn, t0: float, t1: float) -> list[dict]:
             conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ? ORDER BY start", (t1, t0))]
 
 
-def daily_metrics(conn, day: dt.date) -> dict:
+def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
     t0, t1 = day_bounds(day)
-    segs = labelled_segments(conn, t0, t1)
+    segs = labelled_segments(conn, t0, t1, overrides)
     se = spans_and_events(segs, conn=conn)
     focus = se["focus_spans"]
     # Meetings are focus, but their own kind: counted separately, never in "total focus".
-    work = [s for s in focus if s.get("subtype") != "meeting"]
-    meetings = [s for s in focus if s.get("subtype") == "meeting"]
+    # Hybrid time (an activity carried on inside a live discussion) goes with them, minute by
+    # minute: a mostly-hybrid span moves whole, a solo span with a hybrid stretch moves that stretch.
+    work = [s for s in focus if s.get("subtype") != "meeting" and not s.get("hybrid")]
+    meetings = [s for s in focus if s.get("subtype") == "meeting" or s.get("hybrid")]
+    hybrid_in_work = sum(min(s.get("hybrid_min", 0.0), s["focus_min"]) for s in work)
     breaks = short_breaks(conn, t0, t1)
     return {
         "short_breaks": len(breaks),
@@ -674,19 +719,23 @@ def daily_metrics(conn, day: dt.date) -> dict:
         "longest_absorbed_min": max((s.get("absorbed_max_min", 0.0) for s in work
                                      if s.get("subtype") != "focused_task"), default=0.0),
         "fully_absorbed_spans": sum(1 for s in work if s.get("fully_absorbed")),
-        "total_focus_min": sum(s["focus_min"] for s in work),
-        "meeting_focus_min": sum(s["focus_min"] for s in meetings),
+        "total_focus_min": sum(s["focus_min"] for s in work) - hybrid_in_work,
+        "meeting_focus_min": sum(s["focus_min"] for s in meetings) + hybrid_in_work,
         "detours_in_spans": sum(len(s["detours"]) for s in focus),
         "detour_min_in_spans": sum(s["detour_min"] for s in focus),
         # An attention-interruption event = any diversion inside a focus span (self-distraction included).
         "interruption_count": (sum(1 for r in se["interruptions"] if r.get("inside_span"))
                                + sum(1 for r in se["distractions"] if r.get("inside_span"))),
         "distraction_count": sum(1 for r in se["distractions"] if r.get("inside_span")),
+        # "Bounce-aways": every self-distraction event in the day, inside a focus span or not.
+        "bounce_aways": len(se["distractions"]),
         "distracted_min": sum(d["duration"] for d in se["distractions"]) / 60,
         "interrupted_min": sum(d["duration"] for d in se["interruptions"]) / 60,
         "active_min": sum(s["duration"] for s in segs if s["state"] != "idle") / 60,
         # Rules doc: passive consumption is tracked in its own right (never counts toward focus).
         "passive_min": sum(s["duration"] for s in segs if s.get("content") == "passive") / 60,
+        # Correspondence (chat, email) is work but interactive: tracked in its own right, never a focus span.
+        "correspondence_min": sum(s["duration"] for s in segs if s.get("content") == "correspondence") / 60,
         "switches": sum(1 for s in segs if s["switch_id"]),
         "uncertain": sum(1 for s in segs if s["uncertain"]),
         "reviewed": sum(1 for s in segs if s["source"] == "review"),

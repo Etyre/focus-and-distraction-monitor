@@ -17,7 +17,8 @@ from urllib.parse import urlparse
 from PIL import Image
 
 from . import db
-from .config import CHROMIUM_APPS, DATA_DIR, SAFARI_APPS, Config, load_config
+from .config import (ARCHIVE_DIR, CHROMIUM_APPS, DATA_DIR, HEARTBEAT_PATH, PRIVATE_MARK, SAFARI_APPS,
+                     SCREENSHOT_DIR, Config, load_config)
 
 log = logging.getLogger("collector")
 
@@ -117,26 +118,68 @@ def current_window() -> WindowState | None:
     return WindowState(app=app.strip(), title=title.strip()[:300], url=url.strip()[:1000])
 
 
+def private_displays(cfg: Config) -> set[int] | None:
+    """Indices of displays (CGGetActiveDisplayList order, matching screencapture's file order)
+    that currently show a window of a private app, e.g. Signal. None means we could not tell -
+    callers must then treat every display as private. Occluded windows count too: that costs an
+    archive copy at worst, while missing one would keep a disappearing chat for good."""
+    if not cfg.private_apps:
+        return set()
+    try:
+        import Quartz
+        wins = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID)
+        rects = []
+        for w in wins:
+            b = w.get("kCGWindowBounds")
+            if w.get("kCGWindowOwnerName") in cfg.private_apps and b and b["Width"] * b["Height"] >= 10000:
+                rects.append((b["X"], b["Y"], b["X"] + b["Width"], b["Y"] + b["Height"]))
+        if not rects:
+            return set()
+        err, ids, cnt = Quartz.CGGetActiveDisplayList(8, None, None)
+        if err:
+            return None
+        hit: set[int] = set()
+        for i in range(cnt or 0):
+            d = Quartz.CGDisplayBounds(ids[i])
+            dx0, dy0 = d.origin.x, d.origin.y
+            dx1, dy1 = dx0 + d.size.width, dy0 + d.size.height
+            if any(x0 < dx1 and x1 > dx0 and y0 < dy1 and y1 > dy0 for x0, y0, x1, y1 in rects):
+                hit.add(i)
+        return hit
+    except Exception as e:
+        log.warning("private window check failed (treating every display as private): %s", e)
+        return None
+
+
 def take_screenshots(cfg: Config, tag: str) -> list[str]:
     """Capture EVERY display (main monitor first, then externals). Returns saved file names -
     empty on failure. screencapture writes one file per attached display and ignores the
-    extra paths, so passing four covers any realistic setup."""
+    extra paths, so passing four covers any realistic setup.
+
+    Each capture is written twice: full size under SCREENSHOT_DIR (pruned after the retention
+    period) and a small copy under ARCHIVE_DIR (kept for good). A display showing a private app
+    gets PRIVATE_MARK in its filename, and cleanup removes that capture from BOTH tiers."""
     ts_ms = int(time.time() * 1000)
-    tmps = [DATA_DIR / "screenshots" / f"{ts_ms}_{tag}_d{i}.png" for i in range(4)]
+    priv = private_displays(cfg)
+    tmps = [SCREENSHOT_DIR / f"{ts_ms}_{tag}_d{i}.png" for i in range(4)]
     out: list[str] = []
     try:
         subprocess.run(["screencapture", "-x"] + [str(t) for t in tmps], capture_output=True, timeout=10)
-        for tmp in tmps:
+        for i, tmp in enumerate(tmps):
             if not tmp.exists():
                 continue
-            path = tmp.with_suffix(".jpg")
+            name = tmp.stem + (PRIVATE_MARK if priv is None or i in priv else "") + ".jpg"
             with Image.open(tmp) as im:
                 im = im.convert("RGB")
-                if im.width > cfg.screenshot_max_width:
-                    h = round(im.height * cfg.screenshot_max_width / im.width)
-                    im = im.resize((cfg.screenshot_max_width, h), Image.LANCZOS)
-                im.save(path, "JPEG", quality=cfg.screenshot_quality, optimize=True)
-            out.append(path.name)
+                for d, width, quality in ((SCREENSHOT_DIR, cfg.screenshot_max_width, cfg.screenshot_quality),
+                                          (ARCHIVE_DIR, cfg.archive_max_width, cfg.archive_quality)):
+                    small = im
+                    if im.width > width:
+                        small = im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+                    small.save(d / name, "JPEG", quality=quality, optimize=True)
+            out.append(name)
     except Exception as e:
         log.warning("screenshot failed: %s", e)
     finally:
@@ -179,12 +222,16 @@ def active_display_index(app_name: str) -> int:
 
 
 def cleanup_screenshots(cfg: Config) -> int:
+    """Delete full-size captures (and any PNG left behind by a crash mid-conversion) older than
+    the retention period, plus the archive copies of private captures. Other archive copies are
+    permanent."""
     cutoff = time.time() - cfg.screenshot_retention_days * 86400
     n = 0
-    for p in (DATA_DIR / "screenshots").glob("*.jpg"):
-        if p.stat().st_mtime < cutoff:
-            p.unlink()
-            n += 1
+    for pattern, d in (("*.jpg", SCREENSHOT_DIR), ("*.png", SCREENSHOT_DIR), (f"*{PRIVATE_MARK}.jpg", ARCHIVE_DIR)):
+        for p in d.glob(pattern):
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                n += 1
     return n
 
 
@@ -259,6 +306,10 @@ class Collector:
         now = time.time()
         gap = now - self.last_tick if self.last_tick else 0.0  # large gap => the process was suspended (system sleep)
         self.last_tick = now
+        try:
+            HEARTBEAT_PATH.touch()  # liveness signal for the launcher's watchdog
+        except OSError:
+            pass
         if self.current_id is not None and gap < self.cfg.idle_seconds:
             # Flush the open segment's end every tick: an unclean kill (dev restart, crash)
             # must cost at most one poll interval - not the whole segment. (2026-09-02: seven
@@ -322,8 +373,14 @@ class Collector:
                 self.tick()
                 if time.time() - last_cleanup > 3600:
                     n = cleanup_screenshots(self.cfg)
-                    self.conn.execute("DELETE FROM segment_shots WHERE ts < ?",
-                                      (time.time() - self.cfg.screenshot_retention_days * 86400,))
+                    # Archived captures stay referenced; private ones are forgotten with their files.
+                    cutoff = time.time() - self.cfg.screenshot_retention_days * 86400
+                    like = f"%{PRIVATE_MARK}.jpg"
+                    with db.tx(self.conn):
+                        self.conn.execute("DELETE FROM segment_shots WHERE ts < ? AND path LIKE ?", (cutoff, like))
+                        for col in ("first_screenshot", "last_screenshot"):
+                            self.conn.execute(f"UPDATE segments SET {col}=NULL WHERE start < ? AND {col} LIKE ?",
+                                              (cutoff, like))
                     if n:
                         log.info("deleted %d old screenshots", n)
                     last_cleanup = time.time()

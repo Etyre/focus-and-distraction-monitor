@@ -9,7 +9,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from .. import LABEL_HELP, LABELS, db
-from ..config import (DATA_DIR, PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT,
+from ..config import (DATA_DIR, PRICE_CACHE_READ, screenshot_file, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT,
                       Config)
 from .base import Classifier, SwitchContext, normalize, seg_desc
 
@@ -85,19 +85,28 @@ Work apps: {work_apps}. Notes apps: {notes_apps}.
 """
 
 
+RULES_PATH = Path(__file__).resolve().parents[2] / "Rules and heuristics for Focus monitor.md"
+
+
 def _rules_doc() -> str:
-    p = Path(__file__).resolve().parents[2] / "Rules and heuristics for Focus monitor.md"
     try:
-        return p.read_text().strip()
+        return RULES_PATH.read_text().strip()
     except OSError:
         return "(rules document not available)"
+
+
+def _rules_mtime() -> float:
+    try:
+        return RULES_PATH.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _b64(path_name: str | None) -> str | None:
     if not path_name:
         return None
-    p = DATA_DIR / "screenshots" / path_name
-    if not p.exists():
+    p = screenshot_file(path_name)
+    if p is None:
         return None
     return base64.standard_b64encode(p.read_bytes()).decode()
 

@@ -9,7 +9,11 @@ short_inactivity_seconds = 60  # pauses between 1 and 8 min are logged as short 
 refresh_screenshot_seconds = 30  # denser evidence for the evaluator
 screenshot_max_width = 1280
 screenshot_quality = 60
-screenshot_retention_days = 14
+screenshot_retention_days = 14   # full-size captures are deleted after this
+archive_max_width = 640          # a copy this wide is kept for good (~1 GB/month) ...
+archive_quality = 60
+private_apps = ["Signal"]        # ... except captures showing these apps, which are deleted from
+                                 # both tiers after screenshot_retention_days (disappearing messages)
 
 [classifier]
 lookahead_seconds = 120        # wait so the model can see what you did AFTER the switch
@@ -81,6 +85,12 @@ creative_frac = 0.40           # >= this share of focus time on authoring surfac
 task_toggl_frac = 0.60         # Toggl running for >= this share of the span, plus...
 task_min_apps = 5              # ...this many distinct apps/sites (task-churn) => focused-task span
 daily_notes_regex = "(?i)daily note|^\\w+ \\d+(st|nd|rd|th)?,? \\d{4}|^\\d{4}-\\d{2}-\\d{2}"
+# Correspondence surfaces (chat and email). Talking with people in writing is its own tracked category
+# ('correspondence' content, its own tile) but it is interactive, so it never counts toward a focus span -
+# except email processed inside a Toggl-covered task block, which belongs to that task span.
+correspondence_apps = ["Signal", "Messages", "WhatsApp", "Telegram", "Slack", "Discord", "Mail", "Superhuman", "Spark"]
+correspondence_domains = ["mail.google.com", "outlook.live.com", "outlook.office.com", "web.whatsapp.com",
+                          "web.telegram.org", "app.slack.com", "discord.com", "messenger.com"]
 # Neutral windows: logged, but never an interruption/distraction and don't break a focus span.
 # Substrings matched (case-insensitive) against app name, window title and URL.
 neutral_patterns = ["presence check"]

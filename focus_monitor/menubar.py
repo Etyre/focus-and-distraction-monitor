@@ -2,24 +2,27 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+import os
 import subprocess
 import threading
 import time
+import urllib.request
 
 import rumps
-import os
 
 from AppKit import (NSAlert, NSAlertFirstButtonReturn, NSApp, NSBackingStoreBuffered, NSClosableWindowMask,
                     NSMakeRect, NSMiniaturizableWindowMask, NSResizableWindowMask, NSSecureTextField,
                     NSTitledWindowMask, NSWindow)
-from Foundation import NSURL, NSURLRequest
+from Foundation import NSProcessInfo, NSURL, NSURLRequest, NSUserDefaults
+from PyObjCTools import AppHelper
 from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import db, stats
 from .classify import ClassifierService
 from .collector import Collector
-from .config import DATA_DIR, Config, keychain_set, load_config, logical_date
+from .config import DATA_DIR, REOPEN_FILE, RESTART_EXIT_CODE, Config, keychain_set, load_config, logical_date
 from .icons import menu_icons
 
 log = logging.getLogger("menubar")
@@ -27,6 +30,26 @@ log = logging.getLogger("menubar")
 
 def _fmt_min(m: float) -> str:
     return f"{int(m // 60)}h {int(m % 60)}m" if m >= 60 else f"{int(m)}m"
+
+
+def _stay_awake():
+    """Opt out of App Nap and automatic termination.
+
+    2026-09-04: every thread of this process stalled for three days (zero CPU, menu
+    unresponsive, no log lines, lldb could not even pause it) while the machine was awake.
+    The system log had expired before it was investigated, so the trigger is unproven; the
+    leading suspect is macOS deciding an invisible, windowless app is idle. Declaring
+    continuous background activity tells the system this process is doing real work while
+    invisible. The launcher's heartbeat watchdog (build_app.py) is the backstop if it
+    happens anyway. The returned token must stay referenced.
+    """
+    NSUserDefaults.standardUserDefaults().registerDefaults_({"NSAppSleepDisabled": True})
+    background = 0x000000FF  # NSActivityBackground
+    no_auto_terminate = 1 << 15  # NSActivityAutomaticTerminationDisabled
+    no_sudden_terminate = 1 << 14  # NSActivitySuddenTerminationDisabled
+    return NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+        background | no_auto_terminate | no_sudden_terminate,
+        "Focus Monitor records the active window continuously")
 
 
 class DashboardWindow:
@@ -75,9 +98,23 @@ class DashboardWindow:
         NSApp.activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
 
+    def is_open(self) -> bool:
+        return self.window is not None and bool(self.window.isVisible())
+
+    def fragment(self) -> str:
+        """The tab currently shown ('day', 'review', ...), read from the webview's URL."""
+        try:
+            url = self.webview.URL() if self.webview is not None else None
+            frag = str(url.fragment()) if url is not None and url.fragment() else ""
+        except Exception:
+            frag = ""
+        return frag or "day"
+
 
 class FocusMenuBar(rumps.App):
     def __init__(self, cfg: Config, use_claude: bool = True):
+        self._activity = _stay_awake()
+        self._refreshing = threading.Lock()
         self.icons = menu_icons()
         super().__init__("Focus Monitor", icon=self.icons["watching"], template=True, quit_button=None)
         self.cfg = cfg
@@ -113,11 +150,52 @@ class FocusMenuBar(rumps.App):
             t.start()
         self.refresh(None)
         rumps.Timer(self.refresh, 30).start()
+        self._reopen_dashboard_after_restart()
 
     def _serve(self):
         import uvicorn
-        from .web import app
-        uvicorn.run(app, host=self.cfg.web_host, port=self.cfg.web_port, log_level="warning")
+        from . import web
+        web.restart_hook = self.request_restart
+        uvicorn.run(web.app, host=self.cfg.web_host, port=self.cfg.web_port, log_level="warning")
+
+    # -- dev restart: POST /api/restart -> exit with RESTART_EXIT_CODE -> the .app launcher relaunches us
+    def request_restart(self) -> dict:
+        """Called on the web thread. Remembers an open dashboard so the relaunch can bring it back,
+        then exits shortly after (so the HTTP response still gets out)."""
+        reopen = self.dashboard.is_open()
+        if reopen:
+            REOPEN_FILE.write_text(json.dumps({"fragment": self.dashboard.fragment(), "ts": time.time()}))
+        else:
+            REOPEN_FILE.unlink(missing_ok=True)
+        log.info("restart requested (dashboard open=%s)", reopen)
+        threading.Timer(0.3, lambda: os._exit(RESTART_EXIT_CODE)).start()
+        return {"reopen": reopen}
+
+    def _reopen_dashboard_after_restart(self):
+        try:
+            info = json.loads(REOPEN_FILE.read_text())
+            REOPEN_FILE.unlink()
+        except (FileNotFoundError, ValueError):
+            return
+        if time.time() - float(info.get("ts", 0)) > 300:
+            return  # stale marker from some earlier run
+        fragment = str(info.get("fragment") or "day")
+        deadline = time.time() + 30
+
+        def poll(timer):
+            # Wait for uvicorn to accept connections; a load before that shows an error page.
+            try:
+                urllib.request.urlopen(f"{self.base_url}/api/labels", timeout=1).close()
+            except Exception:
+                if time.time() < deadline:
+                    return
+                log.warning("dashboard not up 30 s after restart; not reopening")
+            else:
+                log.info("reopening dashboard at #%s after restart", fragment)
+                self.dashboard.show(fragment)
+            timer.stop()
+
+        rumps.Timer(poll, 0.5).start()
 
     def _ask_secret(self, title: str, info: str, placeholder: str) -> str | None:
         alert = NSAlert.alloc().init()
@@ -184,38 +262,64 @@ class FocusMenuBar(rumps.App):
         self.refresh(None)
 
     def refresh(self, _):
+        # The database work runs off the main thread so the menu always opens instantly;
+        # only the resulting titles are applied on the main thread.
+        if self._refreshing.locked():
+            return
+        threading.Thread(target=self._refresh_worker, daemon=True, name="menu-refresh").start()
+
+    def _refresh_worker(self):
+        with self._refreshing:
+            try:
+                icon, titles = self._menu_state()
+            except Exception:
+                log.exception("menu refresh failed")
+                return
+        AppHelper.callAfter(self._apply_menu_state, icon, titles)
+
+    def _menu_state(self) -> tuple[str, dict[str, str]]:
+        alive = {k: t.is_alive() for k, t in self.threads.items()}
+        stale = time.time() - self.collector.last_tick > 30
+        if self.collector.paused:
+            icon, status = "paused", "Paused"
+        elif not alive["collector"] or stale:
+            icon, status = "trouble", "Collector not responding"
+        else:
+            icon, status = "watching", "Watching"
+        if not alive["classifier"]:
+            status += " · classifier stopped"
+        if not self.classifier.claude:
+            status += " · Claude off (no API key)"
+        conn = db.connect()
         try:
-            alive = {k: t.is_alive() for k, t in self.threads.items()}
-            stale = time.time() - self.collector.last_tick > 30
-            if self.collector.paused:
-                icon, status = "paused", "Paused"
-            elif not alive["collector"] or stale:
-                icon, status = "trouble", "Collector not responding"
-            else:
-                icon, status = "watching", "Watching"
-            if self.icon != self.icons[icon]:
-                self.icon = self.icons[icon]
-            if not alive["classifier"]:
-                status += " · classifier stopped"
-            if not self.classifier.claude:
-                status += " · Claude off (no API key)"
-            self.status_item.title = status
-            conn = db.connect()
             m = stats.daily_metrics(conn, logical_date())
             pending = conn.execute("SELECT COUNT(*) FROM switches WHERE status='pending'").fetchone()[0]
             uncertain = conn.execute("""SELECT COUNT(*) FROM ensemble e LEFT JOIN reviews r ON r.switch_id=e.switch_id
                                         WHERE e.uncertain=1 AND r.switch_id IS NULL""").fetchone()[0]
-            self.focus_item.title = f"Today: longest focus {_fmt_min(m['longest_focus_min'])}, total {_fmt_min(m['total_focus_min'])}"
             if self.cfg.count_events:
-                self.events_item.title = (f"{m['interruption_count']} interruptions · {m['distraction_count']} distractions "
-                                          f"({_fmt_min(m['distracted_min'])})")
+                events = (f"{m['interruption_count']} interruptions · {m['distraction_count']} distractions "
+                          f"({_fmt_min(m['distracted_min'])})")
             else:
-                self.events_item.title = f"{len(stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())))['focus_spans'])} focus spans today"
-            self.queue_item.title = f"{uncertain} awaiting review · {pending} unclassified"
-            self.spend_item.title = f"Claude spend today ${m['spend_usd']:.2f} / ${self.cfg.daily_budget_usd:.0f}"
+                spans = stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())))
+                events = f"{len(spans['focus_spans'])} focus spans today"
+        finally:
             conn.close()
-        except Exception:
-            log.exception("menu refresh failed")
+        return icon, {
+            "status": status,
+            "focus": f"Today: longest focus {_fmt_min(m['longest_focus_min'])}, total {_fmt_min(m['total_focus_min'])}",
+            "events": events,
+            "queue": f"{uncertain} awaiting review · {pending} unclassified",
+            "spend": f"Claude spend today ${m['spend_usd']:.2f} / ${self.cfg.daily_budget_usd:.0f}",
+        }
+
+    def _apply_menu_state(self, icon: str, titles: dict[str, str]):
+        if self.icon != self.icons[icon]:
+            self.icon = self.icons[icon]
+        self.status_item.title = titles["status"]
+        self.focus_item.title = titles["focus"]
+        self.events_item.title = titles["events"]
+        self.queue_item.title = titles["queue"]
+        self.spend_item.title = titles["spend"]
 
 
 def run_app(use_claude: bool = True):

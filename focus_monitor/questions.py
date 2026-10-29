@@ -40,6 +40,7 @@ class QOption(BaseModel):
     antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (interruption) and content-only options.")
     interruption_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
+    hybrid: bool | None = Field(default=None, description="True when the option says the activity was being done INSIDE a live discussion with someone (e.g. 'reading the bill with Dave on a call while taking notes') - content stays the activity; False when the option asserts solo work; None when the option says nothing about it.")
 
 
 class GeneratedQuestion(BaseModel):
@@ -80,7 +81,7 @@ for AMBIGUOUS CONTENT - nothing else. Two canonical thread forms:
 as A, or something different?" - same: switch_label='return'; different: \
 switch_label='interruption'.
 Content questions are equally welcome when content is the doubt: "was drafting that Signal \
-message routine correspondence ('other') or writing you were absorbed in ('creative')?" - each \
+message routine correspondence ('correspondence') or writing you were absorbed in ('creative')?" - each \
 option sets a content label.
 In general, do NOT ask the person whether something was "a quick detour or the start of a new \
 focus" - that answer mixes two facts: whether it was a separate thread (theirs to say) and \
@@ -105,6 +106,12 @@ switch_label='interruption' on the segment where it begins (its id is visible in
 "Was <activity> at <time> a separate piece of work, or still part of <thread A>?" is the shape.
 - Options must be mutually exclusive and cover the plausible readings. Do not editorialize; \
 the person decides.
+- NEVER write a "just passing through" / transition option yourself: the app appends a neutral \
+one ("a window I passed through, not actually looked at") to EVERY question. Your options are \
+the substantive readings only - what the moment was if the person DID engage with it. In \
+particular, do not frame a pass-through as "part of the <thread A> conversation": a window \
+cycled past on the way back is not part of any thread's content, and an option that says it \
+is becomes a false precedent.
 
 Their own rules and definitions (authoritative):
 {rules}
@@ -197,7 +204,7 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     today = logical_date()
     for i in range(3):
         d0, d1 = day_bounds(today - dt.timedelta(days=i))
-        for sid in _stats.select_for_review(conn, d0, d1, 8):
+        for sid in _stats.select_for_review(conn, d0, d1, 40):  # priority scoring filters; do not starve it here
             row = conn.execute("""
                 SELECT s.to_segment AS seg, s.ts, e.label FROM switches s
                 LEFT JOIN ensemble e ON e.switch_id = s.id
@@ -232,6 +239,125 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
     out.sort(key=lambda x: ({"coherence": 0, "propagation": 1, "audit": 2, "ensemble": 3}.get(x["source"], 4), -x["ts"]))
     return out
+
+
+PASSTHROUGH_LABEL = "Neither - just a window I passed through or had open, not actually looked at"
+
+
+def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
+    """The neutral 'transition' answer every question offers: content=transition, continuation
+    of whatever thread preceded (antecedent borrowed from a same-thread option when one exists)."""
+    ante = next((o.get("antecedent_id") for o in opts
+                 if o.get("segment_id") == segment_id and o.get("antecedent_id") is not None), None)
+    return {"label": PASSTHROUGH_LABEL, "segment_id": segment_id,
+            "switch_label": "continuation", "antecedent_id": ante,
+            "interruption_kind": None, "content": "transition", "hybrid": None}
+
+
+# Headline metrics an answer can move, with a weight turning each into minute-equivalents.
+STAKE_METRICS = {"total_focus_min": ("independent focus", 1.0),
+                 "longest_focus_min": ("longest span", 1.0),
+                 "longest_absorbed_min": ("longest fully absorbed", 1.0),
+                 "bounce_aways": ("bounce-aways", 10.0)}
+PRIORITY_CUT = 4.0   # minute-equivalents x uncertainty; at or above = the priority tier
+
+
+def _uncertainty(conn, segment_id: int, source: str) -> float:
+    """How unsure the model is about the segment the question is about: 1 - its confidence in
+    its top content and switch calls (the lower of the two). Sources that do not come from the
+    model's own probabilities (a contradiction, a correction, the audit) are at least 0.7."""
+    row = conn.execute("SELECT probs FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    u = 0.5
+    if row and row["probs"]:
+        try:
+            pr = json.loads(row["probs"])
+            tops = [max(pr[k].values()) for k in ("content", "switch") if pr.get(k)]
+            if source == "thread_link" and pr.get("antecedent"):
+                tops = [max(pr["antecedent"].values())]
+            if tops:
+                u = 1.0 - min(tops)
+        except (ValueError, AttributeError, TypeError):
+            pass
+    if source in ("coherence", "propagation", "audit"):
+        u = max(u, 0.7)
+    return max(0.0, min(1.0, u))
+
+
+def _day_stamp(conn, t0: float, t1: float) -> float:
+    """When the day's judgments last changed: the newest evaluator row or user review in it."""
+    r = conn.execute("""SELECT MAX(x) FROM (
+        SELECT MAX(e.created) AS x FROM seg_evals e JOIN segments g ON g.id=e.segment_id WHERE g.start>=? AND g.start<?
+        UNION ALL
+        SELECT MAX(r.created) FROM seg_reviews r JOIN segments g ON g.id=r.segment_id WHERE g.start>=? AND g.start<?)""",
+                     (t0, t1, t0, t1)).fetchone()
+    return float(r[0] or 0.0)
+
+
+def score_questions(conn, limit: int | None = None, only_stale: bool = True) -> int:
+    """Compute stakes x uncertainty for open questions whose score is missing or older than the
+    day's latest change. Stakes = for each headline metric, the spread of its value across
+    'answer option k applied' (plus the status quo), in minute-equivalents; the max over metrics.
+    No model calls - a handful of in-memory metric recomputes per question (~15 ms each)."""
+    from . import stats
+    from .config import day_bounds, logical_date
+    rows = conn.execute("""SELECT q.id, q.segment_id, q.source, q.options, q.scored_at, g.start
+                           FROM review_questions q JOIN segments g ON g.id = q.segment_id
+                           WHERE q.status = 'open' ORDER BY g.start DESC""").fetchall()
+    base_cache: dict = {}
+    stamp_cache: dict = {}
+    n = 0
+    for r in rows:
+        day = logical_date(r["start"])
+        if day not in stamp_cache:
+            stamp_cache[day] = _day_stamp(conn, *day_bounds(day))
+        if only_stale and r["scored_at"] and r["scored_at"] >= stamp_cache[day]:
+            continue
+        if limit is not None and n >= limit:
+            break
+        try:
+            opts = json.loads(r["options"])
+        except ValueError:
+            opts = []
+        if day not in base_cache:
+            base_cache[day] = stats.daily_metrics(conn, day)
+        vals = {k: [base_cache[day][k]] for k in STAKE_METRICS}
+        for o in opts:
+            sid = o.get("segment_id") or r["segment_id"]
+            ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid")}}
+            if not any(v is not None for v in ov[sid].values()):
+                continue
+            m = stats.daily_metrics(conn, day, ov)
+            for k in STAKE_METRICS:
+                vals[k].append(m[k])
+        detail = {k: round((max(v) - min(v)), 2) for k, v in vals.items()}
+        stakes = max(detail[k] * STAKE_METRICS[k][1] for k in STAKE_METRICS)
+        unc = _uncertainty(conn, r["segment_id"], r["source"])
+        # Uncertainty modulates rather than zeroes: a sure-looking call that would move the day
+        # by an hour still deserves a look before a coin-flip that moves nothing.
+        prio = stakes * (0.25 + 0.75 * unc)
+        conn.execute("UPDATE review_questions SET stakes=?, stakes_detail=?, uncertainty=?, priority=?, scored_at=?"
+                     " WHERE id=?", (stakes, json.dumps(detail), unc, prio, time.time(), r["id"]))
+        n += 1
+    if n:
+        conn.commit()
+    return n
+
+
+def stakes_text(detail_json: str | None) -> str:
+    """'could move independent focus by 23 min, bounce-aways by 1' - the biggest movers only."""
+    try:
+        d = json.loads(detail_json or "{}")
+    except ValueError:
+        return ""
+    parts = []
+    for k, (name, w) in STAKE_METRICS.items():
+        v = d.get(k, 0) or 0
+        if k == "bounce_aways" and v >= 1:
+            parts.append((v * w, f"{name} by {v:.0f}"))
+        elif k != "bounce_aways" and v >= 1:
+            parts.append((v * w, f"{name} by {v:.0f} min"))
+    parts.sort(reverse=True)
+    return ("could move " + ", ".join(t for _, t in parts[:2])) if parts else "no effect on the day's metrics"
 
 
 def generate_pending(conn, cfg: Config | None = None) -> int:
@@ -273,8 +399,20 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                f"kind={ev['interruption_kind']} - {ev['rationale']}") if ev else "(no judgment)"
         parts.append(f"DOUBT {i + 1} - segment id={t['segment_id']} (source: {t['source']}; {t['reason']})\n"
                      f"{cur}\nSurrounding activity (>>> marks the segment in doubt):\n" + "\n".join(lines))
+    unsure = conn.execute("""SELECT q.question, q.note, g.app, g.domain, g.title, COALESCE(g.end, g.start) - g.start AS secs
+                             FROM review_questions q JOIN segments g ON g.id = q.segment_id
+                             WHERE q.status = 'unsure' ORDER BY q.answered_at DESC LIMIT 12""").fetchall()
+    if unsure:
+        ulines = [f"- [{u['app']} {u['domain'] or ''} | {(u['title'] or '')[:50]}, {u['secs']:.0f}s] {u['question']}"
+                  + (f"  (their note: {u['note']})" if u["note"] else "") for u in unsure]
+        content_blocks.append({"type": "text", "text":
+            "The person could NOT answer these recent questions - they looked and genuinely could not tell. "
+            "Doubts of the same shape (same kind of moment, same kind of distinction) are not worth raising: "
+            "if a DOUBT below is one of those, either ask something the person CAN know instead, or omit it.\n"
+            + "\n".join(ulines)})
     content_blocks.append({"type": "text", "text": "\n\n".join(parts)
-              + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id)."})
+              + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id). "
+              "A DOUBT may be omitted when no question the person could answer would resolve it."})
     system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
     resp = _client().beta.messages.parse(
         model=cfg.claude_model, max_tokens=4000,
@@ -305,22 +443,25 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                     continue
                 # Kinds are never solicited: the person asserts the thread relation; the app
                 # derives detour/focus_start/self_distraction from what the thread became.
+                if o.content == "transition":
+                    # The model's pass-through options come framed as topically related
+                    # ("part of the Signal conversation - just passing through"), which the
+                    # person then has to disown; the neutral one appended below replaces them.
+                    continue
                 ante = o.antecedent_id if o.switch_label in ("continuation", "return") else None
                 opts.append({"label": o.label, "segment_id": o.segment_id,
                              "switch_label": o.switch_label, "antecedent_id": ante,
-                             "interruption_kind": None, "content": o.content})
-            if len(opts) < 2:
+                             "interruption_kind": None, "content": o.content,
+                             "hybrid": o.hybrid})
+            if len(opts) < 1:  # at least one substantive reading + the pass-through below
                 continue
             if t["source"] == "coherence" and not any(o.get("switch_label") == "interruption" for o in opts):
                 log.warning("rejecting coherence question without a split option (segment %d)", q.trigger_segment_id)
                 continue
             # Always offer the pass-through reading - the person may know they were only
-            # travelling to another window, which the model rarely proposes on its own.
-            if not any(o.get("content") == "transition" for o in opts):
-                opts.append({"label": "Just passing through - a transition on my way to something else",
-                             "segment_id": q.trigger_segment_id,
-                             "switch_label": "continuation", "interruption_kind": None,
-                             "content": "transition"})
+            # travelling to another window (or it was simply sitting open on that desktop).
+            # It continues whatever thread came before, so it attaches to that antecedent.
+            opts.append(passthrough_option(q.trigger_segment_id, opts))
             conn.execute(
                 "INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
                 " VALUES (?,?,?,?,?,?,?)",

@@ -8,15 +8,21 @@
 :root{
   --bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;
   --focus:#2a78d6;--interrupted:#eda100;--distracted:#e34948;--idle:#f1f0eb;--taskchange:#1baf7a;
-  --f-creative:#2a78d6;--f-task:#9a6fd6;--f-reading:#72b6e9;--f-planning:#12a594;--f-other:#7f8fa6;--f-meeting:#7a4e22;--f-passive:#e34948;--pending:#9a988c;
+  --f-creative:#2a78d6;--f-task:#8a5ec9;--f-reading:#72b6e9;--f-planning:#12a594;--f-other:#7f8fa6;--f-meeting:#7a4e22;--f-correspondence:#bc4aa0;--f-passive:#f53a3a;--pending:#9a988c;
   --m-claude:#2a78d6;--m-heuristic:#eb6834;--m-learned:#1baf7a;--m-ensemble:#4a3aa7;
 }
-@media (prefers-color-scheme: dark){:root{
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
   --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#1a1a17;--taskchange:#199e70;
-  --f-creative:#3987e5;--f-task:#ad86e6;--f-reading:#84c4f2;--f-planning:#1cb8a6;--f-other:#93a2b8;--f-meeting:#9a6d3e;--f-passive:#e66767;--pending:#55554f;
+  --f-creative:#3987e5;--f-task:#a077dd;--f-reading:#84c4f2;--f-planning:#1cb8a6;--f-other:#93a2b8;--f-meeting:#9a6d3e;--f-correspondence:#ce68ba;--f-passive:#ff6b6b;--pending:#55554f;
   --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
 }}
+:root[data-theme="dark"]{
+  --bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;
+  --focus:#3987e5;--interrupted:#c98500;--distracted:#e66767;--idle:#1a1a17;--taskchange:#199e70;
+  --f-creative:#3987e5;--f-task:#a077dd;--f-reading:#84c4f2;--f-planning:#1cb8a6;--f-other:#93a2b8;--f-meeting:#9a6d3e;--f-correspondence:#ce68ba;--f-passive:#ff6b6b;--pending:#55554f;
+  --m-claude:#3987e5;--m-heuristic:#d95926;--m-learned:#199e70;--m-ensemble:#9085e9;
+}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,system-ui,sans-serif}
 header{display:flex;gap:18px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--grid)}
@@ -53,6 +59,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 .cmsg.assistant{align-self:flex-start;background:var(--surface);border:1px solid var(--grid)}
 .cmsg.pending{align-self:flex-start;color:var(--muted)}
 .chatrow{display:flex;gap:8px}.chatrow input{flex:1}
+.proposal{align-self:flex-start;max-width:90%;margin-left:14px;padding:7px 10px;border:1.5px dashed var(--taskchange);border-radius:8px;font-size:13px}.proposal.done{border-style:solid;border-color:var(--focus)}.proposal button{text-align:left;margin:4px 0}
 </style>
 </head>
 <body>
@@ -60,19 +67,21 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <h1>Focus Monitor</h1>
   <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a><a href="#efforts" data-view="efforts">Efforts</a></nav>
   <span id="status" class="muted small"></span>
+  <button id="themeBtn" class="small" style="margin-left:auto" title="light / dark / follow the system" onclick="cycleTheme()">☀︎</button>
 </header>
 <main>
 <section id="view-day">
   <div class="row" style="margin-bottom:12px">
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
+    <button id="togglSync" class="small" title="Pull the last 7 days of Toggl entries again - use after correcting entries in Toggl. (The last 30 hours re-sync every 2 minutes by themselves; the last 7 days every 6 hours.)" onclick="togglResync()">↻ re-sync Toggl</button><span id="togglSyncMsg" class="muted small"></span>
     
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
     <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
-  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span></div><div class="legend"><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>unfocused</span><span><i class="sw" style="background:var(--pending)"></i>pending evaluation (~15 min behind)</span><span><i class="sw" style="background:var(--axis);opacity:.5"></i>transition (passing through)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span><span><svg width="10" height="12" style="flex:none"><rect x="3" y="1" width="3" height="10" fill="var(--taskchange)"/></svg>focus start</span><span><svg width="12" height="12" style="flex:none"><path d="M2,2 L10,2 L6,10 Z" fill="var(--interrupted)"/></svg>interruption switch</span><span><svg width="12" height="12" style="flex:none"><path d="M2,2 L10,2 L6,10 Z" fill="var(--distracted)"/></svg>distraction switch</span></div></div><div id="timeline"></div></div>
+  </div><div style="margin:4px 0 6px"><div class="legend" style="margin-bottom:2px"><span><i class="sw" style="background:var(--f-creative)"></i>creative work</span><span><i class="sw" style="background:var(--f-reading)"></i>reading / study</span><span><i class="sw" style="background:var(--f-planning)"></i>planning / reflecting</span><span><i class="sw" style="background:var(--f-task)"></i>task</span><span><i class="sw" style="background:var(--f-correspondence)"></i>correspondence</span><span><i class="sw" style="background:var(--f-other)"></i>other</span><span><i class="sw" style="background:var(--f-meeting)"></i>meeting</span><span title="an activity (reading, task, …) carried on inside a live discussion: keeps its colour, bottom quarter brown; counts with meetings, not independent focus"><i class="sw" style="background:linear-gradient(to bottom, var(--f-reading) 75%, var(--f-meeting) 75%)"></i>hybrid (with others)</span><span><i class="sw" style="background:var(--f-passive)"></i>passive consumption</span></div><div class="legend"><span><i class="sw" style="background:var(--f-other);border:2px solid var(--interrupted);box-sizing:border-box"></i>unfocused</span><span><i class="sw" style="background:var(--pending)"></i>pending evaluation (~15 min behind)</span><span><i class="sw" style="background:var(--axis);opacity:.5"></i>transition (passing through)</span><span><i class="sw" style="background:var(--idle)"></i>away (≥10 min)</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,transparent 0 2px,var(--ink) 2px 3px);opacity:.5"></i>computer inactivity (1–10 min)</span><span><svg width="10" height="12" style="flex:none"><rect x="3" y="1" width="3" height="10" fill="var(--taskchange)"/></svg>focus start</span><span><svg width="12" height="12" style="flex:none"><path d="M2,2 L10,2 L6,10 Z" fill="var(--interrupted)"/></svg>interruption switch</span><span><svg width="12" height="12" style="flex:none"><path d="M2,2 L10,2 L6,10 Z" fill="var(--distracted)"/></svg>distraction switch</span></div></div><div id="timeline"></div></div>
   <div class="card"><b>Focus spans</b><table id="spans"></table></div>
   <div class="card"><b>Self-distraction events</b><table id="distractions"></table></div>
 </section>
@@ -106,7 +115,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="row" style="margin-bottom:12px">
     <label><input type="checkbox" id="reviewAll" onchange="loadQueue()"> show all unreviewed (not just uncertain)</label>
     <span id="queueCount" class="muted small"></span>
-    <span class="muted small">Keys: 1 continuation · 2 interruption · 3 distraction · 4 focus start · s skip</span>
+    <span class="muted small">Keys: 1 continuation · 2 interruption · 3 distraction · 4 focus start · s next · ⌘←/⌘→ previous / next review item</span>
   </div>
   <div id="reviewCard" class="card"></div>
 </section>
@@ -123,6 +132,15 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 <div class="tt" id="tt"></div>
 
 <script>
+// ---- theme: system | light | dark (the choice is remembered in this browser)
+const THEMES=['system','light','dark'];
+function applyTheme(t){if(t==='system')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',t);
+  const b=document.getElementById('themeBtn');if(b){b.textContent=t==='light'?'☀︎':t==='dark'?'☾':'◐';b.title=`theme: ${t} — click to change (light / dark / follow the system)`;}}
+function savedTheme(){try{return localStorage.getItem('theme')||'system';}catch(e){return 'system';}}
+function cycleTheme(){const t=THEMES[(THEMES.indexOf(savedTheme())+1)%THEMES.length];try{localStorage.setItem('theme',t);}catch(e){}applyTheme(t);}
+applyTheme(savedTheme());
+document.addEventListener('DOMContentLoaded',()=>applyTheme(savedTheme()));
+
 const $=s=>document.querySelector(s);
 const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 const fmtMin=m=>m>=60?`${Math.floor(m/60)}h ${Math.round(m%60)}m`:`${Math.round(m)}m`;
@@ -130,8 +148,11 @@ const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>
 const stateColor={focus:'var(--focus)',interrupted:'var(--interrupted)',distracted:'var(--distracted)',idle:'var(--idle)'};
 const subColor={creative_work:'var(--f-creative)',focused_task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other_focused:'var(--f-other)',meeting:'var(--f-meeting)',focus:'var(--f-other)'};
 const actColor={reading:'var(--f-reading)',writing:'var(--f-creative)',coding:'var(--f-creative)',task_execution:'var(--f-task)',planning:'var(--f-planning)'};
-const contentColor={creative:'var(--f-creative)',task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other:'var(--f-other)',meeting:'var(--f-meeting)',passive:'var(--f-passive)',idle:'var(--pending)',transition:'var(--axis)'};
-const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading',planning:'planning / reflecting',other_focused:'other focused work',meeting:'meeting',focus:'other focused work'};
+const contentColor={creative:'var(--f-creative)',task:'var(--f-task)',reading:'var(--f-reading)',planning:'var(--f-planning)',other:'var(--f-other)',meeting:'var(--f-meeting)',correspondence:'var(--f-correspondence)',passive:'var(--f-passive)',idle:'var(--pending)',transition:'var(--axis)'};
+// Hybrid = an activity carried on inside a live discussion: the block keeps the activity's colour,
+// with the bottom quarter in the meeting colour. Hybrid spans count with meetings, not independent focus.
+function hybridBand(g,x0,y,w,h){return g&&g.hybrid?`<rect x="${x0}" y="${y+h*0.75}" width="${w}" height="${h*0.25}" rx="1" fill="var(--f-meeting)" style="pointer-events:none"/>`:'';}
+const subName={creative_work:'creative work',focused_task:'focused task',reading:'reading / study',planning:'planning / reflecting',other_focused:'other focused work',meeting:'meeting',focus:'other focused work'};
 const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',distraction:'var(--distracted)',task_change:'var(--taskchange)'};
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}
@@ -154,16 +175,24 @@ function hideTT(){tt.style.display='none';}
 
 // ---- day view
 const DAY_START_HOUR=4;
+async function togglResync(){const b=$('#togglSync'),m=$('#togglSyncMsg');b.disabled=true;m.textContent='syncing…';
+  try{const r=await api('/api/toggl/resync?days=7',{method:'POST'});
+    m.textContent=`${r.fetched} entries in the last ${Math.round(r.hours/24)} days · ${r.changed} changed · ${r.deleted} deleted${r.reevaluate?` · ${r.reevaluate} stretch(es) queued for re-evaluation`:''}`;
+    loadDay();}
+  catch(e){m.textContent='sync failed: '+e.message;}
+  b.disabled=false;setTimeout(()=>{if(m.textContent&&!m.textContent.startsWith('sync failed'))m.textContent='';},15000);}
 function setToday(){$('#daypick').value=new Date(Date.now()-DAY_START_HOUR*3600*1000).toLocaleDateString('en-CA');loadDay();}
 function shiftDay(n){const d=new Date($('#daypick').value+'T12:00:00');d.setDate(d.getDate()+n);$('#daypick').value=d.toLocaleDateString('en-CA');loadDay();}
 async function loadDay(){
   if(!$('#daypick').value)setToday();
   const d=await api('/api/day?day='+$('#daypick').value);
   const m=d.metrics;
-  const overBudget=d.spend_total>=d.budget_total;
-  const tiles=[['Longest span',fmtMin(m.longest_focus_min)],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)],['Total independent focus time',fmtMin(m.total_focus_min)],['Meeting focus',fmtMin(m.meeting_focus_min||0)],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`],['Claude total',`${overBudget?'<span style="color:var(--distracted)">':''}$${d.spend_total.toFixed(0)}${overBudget?' — re-evaluate!</span>':''} <span class="muted small">/ $${d.budget_total.toFixed(0)}</span>`]];
+  const overBudget=d.spend_avg_30d>=d.budget;
+  // "± x" under a headline metric: how far open review questions could still move it.
+  const sl=d.metric_slack||{},pm=(k,unit)=>sl[k]>=1?` <span class="muted small" style="white-space:nowrap" title="open review questions could still move this by up to this much — answer the ⚑ priority ones to settle it">± ${unit==='min'?fmtMin(sl[k]):Math.round(sl[k])}</span>`:'';
+  const tiles=[['Longest span',fmtMin(m.longest_focus_min)+pm('longest_focus_min','min')],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)+pm('longest_absorbed_min','min')],['Total independent focus time',fmtMin(m.total_focus_min)+pm('total_focus_min','min')],['Meeting & hybrid focus',fmtMin(m.meeting_focus_min||0)],['Bounce-aways',`${m.bounce_aways||0}${pm('bounce_aways','n')} <span class="muted small" title="self-distraction events today; the count in parentheses happened inside a focus span">(${m.distraction_count||0} in spans)</span>`],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`],['Claude cost, 30-day avg',`${overBudget?'<span style="color:var(--distracted)">':''}$${d.spend_avg_30d.toFixed(2)}${overBudget?'</span>':''} <span class="muted small">/ day</span>`]];
   if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Self-distractions',m.distraction_count],['Time distracted',fmtMin(m.distracted_min)]);
-  tiles.push(['Active time',fmtMin(m.active_min)],['Computer inactivity',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
+  tiles.push(['Active time',fmtMin(m.active_min)],['Computer inactivity',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}${d.priority_open?` <span class="small" style="color:var(--taskchange)" title="priority questions: an answer could move the day's headline metrics">⚑ ${d.priority_open}</span>`:''}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
   $('#tiles').innerHTML=tiles.map(([l,v])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
   COUNT_EVENTS=d.count_events; MIN_SPAN=d.min_focus_span_min;
@@ -248,18 +277,18 @@ function renderTimeline(){
     const detourInSpan=false;
     const unfBorder=hasC&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
     const transOp=hasC&&g.content==='transition'?'opacity="0.4"':'';
-    s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${unfBorder} ${transOp||(shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':''))} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`;
+    s+=`<rect data-i="${i}" x="${x0}" y="14" width="${w}" height="46" rx="2" fill="${fill}" ${unfBorder} ${transOp||(shortFocus?'opacity="0.35"':(detourInSpan?'opacity="0.55"':''))} ${g.source==='neutral'?'opacity="0.45"':''} style="cursor:${g.switch_id?'pointer':'default'}"/>`+hybridBand(g,x0,14,w,46);
     if(g.label==='task_change')s+=`<rect x="${x0}" y="8" width="3" height="6" fill="var(--taskchange)"/>`;});
   (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
   (d.disqualified||[]).forEach(q=>{if(!vis(q.start,q.end))return;s+=`<rect data-spb="${(q.start+q.end)/2}" x="${xc(q.start)}" y="4" width="${Math.max(2,xc(q.end)-xc(q.start))}" height="5" rx="2" fill="var(--interrupted)" opacity="0.8" style="cursor:pointer"><title>disqualified span (${esc(q.reason||'')}) — click to review</title></rect>`;});
-  d.focus_spans.forEach(sp=>{if(!vis(sp.start,sp.end))return;s+=`<rect data-spb="${(sp.start+sp.end)/2}" x="${xc(sp.start)}" y="4" width="${Math.max(2,xc(sp.end)-xc(sp.start))}" height="5" rx="2" fill="${sp.subtype==='meeting'?'var(--f-meeting)':'var(--focus)'}" style="cursor:pointer"><title>${sp.title?sp.title+' — ':''}${sp.subtype==='meeting'?'meeting ':'span '}${fmtMin(sp.duration/60)} — ${sp.detours} interruption(s) inside — click to review</title></rect>`;
+  d.focus_spans.forEach(sp=>{if(!vis(sp.start,sp.end))return;s+=`<rect data-spb="${(sp.start+sp.end)/2}" x="${xc(sp.start)}" y="4" width="${Math.max(2,xc(sp.end)-xc(sp.start))}" height="5" rx="2" fill="${sp.subtype==='meeting'?'var(--f-meeting)':'var(--focus)'}" style="cursor:pointer"><title>${sp.title?sp.title+' — ':''}${sp.subtype==='meeting'?'meeting ':(sp.hybrid?'hybrid (with others) ':'span ')}${fmtMin(sp.duration/60)} — ${sp.detours} interruption(s) inside — click to review</title></rect>`;
     (sp.events||[]).forEach(e=>{if(!vis(e.start,e.end))return;const cx=xc((e.start+e.end)/2);s+=`<path d="M${cx-4},2 L${cx+4},2 L${cx},10 Z" fill="var(--interrupted)"><title>${e.kind} ${fmtMin((e.end-e.start)/60)} (inside the span)</title></path>`;});});
   // oversight flags: uncertain, unresolved switches — click to resolve
   const flags=[],seen=new Set();
-  segs.forEach(g=>{if(g.needs_review&&!seen.has(g.switch_id)&&vis(g.clip_start,g.clip_start+1)){seen.add(g.switch_id);flags.push(g);}});
+  segs.forEach(g=>{const sid=g.own_switch_id||g.switch_id;if(g.needs_review&&!seen.has(sid)&&vis(g.clip_start,g.clip_start+1)){seen.add(sid);flags.push(g);}});
   s+=`<text x="${L}" y="114" fill="var(--distracted)">Needs review</text>`;
   flags.forEach((g,i)=>{const cx=xc(g.clip_start);const hi=g.review_tier==='high';
-    s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="${hi?0.5:0.18}"/><circle data-flag="${g.switch_id}" cx="${cx}" cy="108" r="${hi?5:2.5}" fill="var(--distracted)" opacity="${hi?1:0.45}" stroke="var(--surface)" stroke-width="${hi?1.5:0.8}" style="cursor:pointer"/>`;});
+    s+=`<line x1="${cx}" x2="${cx}" y1="60" y2="107" stroke="var(--distracted)" stroke-width="1" opacity="${hi?0.5:0.18}"/><circle data-flag="${g.own_switch_id||g.switch_id}" cx="${cx}" cy="108" r="${hi?5:2.5}" fill="var(--distracted)" opacity="${hi?1:0.45}" stroke="var(--surface)" stroke-width="${hi?1.5:0.8}" style="cursor:pointer"/>`;});
   s+='</svg>';
   el_render(el_get(),s,d,segs,flags);
 }
@@ -291,7 +320,7 @@ function el_render(el,s,d,segs,flags){
       const shot=shotNearest(g,Math.max(g.clip_start,Math.min(g.clip_end,tCur)))||g.first_screenshot;
       showTT(e,`${shot?`<img src="/shot/${shot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.own_switch_id||g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
     c.addEventListener('mousemove',e=>showTT(e,'<b>Needs review</b><br>uncertain — click to resolve'));
     c.addEventListener('mouseleave',hideTT);
@@ -325,18 +354,46 @@ async function loadTrends(){
 
 // ---- review (two tiers: spans first, then switches within confirmed spans)
 let queue=[],qi=0,current=null,spanQueue=[],sqi=0;
+// ---- moving through review items: questions, then span confirmations, then switches, as ONE list.
+// ⌘←/⌘→ (or ctrl) step through it without answering; `s` is the same as ⌘→.
+let reviewMode=null,returnMode=null;const RV={span:false,switch:false},RV_ORDER=['question','span','switch'];
+function enterOneOff(){if(reviewMode!=='oneoff')returnMode=reviewMode;reviewMode='oneoff';}
+function rvList(m){return m==='question'?qQueue:m==='span'?spanQueue:queue;}
+function rvIdx(m,v){if(v===undefined)return m==='question'?qqi:m==='span'?sqi:qi;if(m==='question')qqi=v;else if(m==='span')sqi=v;else qi=v;}
+async function reviewEnsure(m){
+  if(m==='span'&&!RV.span){spanQueue=await api('/api/span/queue');sqi=0;RV.span=true;}
+  if(m==='switch'&&!RV.switch){queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;RV.switch=true;}}
+function reviewShow(m){
+  if(m==='question')return renderQuestion();
+  if(m==='span')return renderSpanReview();
+  reviewMode='switch';detailTarget='#reviewCard';$('#queueCount').textContent=`${queue.length} in queue`;return renderSwitch(queue[qi].switch.id);}
+let rvBusy=false;
+async function reviewStep(dir){
+  if(rvBusy)return;rvBusy=true;
+  try{
+    let m=reviewMode;
+    if(m==='oneoff'){m=returnMode;if(!m)return await loadQueue();if(dir<0)return reviewShow(m);} // back = the item you came from
+    if(!m)return await loadQueue();
+    let i=rvIdx(m)+dir;
+    for(;;){
+      if(i>=0&&i<rvList(m).length){rvIdx(m,i);return reviewShow(m);}
+      const k=RV_ORDER.indexOf(m)+dir;
+      if(k<0||k>=RV_ORDER.length){$('#queueCount').textContent=dir>0?'that was the last review item — ⌘← goes back':'this is the first review item';return;}
+      m=RV_ORDER[k];await reviewEnsure(m);i=dir>0?0:rvList(m).length-1;}
+  }finally{rvBusy=false;}}
 async function loadQueue(){
   detailTarget='#reviewCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
-  if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;$('#queueCount').textContent='viewing selected switch';renderSwitch(id);return;}
+  if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;enterOneOff();$('#queueCount').textContent='viewing selected switch — ⌘→ continues the review queue';renderSwitch(id);return;}
   if(pendingSpan!=null){const ts=pendingSpan;pendingSpan=null;
-    try{const sp=await api('/api/span/at?ts='+ts);$('#queueCount').textContent='viewing selected span';renderSpanCard(sp,true);return;}
+    try{const sp=await api('/api/span/at?ts='+ts);enterOneOff();$('#queueCount').textContent='viewing selected span — ⌘→ continues the review queue';renderSpanCard(sp,true);return;}
     catch(e){/* no span there any more — fall through to the queue */}}
+  RV.span=RV.switch=false;spanQueue=[];queue=[];sqi=0;qi=0;reviewMode=null;returnMode=null;
   qQueue=await api('/api/questions/queue');qqi=0;
   if(qQueue.length){renderQuestion();return;}
-  spanQueue=await api('/api/span/queue');sqi=0;
+  await reviewEnsure('span');
   if(spanQueue.length){renderSpanReview();return;}
-  queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;
+  await reviewEnsure('switch');reviewMode=queue.length?'switch':null;
   $('#queueCount').textContent=queue.length?`${queue.length} in queue`:'queue empty';
   if(queue.length)renderSwitch(queue[0].switch.id);else $('#reviewCard').innerHTML='<div class="muted">Nothing to review. Toggle "show all" to review any unreviewed switch, or click a block on the timeline.</div>';
 }
@@ -356,7 +413,7 @@ function spanTL(sp){
     let fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
     const op=g.in_span?(g.state!=='focus'?0.8:1):0.35;
     const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')?'stroke="var(--interrupted)" stroke-width="2"':'';
-    s+=`<rect data-si="${i}" x="${x0}" y="16" width="${w}" height="46" rx="2" fill="${fill}" ${unfB} opacity="${g.source==='neutral'?Math.min(op,0.4):op}" style="cursor:${g.switch_id?'pointer':'default'}"/>`;
+    s+=`<rect data-si="${i}" x="${x0}" y="16" width="${w}" height="46" rx="2" fill="${fill}" ${unfB} opacity="${g.source==='neutral'?Math.min(op,0.4):op}" style="cursor:${g.switch_id?'pointer':'default'}"/>`+hybridBand(g,x0,16,w,46);
     if(g.label==='task_change')s+=`<rect x="${x0}" y="9" width="3" height="6" fill="var(--taskchange)" ${g.in_span?'':'opacity="0.5"'}/>`;
     else if(g.label==='interruption'||g.label==='distraction')s+=`<path d="M${x0-3},9 L${x0+3},9 L${x0},15 Z" fill="var(--${g.label==='distraction'?'distracted':'interrupted'})" ${g.in_span?'':'opacity="0.5"'}/>`;});
   // Toggl track: whichever entry was running, drawn under the activity blocks
@@ -400,12 +457,11 @@ function qTL(q){
     const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
     const isQ=g.id===q.segment_id;
     const unfB=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isQ?'stroke="var(--interrupted)" stroke-width="2"':'';
-    s+=`<rect data-qi="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${isQ?1:0.8}" ${isQ?'stroke="var(--ink)" stroke-width="2"':unfB} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
-  s+=`<line x1="${x(q.seg_start)}" x2="${x(q.seg_start)}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`;
-  s+=`<path d="M${x(q.seg_start)-6},4 L${x(q.seg_start)+6},4 L${x(q.seg_start)},15 Z" fill="var(--ink)"/>`;
+    s+=`<rect data-qi="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${isQ?1:0.8}" ${isQ?'stroke="var(--ink)" stroke-width="2"':unfB} style="cursor:${g.switch_id?'pointer':'default'}"/>`+hybridBand(g,x0,24,w,44);});
+  s+=scrubMarkup(q.seg_start);
   s+=togglTrack(q.toggl_entries,x,t0,t1,L,98,102,'no Toggl entry in this window');
   s+='</svg>';
-  return `<div id="qTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div><div class="muted small" style="margin:2px 0 6px">▾ the segment in question · hover any block for its capture · click to open</div>`;
+  return `<div id="qTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div><div class="muted small" style="margin:2px 0 6px">▾ the moment shown below — drag it or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · hover any block for its capture · click to open</div>`;
 }
 function qTLBind(q){
   document.querySelectorAll('#qTL rect[data-qi]').forEach(r=>{const g=q.timeline[+r.dataset.qi];
@@ -430,50 +486,149 @@ function pollPendingQuestion(q){
 function renderQuestion(){
   const q=qQueue[qqi];if(!q)return loadQueue();
   current=null; // keyboard 1-4 must not hit the switch-review path while a question is up
+  reviewMode='question';
   currentQSeg=q.segment_id;
   if(qPollTimer){clearTimeout(qPollTimer);qPollTimer=null;}
-  $('#queueCount').textContent=`${qQueue.length-qqi} question(s) — then ${spanQueue.length||'the'} span confirmations`;
+  scrubSetup(q.timeline_shots,q.timeline,q.seg_start-900,q.seg_end+900,q.seg_start,'#qTL svg');
+  const qc=(q.queue_counts||{});$('#queueCount').textContent=`${qQueue.length-qqi} question(s) loaded${qc.total?` of ${qc.total} open (${qc.priority} priority)`:''} — then ${spanQueue.length||'the'} span confirmations`;
   const body=q.pending
     ?`<div style="margin:10px 0;padding:10px;border:1px dashed var(--grid);border-radius:6px"><b>✍︎ The model is writing this question…</b><div class="muted small" style="margin-top:4px">It flagged this segment (${esc(qSourceName[q.source]||q.source)}) and is composing the question with its context now — this card will fill in by itself in a few seconds.</div></div>`
     :`<div style="margin:10px 0"><b>${esc(q.question)}</b></div>
     <div class="row" style="flex-wrap:wrap;gap:6px;margin:8px 0">
-      ${q.options.map((o,i)=>`<button style="text-align:left" onclick="answerQuestion(${q.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}
-      <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>
-    </div>`;
+      ${qOptButtons(q,'answerQuestion')}
+      ${qSettled(q)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands, and the generator learns not to ask this kind of thing" onclick="unsureQuestion(${q.id})">I can't tell</button> <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>`}
+    </div>${qAnsweredLine(q,'reopenQuestion')}${qNoteField(q,'saveQuestionNote')}`;
   $('#reviewCard').innerHTML=`
-    <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="qqi++;renderQuestion()">skip (s)</button></div></div>
+    <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button></div></div>
     <div class="small muted" style="margin:6px 0">${esc(q.app)}${q.domain?' · '+esc(q.domain):''}${q.title?' · '+esc(q.title.slice(0,70)):''} ${q.switch_id?`· <a href="#" onclick="openSegment(${q.switch_id});return false">open the capture</a>`:''}</div>
-    ${qTL(q)}
+    ${qPriorityLine(q)}
     <div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">${esc(q.context)}</div>
     ${body}
-    <textarea id="qNote" rows="2" placeholder="optional note — context the model should know (saved with your answer, used as a precedent)"></textarea>
+    ${qTL(q)}
+    ${qShots(q)}
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
-      <b>Ask the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context</span>
+      <b>Talk to the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context; ask it something or tell it what was really going on</span>
       <div id="qchatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="qchatinput" placeholder="e.g. I think I was just passing through here — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Ask</button></div>
+      <div class="chatrow"><input id="qchatinput" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
     </div>`;
   qTLBind(q);
+  scrubBind();
+  if(SCRUB.moments.length)scrubTo(SCRUB.i);
   renderQChat();
+  if(q.segment_id)chatLoad('q'+q.segment_id,'evaluator',q.segment_id,renderQChat);
   if(q.pending)pollPendingQuestion(q);
+  else qRefreshState(q);
 }
-function renderQChat(){const log=$('#qchatlog');if(!log)return;
-  log.innerHTML=(CHAT['q'+currentQSeg]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
+// The queue is loaded once; an answer given on a capture page (or in another window) would
+// otherwise leave this copy stale. Re-check and redraw if the server disagrees.
+async function qRefreshState(q){
+  try{const st=await api(`/api/questions/${q.id}/state`);
+    if(qQueue[qqi]!==q)return;
+    if(st.status!==q.status||st.answer_index!==q.answer_index||(st.note||'')!==(q.note||'')){
+      if(st.status==='dismissed'){qQueue.splice(qqi,1);return renderQuestion();}
+      Object.assign(q,{status:st.status,answer_index:st.answer_index,note:st.note});renderQuestion();}}
+  catch(e){}}
+// The captures for a question card: the last capture before the segment in question and the
+// segment's own first capture, plus a filmstrip of every capture inside it (click to view).
+function qShots(q){const tl=q.timeline||[],k=tl.findIndex(g=>g.id===q.segment_id);if(k<0)return '';
+  const seg=tl[k],prev=k>0?tl[k-1]:null;
+  const cap=g=>`<b>${esc(g.app)}</b> <span class="muted">${fmtT(g.clip_start)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title.slice(0,90)):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,120))+'</span>':''}`;
+  const first=SCRUB.moments.length?scrubShot():null;
+  return `<div class="shots" style="margin:8px 0">
+    <div><div class="cap">Before – ${prev?cap(prev):'<span class="muted">(nothing earlier in this window)</span>'}</div>${prev&&(prev.last_screenshot||prev.first_screenshot)?`<img src="/shot/${prev.last_screenshot||prev.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
+    <div><div class="cap">The moment in question – ${cap(seg)}</div>${first||seg.first_screenshot?`<img id="afterShot" src="/shot/${first?first.path:seg.first_screenshot}">`:'<div class="muted">no screenshot</div>'}<div class="small" id="scrubCap" style="margin-top:2px"></div>${filmstripMarkup()}</div>
+  </div>`;}
+// A chat message, plus the cards for anything the evaluator proposed in it. The evaluator cannot
+// write to the record itself: a proposed judgment / rule is a button, applied only when clicked.
+function chatMsgHtml(m,key){let h=`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`;
+  const p=m.proposal;if(!p||!m.id)return h;const ap=p.applied||{};
+  if(p.judgment){const j=p.judgment,done=!!ap.judgment;
+    const sets=[j.content?'content: '+j.content:null,j.switch_label?'thread: '+j.switch_label+(j.antecedent_id?' of #'+j.antecedent_id:''):null,j.hybrid===true?'hybrid (with others)':j.hybrid===false?'solo':null].filter(Boolean).join(' · ');
+    h+=`<div class="proposal${done?' done':''}"><div class="muted small">${done?'✓ applied as your answer'+(ap.judgment.option_index!=null?' (option '+(ap.judgment.option_index+1)+')':''):'Proposed answer, in your words — click to apply it:'}</div>
+      <button ${done?'disabled style="border-color:var(--focus);font-weight:600"':''} onclick="applyJudgment(${m.id},'${key}')">${done?'✓ ':'✎ '}${esc(j.label)}</button>
+      <div class="muted small">${sets?esc(sets)+' · ':''}precedent note: “${esc(j.note||'')}”</div></div>`;}
+  if(p.rule){const done=!!ap.rule;
+    h+=`<div class="proposal${done?' done':''}"><div class="muted small">${done?'✓ added to your rules document':'Proposed general rule — add it to your rules?'}</div>
+      <div style="margin:4px 0">${esc(p.rule)}</div>${done?'':`<button onclick="applyRule(${m.id},'${key}')">add to my rules</button>`}</div>`;}
+  return h;}
+async function applyJudgment(mid,key){
+  const qid=key.startsWith('q')?(qQueue[qqi]||{}).id||null:((current&&current.question)||{}).id||null;
+  let r;try{r=await api(`/api/chat/message/${mid}/apply-judgment`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question_id:qid})});}
+  catch(e){alert('could not apply: '+e.message);return;}
+  const m=(CHAT[key]||[]).find(x=>x.id===mid);if(m)m.proposal=r.proposal;
+  if(r.question_id!=null){const q=qQueue.find(x=>x.id===r.question_id)||((current&&current.question&&current.question.id===r.question_id)?current.question:null);
+    if(q){q.options=r.options;q.status='answered';q.answer_index=r.option_index;q.note=(r.proposal.judgment||{}).note||null;}
+    if(current&&current.question&&current.question.id===r.question_id&&current.question!==q){Object.assign(current.question,{options:r.options,status:'answered',answer_index:r.option_index});}}
+  if(key.startsWith('q'))renderQuestion();else if(current)renderSwitch(current.switch.id);}
+async function applyRule(mid,key){
+  let r;try{r=await api(`/api/chat/message/${mid}/apply-rule`,{method:'POST'});}catch(e){alert('could not add the rule: '+e.message);return;}
+  const m=(CHAT[key]||[]).find(x=>x.id===mid);if(m)m.proposal=r.proposal;
+  if(key.startsWith('q'))renderQChat();else if(current)renderChat(current.switch.id);}
+function renderQChat(){const log=$('#qchatlog');if(!log)return;const k='q'+currentQSeg;
+  log.innerHTML=(CHAT[k]||[]).map(m=>chatMsgHtml(m,k)).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,inp=$('#qchatinput'),t=inp.value.trim();if(!t)return;
   CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:t});inp.value='';renderQChat();
   const log=$('#qchatlog');log.innerHTML+='<div class="cmsg pending2">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k]})});CHAT[k].push({role:'assistant',text:r.reply});}
+  try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k],question_id:(qQueue[qqi]||{}).id||null})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
   catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderQChat();}
 async function answerCardQuestion(id,idx){
-  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx})});
+  const note=qNoteVal(id);
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
   if(current)renderSwitch(current.switch.id);
 }
+// The note lives inside the question box. Before answering it rides along with the option you
+// click; after answering, "Save note" re-submits the same answer with the note attached.
+let qNoteSaved=null;
+function qNoteVal(id){const el=$('#qNote'+id);return (el&&el.value.trim())||null;}
+function qNoteField(q,saveFn){const done=qSettled(q),just=qNoteSaved===q.id;if(just)qNoteSaved=null;
+  return `<div class="row" style="gap:6px;align-items:flex-end;margin-top:6px;flex-wrap:nowrap"><textarea id="qNote${q.id}" rows="2" style="flex:1" placeholder="optional note about your answer — context the model should know (used as a precedent)" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();${done?`${saveFn}(${q.id})`:''}}">${esc(q.note||'')}</textarea>${done?`<button class="primary" style="flex:none" title="⌘⏎" onclick="${saveFn}(${q.id})">Save note</button>`:''}</div><div class="muted small" style="margin-top:2px">${done?(just?'✓ note saved':'edit the note and press Save note (⌘⏎)'):'saved along with the option you click'}</div>`;}
+async function saveNote(id,idx){
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:qNoteVal(id)})});
+  qNoteSaved=id;}
+async function saveUnsureNote(id){await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});qNoteSaved=id;}
+async function saveQuestionNote(id){const q=qQueue.find(x=>x.id===id);if(!q)return;const note=qNoteVal(id);
+  if(q.status==='unsure')await saveUnsureNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
+  q.note=note;renderQuestion();}
+async function saveCardQuestionNote(id){const q=current&&current.question;if(!q||q.id!==id)return;
+  if(q.status==='unsure')await saveUnsureNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
+  renderSwitch(current.switch.id);}
 async function answerQuestion(id,idx){
-  const note=($('#qNote')&&$('#qNote').value.trim())||null;
+  const note=qNoteVal(id);
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
-  qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
+  // The question stays up, marked answered, so a misclick is one click to fix; ⌘→ / s moves on.
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
+  renderQuestion();
 }
+async function reopenQuestion(id){
+  await api(`/api/questions/${id}/reopen`,{method:'POST'});
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='open';q.answer_index=null;q.note=null;}
+  renderQuestion();
+}
+async function reopenCardQuestion(id){
+  await api(`/api/questions/${id}/reopen`,{method:'POST'});
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='open';q.answer_index=null;q.note=null;}
+  if(current)renderSwitch(current.switch.id);
+}
+// Option buttons for a review question. Once answered: the chosen one is marked, the rest are
+// greyed but still clickable - clicking another one replaces the answer (the server undoes the first).
+function qSettled(q){return q.status==='answered'||q.status==='unsure';}
+// Why this question is where it is in the queue: what an answer could move, and how unsure the model is.
+function qPriorityLine(q){if(!q||q.tier==null||q.pending||qSettled(q))return '';
+  const u=q.uncertainty!=null?` · model ${Math.round(100*(1-q.uncertainty))}% sure`:'';
+  return q.tier==='priority'?`<div class="small" style="margin:4px 0;color:var(--taskchange)"><b>⚑ priority</b> — ${esc(q.stakes_text||'')}${u}</div>`
+    :`<div class="muted small" style="margin:4px 0">routine — ${esc(q.stakes_text||'no effect on the day\'s metrics')}${u}</div>`;}
+function qOptButtons(q,fn){const done=qSettled(q);
+  return q.options.map((o,i)=>{const mine=done&&q.answer_index===i;
+    return `<button style="text-align:left;${mine?'border-color:var(--focus);font-weight:600':(done?'opacity:.45':'')}" ${mine?'disabled':''} title="${done&&!mine?'change your answer to this':''}" onclick="${fn}(${q.id},${i})">${mine?'✓ ':''}${i+1}. ${esc(o.label)}</button>`;}).join('');}
+function qAnsweredLine(q,undoFn){if(q.status==='unsure')return `<div class="muted small" style="margin:4px 0">? you couldn't tell — the model's judgment stands; click an option if you work it out · <a href="#" onclick="${undoFn}(${q.id});return false">clear</a></div>`;
+  return q.status==='answered'?`<div class="muted small" style="margin:4px 0">✓ answered — click another option to change it · <a href="#" onclick="${undoFn}(${q.id});return false">clear my answer</a></div>`:'';}
+async function unsureQuestion(id){
+  await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='unsure';q.answer_index=null;}
+  if(reviewMode==='question')renderQuestion();else if(current){if(current.question&&current.question.id===id){current.question.status='unsure';current.question.answer_index=null;}renderSwitch(current.switch.id);}}
 async function dismissQuestion(id){
   await api(`/api/questions/${id}/dismiss`,{method:'POST'});
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
@@ -481,18 +636,19 @@ async function dismissQuestion(id){
 let currentSpan=null,spanOneOff=false;
 function renderSpanReview(){
   const sp=spanQueue[sqi];if(!sp)return loadQueue();
+  reviewMode='span';
   $('#queueCount').textContent=`${spanQueue.length-sqi} span(s) to confirm — switch reviews unlock once their span is confirmed`;
   renderSpanCard(sp,false);
 }
 function renderSpanCard(sp,oneOff){
   currentSpan=sp;spanOneOff=!!oneOff;
   const subs=['creative_work','focused_task','reading','planning','other_focused','meeting'];
-  const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${sqi+1}/${spanQueue.length} <button onclick="sqi++;renderSpanReview()">skip (s)</button>`;
+  const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${sqi+1}/${spanQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button>`;
   const prior=sp.review?`<div class="small" style="margin:4px 0;color:var(--taskchange)">already reviewed: ${sp.review.verdict==='not_focus'?'not a focus span':(subName[sp.review.subtype]||'focus span')} — a new verdict below replaces it</div>`:'';
   $('#reviewCard').innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Span review</b> · ${sp.day} · ${fmtT(sp.start)}–${fmtT(sp.end)} · ${fmtMin(sp.duration/60)}</div><div>${nav}</div></div>
     ${prior}
-    <div style="margin:8px 0">Current call: ${sp.disq_reason?'<span style="color:var(--interrupted)">NOT focused work — '+esc(sp.disq_reason)+'</span>':`<b style="color:${subColor[sp.subtype]}">${subName[sp.subtype]||esc(sp.subtype)}</b>`} · ${fmtMin(sp.focus_min)} focused${sp.detours?` · ${sp.detours} interruption(s) (${fmtMin(sp.detour_min)})`:''} · ended by ${esc(sp.ended_by||'?')}</div>
+    <div style="margin:8px 0">Current call: ${sp.hybrid&&!sp.disq_reason?'<span style="color:var(--f-meeting)"><b>hybrid</b> — carried on inside a live discussion (counts with meetings) · </span>':''}${sp.disq_reason?'<span style="color:var(--interrupted)">NOT focused work — '+esc(sp.disq_reason)+'</span>':`<b style="color:${subColor[sp.subtype]}">${subName[sp.subtype]||esc(sp.subtype)}</b>`} · ${fmtMin(sp.focus_min)} focused${sp.detours?` · ${sp.detours} interruption(s) (${fmtMin(sp.detour_min)})`:''} · ended by ${esc(sp.ended_by||'?')}</div>
     ${spanTL(sp)}
     <div class="muted small" style="margin:2px 0 6px">hover a block for its capture · ▯ green tick = focus start · ▾ = interruption/distraction switch · click a block to open it</div>
     ${sp.summary?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">📝 ${esc(sp.summary)}</div>`:'<div class="muted small" style="margin:6px 0">summary not generated yet</div>'}
@@ -506,12 +662,13 @@ function renderSpanCard(sp,oneOff){
       </div>
       <textarea id="spanNote" rows="2" placeholder="optional note (what was really going on?)"></textarea></div>
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
-      <b>Ask Claude about this span</b> <span class="muted small">— it sees the whole day's activity log, all spans, all Toggl entries, and sampled screenshots</span>
+      <b>Talk to Claude about this span</b> <span class="muted small">— it sees the whole day's activity log, all spans, all Toggl entries, and sampled screenshots</span>
       <div id="spanchatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="spanchatinput" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Ask</button></div>
+      <div class="chatrow"><input id="spanchatinput" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Send</button></div>
     </div>`;
   spanTLBind(sp);
   renderSpanChat();
+  chatLoad('sp'+spanChatKey(),'span',spanChatKey(),renderSpanChat);
 }
 function spanChatKey(){return currentSpan?Math.round(currentSpan.start):null;}
 function renderSpanChat(){const log=$('#spanchatlog');if(!log)return;
@@ -556,7 +713,7 @@ function switchTL(f){
     const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
     const isCur=g.switch_id===f.switch.id;
     const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
-    s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`;});
+    s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`+hybridBand(g,x0,24,w,44);});
   s+=togglTrack(f.toggl_entries,x,t0,t1,L,98,102,'no Toggl entry in this window');
   // the switch marker doubles as a SCRUBBER: drag it (or use arrow keys) to step through
   // every screenshot in this window; the panel below shows the capture at the marker.
@@ -569,8 +726,22 @@ function switchTL(f){
   s+='</svg>';
   return `<div id="swTL" style="margin:8px 0;border:1px solid var(--grid);border-radius:6px;padding:4px 2px">${s}</div>`;
 }
-let SCRUB={moments:[],i:0,d:0,f:null};
-function scrubMap(){const ts=SCRUB.f.switch.ts;return{t0:ts-900,t1:ts+900,W:1000,L:14,R:14};}
+let SCRUB={moments:[],i:0,d:0,f:null,t0:0,t1:0,svg:'#swTL svg'};
+function scrubMap(){return{t0:SCRUB.t0,t1:SCRUB.t1,W:1000,L:14,R:14};}
+// Group raw captures into moments (one per instant, all monitors together) and park the
+// scrubber on the moment nearest `at` (preferring the first capture AT or after it).
+function scrubSetup(shots,timeline,t0,t1,at,svg){
+  const sorted=(shots||[]).slice().sort((a,b)=>a.ts-b.ts);const moments=[];let cur=null;
+  for(const s of sorted){if(cur&&s.ts-cur.ts<=1.5){cur.byD[s.display||0]=s;}else{cur={ts:s.ts,byD:{[s.display||0]:s}};moments.push(cur);}}
+  SCRUB={moments,i:0,d:SCRUB&&SCRUB.d||0,f:{timeline:timeline||[]},t0,t1,svg};
+  let bi=0,bd=1e18;moments.forEach((m,i)=>{const dd=Math.abs(m.ts-at)+(m.ts<at?600:0);if(dd<bd){bd=dd;bi=i;}});SCRUB.i=bi;}
+function scrubMarkup(at){const xv=scrubX(at);
+  return `<rect id="segHi" x="0" y="23" width="0" height="46" fill="none" stroke="var(--focus)" stroke-width="2.5" rx="2" style="display:none;pointer-events:none"/>`
+    +`<line id="scrubLine" x1="${xv}" x2="${xv}" y1="14" y2="70" stroke="var(--ink)" stroke-width="1.5"/>`
+    +`<path id="scrubHead" d="M${xv-6},4 L${xv+6},4 L${xv},15 Z" fill="var(--ink)"/>`
+    +`<rect id="scrubGrab" x="${xv-10}" y="0" width="20" height="72" fill="transparent" style="cursor:grab"/>`;}
+function filmstripMarkup(){if(SCRUB.moments.length<2)return '';
+  return `<div id="filmstrip" style="margin-top:4px">${scrubDisplays().map(dd=>`<div class="row" style="gap:4px;flex-wrap:nowrap;overflow-x:auto;margin-top:3px;align-items:center"><span class="muted small" style="flex:none;width:56px">${dd?'external':'laptop'}</span>${SCRUB.moments.map((mo,mi)=>mo.byD[dd]?`<img class="thumb" data-m="${mi}" data-d="${dd}" src="/shot/${mo.byD[dd].path}" title="${fmtT(mo.ts)}" onclick="scrubTo(${mi},${dd})">`:`<span style="flex:none;width:16px"></span>`).join('')}</div>`).join('')}</div><div class="muted small">every capture in this window, one row per monitor — click to view</div>`;}
 function scrubX(t){const m=scrubMap();return m.L+(t-m.t0)/(m.t1-m.t0)*(m.W-m.L-m.R);}
 function scrubShot(){const mo=SCRUB.moments[SCRUB.i];if(!mo)return null;
   return mo.byD[SCRUB.d]||mo.byD[Object.keys(mo.byD)[0]];}
@@ -598,7 +769,7 @@ function scrubTo(i,d){
     t.style.outline=(+t.dataset.m===SCRUB.i&&+t.dataset.d===shownD)?'2px solid var(--focus)':'none';});
 }
 function scrubBind(){
-  const svg=document.querySelector('#swTL svg'),gr=$('#scrubGrab');
+  const svg=document.querySelector(SCRUB.svg),gr=$('#scrubGrab');
   if(!svg||!gr)return;
   let dragging=false;
   const move=e=>{if(!dragging)return;
@@ -620,8 +791,9 @@ function switchTLBind(f){
 }
 let segEvalSel=null;
 function evalBtns(cur,vals,names,field){return vals.map(v=>`<button class="small" style="${cur===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEdit('${field}','${v}')">${names[v]||v}</button>`).join(' ');}
+async function segEditHybrid(){segEvalSel.hybrid=!segEvalSel.hybrid;return segEdit('hybrid-toggle',null);}
 async function segEdit(field,val){
-  if(field!=='note'){
+  if(field!=='note'&&field!=='hybrid-toggle'){
     segEvalSel[field]=segEvalSel[field]===val?null:val;
     if(field==='switch_label'&&val!=='interruption')segEvalSel.interruption_kind=null;
   }
@@ -632,25 +804,21 @@ async function segEdit(field,val){
 async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
 async function renderSwitch(id){
   const f=await api('/api/switch/'+id);current=f;
-  {const shots=(f.timeline_shots||[]).slice().sort((a,b)=>a.ts-b.ts);
-   const moments=[];let cur=null;
-   for(const s of shots){
-     if(cur&&s.ts-cur.ts<=1.5){cur.byD[s.display||0]=s;}
-     else{cur={ts:s.ts,byD:{[s.display||0]:s}};moments.push(cur);}}
-   SCRUB={moments:moments,i:0,d:SCRUB&&SCRUB.d||0,f:f};
-   let bi=0,bd=1e18;moments.forEach((m,i)=>{const dd=Math.abs(m.ts-f.switch.ts)+(m.ts<f.switch.ts?600:0);if(dd<bd){bd=dd;bi=i;}});SCRUB.i=bi;}
+  scrubSetup(f.timeline_shots,f.timeline,f.switch.ts-900,f.switch.ts+900,f.switch.ts,'#swTL svg');
   const P=k=>({continuation:f.ensemble?.p_continuation,interruption:f.ensemble?.p_interruption,distraction:f.ensemble?.p_distraction,task_change:f.ensemble?.p_task_change});
   const ctxLine=f.ensemble?(f.ensemble.importance>=1?`<div style="margin:6px 0"><b style="color:var(--focus)">Leaving a ${Math.round(f.ensemble.focus_run_min)}-min focus span</b> <span class="muted small">— high priority</span></div>`:`<div class="muted small" style="margin:6px 0">Not in a focus span before this switch — low priority</div>`):'';
   const togglLine=`<div class="small" style="margin:4px 0">⏱ ${f.toggl?'Toggl: <b>'+esc(f.toggl.description||'(unnamed entry)')+'</b>'+(f.toggl.project?' · '+esc(f.toggl.project):''):'<span class="muted">no Toggl entry running at this moment</span>'}</div>`;
   const sp=f.span;
   const spanLine=sp?`<div class="small" style="margin:4px 0">${sp.is_start?'<b style="color:var(--taskchange)">⚑ This capture is the START of a span</b> — ':''}${sp.relation==='leaving'?'this switch LEFT ':'inside '}${sp.disq_reason?'<span style="color:var(--interrupted)">a disqualified span ('+esc(sp.disq_reason)+')</span>':'a <b>'+(subName[sp.subtype]||sp.subtype)+'</b> span'} ${fmtT(sp.start)}–${fmtT(sp.end)}${sp.summary?'<br>📝 <span style="opacity:.85">'+esc(sp.summary)+'</span>':''}</div>`:'';
   const ev=f.to_eval,evr=f.to_seg_review;
-  segEvalSel={content:(evr&&evr.content)||(ev&&ev.content)||null,switch_label:(evr&&evr.switch_label)||(ev&&ev.switch_label)||null,interruption_kind:(evr&&evr.interruption_kind)||(ev&&ev.interruption_kind)||null};
+  segEvalSel={content:(evr&&evr.content)||(ev&&ev.content)||null,switch_label:(evr&&evr.switch_label)||(ev&&ev.switch_label)||null,interruption_kind:(evr&&evr.interruption_kind)||(ev&&ev.interruption_kind)||null,
+    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:!!(ev&&ev.hybrid)};
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?' · <b>edited by you</b>':''):'not yet evaluated — runs ~15 min behind'}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalSel.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalSel.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
     <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
   </div>`;
@@ -658,54 +826,61 @@ async function renderSwitch(id){
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
     return `<tr><td><b>${p.model}</b></td><td style="width:160px">${top} ${Math.round(pr[top]*100)}%${probBar(pr)}</td><td class="small">${esc(p.rationale)}${p.cost_usd?` <span class="muted">($${p.cost_usd.toFixed(3)})</span>`:''}</td></tr>`;}).join('');
   const rev=f.review?`<div style="margin-top:8px"><b>Your review:</b> ${f.review.label}${f.review.note?' – '+esc(f.review.note):''} <button onclick="unreview(${id})">undo</button></div>`:'';
-  const nav=detailTarget==='#segCard'?`<button onclick="segNav('prev')">◀</button> <button onclick="segNav('next')">▶</button>`:(queue.length?`${qi+1}/${queue.length} <button onclick="skip()">skip (s)</button>`:'');
+  const nav=detailTarget==='#segCard'?`<button onclick="segNav('prev')">◀</button> <button onclick="segNav('next')">▶</button>`:(reviewMode==='oneoff'?`<button onclick="reviewStep(-1)" title="back to the review item you came from (⌘←)">◀ back to queue</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next ▶</button>`:(queue.length?`${qi+1}/${queue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button>`:''));
   const other=$(detailTarget==='#reviewCard'?'#segCard':'#reviewCard'); if(other)other.innerHTML='';
+  const chatBlock=`<div style="margin:10px 0 12px;border-top:1px solid var(--grid);padding-top:10px">
+      <b>Talk to the evaluator that judged this segment</b> <span class="muted small">— the same conversation it made the decision in: same instructions, same context, same screenshots, its own answer; ask it something or tell it what was really going on</span>
+      <div id="chatlog" class="chatlog"></div>
+      <div class="chatrow"><input id="chatinput" placeholder="e.g. Why did you label this passive? — or: that was a call with Dave, not solo reading" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Send</button></div>
+    </div>`;
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
+    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid ${qSettled(f.question)?'var(--grid)':'var(--taskchange)'};border-radius:6px"><b${qSettled(f.question)?' class="muted"':''}>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}</span>${qPriorityLine(f.question)}<div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${qOptButtons(f.question,'answerCardQuestion')}${qSettled(f.question)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands" onclick="unsureQuestion(${f.question.id})">I can't tell</button>`}</div>${qAnsweredLine(f.question,'reopenCardQuestion')}${qNoteField(f.question,'saveCardQuestionNote')}</div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
     ${switchTL(f)}
-    ${SCRUB.moments.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · ⌘←/⌘→ jump spans</div>`:''}
+    ${SCRUB.moments.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · ${detailTarget==='#reviewCard'?'⌥←/⌥→ jump spans · ⌘←/⌘→ previous/next review item':'⌘←/⌘→ jump spans'}</div>`:''}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
       <div><div class="cap">After – ${segLine(f.to)}</div>${(f.to.first_screenshot||SCRUB.shots.length)?`<img id="afterShot" src="/shot/${f.to.first_screenshot||SCRUB.shots[0].path}">`:'<div class="muted">no screenshot</div>'}
       <div class="small" id="scrubCap" style="margin-top:2px"></div>
-      ${SCRUB.moments.length>1?`<div id="filmstrip" style="margin-top:4px">${scrubDisplays().map(dd=>`<div class="row" style="gap:4px;flex-wrap:nowrap;overflow-x:auto;margin-top:3px;align-items:center"><span class="muted small" style="flex:none;width:56px">${dd?'external':'laptop'}</span>${SCRUB.moments.map((mo,mi)=>mo.byD[dd]?`<img class="thumb" data-m="${mi}" data-d="${dd}" src="/shot/${mo.byD[dd].path}" title="${fmtT(mo.ts)}" onclick="scrubTo(${mi},${dd})">`:`<span style="flex:none;width:16px"></span>`).join('')}</div>`).join('')}</div><div class="muted small">every capture in this window, one row per monitor — click to view</div>`:''}</div>
+      ${filmstripMarkup()}</div>
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
-    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid var(--taskchange);border-radius:6px"><b>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}</span><div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${f.question.options.map((o,i)=>`<button style="text-align:left" onclick="answerCardQuestion(${f.question.id},${i})">${i+1}. ${esc(o.label)}</button>`).join('')}</div></div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
+    ${f.question?chatBlock:''}
     ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
       <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
-    <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
-      <b>Ask the evaluator that judged this segment</b> <span class="muted small">— the same conversation it made the decision in: same instructions, same context, same screenshots, its own answer</span>
-      <div id="chatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="chatinput" placeholder="e.g. Why did you label this passive? What instruction would have changed your judgment?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Ask</button></div>
-    </div>`;
+    ${f.question?'':chatBlock}`;
   switchTLBind(f);
   scrubBind();
   if(SCRUB.moments.length)scrubTo(SCRUB.i);
   renderChat(id);
+  chatLoad(id,'evaluator',f.to.id,()=>renderChat(id));
 }
+// Conversations are stored server-side; pull one in the first time its panel opens this session.
+async function chatLoad(key,kind,ref,paint){if(CHAT[key])return;
+  try{const h=await api(`/api/chat/${kind}/${ref}`);if(h.length&&!CHAT[key]){CHAT[key]=h;paint();}}catch(e){}}
 async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});if(detailTarget==='#segCard')renderSwitch(id);else next();}
 async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
-function skip(){next();}
-function next(){qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
+function skip(){reviewStep(1);}
+function next(){if(reviewMode!=='switch')return reviewStep(1);qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
 function renderChat(id){const log=$('#chatlog');if(!log)return;
-  log.innerHTML=(CHAT[id]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
+  log.innerHTML=(CHAT[id]||[]).map(m=>chatMsgHtml(m,String(id))).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#chatinput'),q=inp.value.trim();if(!q)return;
   CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});inp.value='';renderChat(id);
   const log=$('#chatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id]})});CHAT[id].push({role:'assistant',text:r.reply});}
+  try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id],question_id:(current.question||{}).id||null})});CHAT[id].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
   catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
   renderChat(id);}
-document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if((h==='#segments'||h==='#review')&&current&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){
+document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#review'&&(e.metaKey||e.ctrlKey)&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){reviewStep(e.key==='ArrowRight'?1:-1);e.preventDefault();}else if((h==='#segments'||h==='#review')&&(current||reviewMode==='question')&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){
     const dir=e.key==='ArrowRight'?1:-1;
-    if(e.metaKey||e.ctrlKey){const id=dir>0?current.next_span_switch:current.prev_span_switch;if(id!=null)renderSwitch(id);}
+    if(e.metaKey||e.ctrlKey||e.altKey){if(current){const id=dir>0?current.next_span_switch:current.prev_span_switch;if(id!=null)renderSwitch(id);}}
+    else if(!current){if(SCRUB.moments.length)scrubTo(SCRUB.i+dir);}  // a question panel: scrub, stay on the question
     else if(SCRUB.moments.length){const ni=SCRUB.i+dir;if(ni<0)segNav('prev');else if(ni>=SCRUB.moments.length)segNav('next');else scrubTo(ni);}
     else segNav(dir>0?'next':'prev');
     e.preventDefault();}
-  else if((h==='#segments'||h==='#review')&&current&&(e.key==='ArrowUp'||e.key==='ArrowDown')&&SCRUB.moments.length){
+  else if((h==='#segments'||h==='#review')&&(current||reviewMode==='question')&&(e.key==='ArrowUp'||e.key==='ArrowDown')&&SCRUB.moments.length){
     const ds=scrubDisplays();
     if(ds.length>1){const ci=ds.indexOf(SCRUB.d)>=0?ds.indexOf(SCRUB.d):0;
       const nd=ds[(ci+(e.key==='ArrowDown'?1:ds.length-1))%ds.length];

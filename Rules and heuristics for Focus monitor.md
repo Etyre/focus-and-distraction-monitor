@@ -7,6 +7,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 * A **segment** is a period of time during which a particular window and tab is active on my computer.
 * A **switch** is the transition between seguments.
 * A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea.  
+  * Focus spans are always independent work, not interactive. Chatting in Signal never counts toward a focus span (though drafting a long message that I then send can - that is creative work).
   * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.  
   * A focus span ends when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).   
   * Attention interruptions that are less than 5 minutes long do not break the focus span.   
@@ -19,6 +20,10 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * When I open Amazon without any particular objective and browse .
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
+* A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.
+  * Correspondence is work, and is tracked in its own right, but it is interactive rather than independent, so it never counts toward a focus span on its own.
+  * The one exception: email correspondence processed inside a focused task block (under a running toggl entry) is part of that focused task span.
+  * A live voice or video call is a meeting, not correspondence.
 * Focus span subtypes:
   * A **focused task span** is a special kind of focus span, in which my attention is focused on executing on a series of taks without interuption.  
     * Focused task spans are the *only* exception to the rule that a focus span entails having my attention on only one task / project / object / intention. In a focused task span, I'm switching between different tasks. But I'm overall focussed on efficiently executing on tasks, without interuption or distraction. 
@@ -28,6 +33,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
       * It doesn't have to be the *same* continuous toggl entry. It could be that there's one there's one for processing email, followed by another for doing taxes, followed by another for returning amazon packages. Or maybe there's a single toggl entry labled "task processing". But if there's there's not a running toggl entry, it can't be focused task work.
       * That does not imply the converse: just because a toggl entry is running does not make task segments focused. Judgement is required to evalate if a series of task segments are focused, unfocused, or distracted. 
       * Note that the absensece of a toggl entry disquailifes a span from being a *Focused* task span. But individual segments can and should still be tagged in the "task" category, regardless of whether there's a toggl running. Toggl is required as evidence of deliberate focus, not as evidence of task-nature.
+    * Focused task spans will often include email correspondence. Correspondence that happens inside a task block (under a running toggl entry) is part of the focused task span, not a separate correspondence span; the segments are still tagged "correspondence".
   * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video, some software. etc.  
     * Creative work spans and focused task spans are mutually exclusive.  
   * A **reading span** is a sub-type of focus span in which I'm reading  posts, papers, or books, and taking notes.
@@ -39,14 +45,14 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * This category should be used sparingly. If a span keeps landing here, that's a signal it either deserves its own named sub-type or the standard isn't being applied strictly enough — it must not become a loophole for activity that failed to qualify as one of the named kinds (e.g., task churn with no Toggl entry is unfocused, not "other focused work").
     * Because this category should be used sparingly, the model should maintain the hypothesis that what seems to be other focused work is instead unfocused activity of some kind.
   * A **fully-absorbed focus span** is a length of focus span with 0 attention interruption events.
-    * Focused task spans do not count towards fully-absorbed focus spans.
+    * Focused task spans and meeting spans do not count towards fully-absorbed focus spans.
 
 ### Model evaluations: 
 
 For each segment, the model to do several different related evaluations:
 
 * Evaluate the content of the *segment*: 
-  * 1) What kind of span is this: Lable as Creative, Task, Reading, Planning/Reflecting, Meeting, Other, Passive Consumption, or transition.
+  * 1) What kind of span is this: Lable as Creative, Task, Correspondence (chats and email), Reading, Planning/Reflecting, Meeting, Other, Passive Consumption, or transition.
     2) Is the user focused during this segment, or unfocused? 
 * Evaluate the nature of the *switch*: Does this switch corespondent to a shift in the user's object of attention? Label as either a continuation, an interuption, transition (meaning, navigating through apps or windows to get to the relevant target or return from ineruption. 
 * If a switch is labled as an interuption, then additionally evaluate if it's additionally a self-distraction event (it probably is if the type is "passive consumption", but not if it's something else), or a new focus start. 
@@ -78,3 +84,6 @@ It's the app's job to review the data and make intelligent judgements about  whe
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
 * If my computer is inactive, I can't be doing a task. 
 * My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.
+
+### Lessons from reviews
+* During a meeting, judge each on-screen activity on its content: if it serves the meeting, count it as meeting time; if not, treat it as a distraction during the meeting rather than meeting work. (added 2026-10-08 from a review of segment 18151)

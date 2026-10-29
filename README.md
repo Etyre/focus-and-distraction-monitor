@@ -42,6 +42,17 @@ or in `~/Library/Application Support/FocusMonitor/env` as `ANTHROPIC_API_KEY=sk-
 The bundle references this project directory (its venv and `config.toml`), so rebuild after moving
 the project. Dev alternative without the bundle: `.venv/bin/python -m focus_monitor app`.
 
+After editing source, `.venv/bin/python -m focus_monitor restart` makes the running app relaunch
+itself (the dashboard HTML is read once at startup); a dashboard window that was open comes back on
+the same tab. `--if-stale` makes it a no-op unless a source file is newer than the process, and the
+Claude Code Stop hook in `.claude/settings.json` runs exactly that after every turn. Code that does
+not compile is refused rather than restarted into.
+
+The bundle's launcher supervises the Python process: if it crashes, or stops ticking for 3 minutes
+while the Mac is awake (macOS froze it solid once, for three days), it is killed and restarted, and the
+event is written to `~/Library/Application Support/FocusMonitor/launcher.log`. The app also opts out of
+App Nap. Quitting from the menu is a clean exit and is not restarted.
+
 An eye appears in the menu bar while the monitor is running (👁 ⏸ when paused, 👁 ⚠︎ if the
 collector stops responding). Click it for **Open Dashboard** (a native window - no browser),
 **Review Uncertain Switches**, today's numbers, review-queue size, Claude spend, Pause/Resume and
@@ -111,4 +122,7 @@ middle of an hour of writing leaves a single one-hour span.
 Labels live on switches; your review always overrides the model. See `docs/measurement-scheme.md` for the full measurement & rating scheme.
 
 Data is in
-`~/Library/Application Support/FocusMonitor/` (`focus.db` + `screenshots/`, pruned after 14 days).
+`~/Library/Application Support/FocusMonitor/` (`focus.db` + `screenshots/`, pruned after 14 days;
+`screenshots/archive/` holds a 640px copy of every capture for good - except captures that show a
+`private_apps` window such as Signal, marked `_priv` in the filename, which are deleted from both
+tiers after 14 days so disappearing messages never outlive the chat).

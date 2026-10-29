@@ -4,9 +4,12 @@
     open "dist/Focus Monitor.app"
 
 The bundle's main executable is a tiny native launcher (so macOS attributes Screen Recording /
-Accessibility / Automation permissions to "Focus Monitor" rather than to Python). It execs the
-venv's Python with `-m focus_monitor app`. The bundle references this directory - move the
-project and rebuild.
+Accessibility / Automation permissions to "Focus Monitor" rather than to Python). It runs the
+venv's Python with `-m focus_monitor app` and supervises it: a crash, or a heartbeat that stops
+(the collector touches a file every poll), gets the Python process killed and restarted, logged
+to `~/Library/Application Support/FocusMonitor/launcher.log`. Exit status 75 means "relaunch me
+now" (POST /api/restart, or `python -m focus_monitor restart`) and is not counted as a crash. The bundle references this
+directory - move the project and rebuild.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -25,31 +29,137 @@ APP = DIST / "Focus Monitor.app"
 BUNDLE_ID = "com.elityre.focusmonitor"
 
 LAUNCHER_C = r"""
+#include <errno.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
-/* Spawn Python as a child and wait, so the .app (not Python) stays the responsible process
-   that macOS attributes Screen Recording / Accessibility / Automation permissions to. */
+/* Spawn Python as a child and supervise it, so the .app (not Python) stays the responsible
+   process that macOS attributes Screen Recording / Accessibility / Automation permissions to.
+
+   The supervisor restarts the child when it crashes, and when it stops ticking: the collector
+   touches HEARTBEAT every poll. 2026-09-04: macOS froze the Python process for three days
+   (every thread stalled at zero CPU, menu unresponsive, no log lines) while the machine was
+   awake. A frozen process cannot recover itself, so the check has to live outside it. */
+
+#define CHECK_SECONDS   30
+#define STALE_SECONDS   180   /* heartbeat age that counts as frozen */
+#define STALE_CHECKS    2     /* consecutive awake checks at that age before restarting */
+#define GRACE_SECONDS   120   /* after a (re)start, before the heartbeat is judged */
+#define STOP_SECONDS    60    /* a frozen child gets this long to honour SIGTERM before SIGKILL */
+#define MAX_RESTARTS    5     /* this many restarts within RESTART_WINDOW -> give up */
+#define RESTART_WINDOW  600
+#define RESTART_CODE    75    /* python asks to be relaunched (dev restart) - see focus_monitor/config.py */
+
 static pid_t child = 0;
-static void forward(int sig) { if (child > 0) kill(child, sig); }
-int main(int argc, char **argv) {
-    (void)argc; (void)argv;
-    if (chdir("%(root)s") != 0) { perror("chdir"); return 1; }
-    setenv("FOCUS_MONITOR_CONFIG", "%(root)s/config.toml", 0);
-    setenv("PYTHONUNBUFFERED", "1", 1);
-    signal(SIGTERM, forward); signal(SIGINT, forward); signal(SIGHUP, forward);
-    child = fork();
-    if (child == 0) {
+static volatile sig_atomic_t stopping = 0;
+static char heartbeat[1024], logpath[1024];
+
+static void forward(int sig) { stopping = 1; if (child > 0) kill(child, sig); }
+
+static void logline(const char *fmt, ...) {
+    FILE *f = fopen(logpath, "a");
+    if (!f) return;
+    time_t t = time(NULL);
+    char ts[32];
+    strftime(ts, sizeof ts, "%%Y-%%m-%%d %%H:%%M:%%S", localtime(&t));
+    fprintf(f, "%%s launcher ", ts);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
+
+static pid_t spawn(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
         char *args[] = {"%(python)s", "-m", "focus_monitor", "app", NULL};
         execv("%(python)s", args);
         perror("execv");
         _exit(1);
     }
-    int status = 0;
-    while (waitpid(child, &status, 0) < 0) {}
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    return pid;
+}
+
+/* Seconds the machine has been awake - does not advance during system sleep. */
+static double awake_now(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
+
+static void reap(int *status) { while (waitpid(child, status, 0) < 0 && errno == EINTR) {} }
+
+int main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (chdir("%(root)s") != 0) { perror("chdir"); return 1; }
+    setenv("FOCUS_MONITOR_CONFIG", "%(root)s/config.toml", 0);
+    setenv("PYTHONUNBUFFERED", "1", 1);
+    const char *home = getenv("HOME");
+    if (!home) home = "";
+    snprintf(heartbeat, sizeof heartbeat, "%%s/Library/Application Support/FocusMonitor/heartbeat", home);
+    snprintf(logpath, sizeof logpath, "%%s/Library/Application Support/FocusMonitor/launcher.log", home);
+    signal(SIGTERM, forward); signal(SIGINT, forward); signal(SIGHUP, forward);
+
+    time_t restarts[MAX_RESTARTS] = {0};
+    int nrestarts = 0;
+    for (;;) {
+        child = spawn();
+        if (child < 0) { logline("fork failed: %%s", strerror(errno)); return 1; }
+        time_t started = time(NULL);
+        logline("started python pid %%d", (int)child);
+        int status = 0, stale = 0, stop_wait = 0, frozen = 0;
+        double last_awake = awake_now();
+        time_t last_wall = started;
+        for (;;) {
+            for (int i = 0; i < CHECK_SECONDS && !stopping; i++) sleep(1);  /* 1 s slices: a signal is noticed promptly */
+            if (stopping) sleep(1);
+            pid_t r = waitpid(child, &status, WNOHANG);
+            if (r == child) break;                          /* exited on its own */
+            if (r < 0 && errno != EINTR) { status = 0; break; }
+            if (stopping) {                                 /* we forwarded a signal */
+                if (++stop_wait >= STOP_SECONDS) { kill(child, SIGKILL); reap(&status); break; }
+                continue;
+            }
+            double awake = awake_now();
+            time_t wall = time(NULL);
+            int slept = (double)(wall - last_wall) - (awake - last_awake) > 60;
+            last_awake = awake; last_wall = wall;
+            if (slept) { stale = 0; continue; }            /* a stale heartbeat after sleep is normal */
+            if (wall - started < GRACE_SECONDS) continue;
+            struct stat st;
+            double age = stat(heartbeat, &st) == 0 ? (double)(wall - st.st_mtime) : 1e9;
+            if (age <= STALE_SECONDS) { stale = 0; continue; }
+            if (++stale < STALE_CHECKS) continue;
+            logline("heartbeat %%.0fs old on %%d consecutive checks - killing frozen python pid %%d", age, stale, (int)child);
+            kill(child, SIGKILL);
+            reap(&status);
+            frozen = 1;
+            break;
+        }
+        if (stopping) { logline("stopped by signal"); return 0; }
+        if (!frozen && WIFEXITED(status) && WEXITSTATUS(status) == RESTART_CODE) {
+            logline("python asked to be relaunched");
+            continue;                                   /* at once, and outside the crash budget */
+        }
+        if (!frozen) {
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) { logline("python quit cleanly"); return 0; }
+            if (WIFSIGNALED(status)) logline("python died: signal %%d", WTERMSIG(status));
+            else logline("python died: exit status %%d", WEXITSTATUS(status));
+        }
+        time_t now = time(NULL);
+        restarts[nrestarts %% MAX_RESTARTS] = now;
+        nrestarts++;
+        if (nrestarts >= MAX_RESTARTS && now - restarts[nrestarts %% MAX_RESTARTS] < RESTART_WINDOW) {
+            logline("%%d restarts within %%d s - giving up", MAX_RESTARTS, RESTART_WINDOW);
+            return 1;
+        }
+        logline("restarting in 5 s");
+        sleep(5);
+    }
 }
 """
 
@@ -85,6 +195,24 @@ def draw_icon(path: Path) -> None:
     shutil.rmtree(iconset)
 
 
+def signing_identity() -> str:
+    """A certificate from the keychain, or "-" (ad hoc).
+
+    TCC (the privacy permissions database) records the app's designated requirement when a
+    permission is granted. With a real certificate that is `identifier + certificate`, which a
+    rebuild leaves unchanged. Ad hoc, it is the binary's hash, so every rebuild invalidates the
+    Screen Recording grant and the "would like to record this computer's screen" prompt returns
+    on every screenshot (2026-09-07).
+    """
+    out = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].endswith(")") and len(parts[1]) == 40:
+            return parts[1]  # the SHA-1 of the first valid identity
+    return "-"
+
+
 def main() -> None:
     if not PYTHON.exists():
         sys.exit(f"venv python not found at {PYTHON}")
@@ -110,6 +238,7 @@ def main() -> None:
         "CFBundleExecutable": "FocusMonitor",
         "CFBundleIconFile": "AppIcon",
         "LSUIElement": True,  # menu bar only, no Dock icon
+        "NSAppSleepDisabled": True,  # never App Nap: the collector must poll while invisible
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "13.0",
         "NSAppleEventsUsageDescription": "Focus Monitor reads the active window title and browser tab URL to track focus.",
@@ -119,8 +248,22 @@ def main() -> None:
         plistlib.dump(plist, f)
     (APP / "Contents/PkgInfo").write_text("APPL????")
 
-    subprocess.run(["xattr", "-cr", str(APP)], check=True)  # strip Finder detritus that blocks signing
-    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier", BUNDLE_ID, str(APP)], check=True)
+    identity = signing_identity()
+    for attempt in range(5):
+        # Strip Finder detritus that blocks signing. Finder (this is an iCloud-synced folder) can
+        # re-tag the bundle with FinderInfo between the strip and the sign, so retry.
+        subprocess.run(["xattr", "-cr", str(APP)], check=True)
+        r = subprocess.run(["codesign", "--force", "--sign", identity, "--identifier", BUNDLE_ID, str(APP)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        if attempt == 4 or "detritus" not in r.stderr:
+            sys.exit(f"codesign failed: {r.stderr.strip()}")
+        time.sleep(0.5)
+    if identity == "-":
+        print("WARNING: no code-signing identity in the keychain - signed ad hoc. macOS ties Screen Recording /"
+              " Accessibility grants to the signature, and an ad-hoc signature changes on every build, so the"
+              " permissions will have to be granted again after each rebuild.")
     print(f"built {APP}\n  open \"{APP}\"   or drag it to /Applications and add to Login Items")
 
 

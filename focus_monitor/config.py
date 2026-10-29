@@ -13,6 +13,13 @@ DATA_DIR = Path(
 )
 CONFIG_PATH = Path(os.environ.get("FOCUS_MONITOR_CONFIG", PROJECT_DIR / "config.toml"))
 
+# Dev restart: the Python process exits with this status and the .app launcher (build_app.py)
+# relaunches it at once, outside its crash budget. The launcher hard-codes the same number.
+RESTART_EXIT_CODE = 75
+# Written just before a dev restart when the dashboard window is open; the next launch reads it
+# and reopens the same tab.
+REOPEN_FILE = DATA_DIR / "reopen_dashboard.json"
+
 CHROMIUM_APPS = {"Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Chromium", "Vivaldi"}
 SAFARI_APPS = {"Safari"}
 
@@ -33,6 +40,12 @@ class Config:
     screenshot_max_width: int = 1280
     screenshot_quality: int = 60
     screenshot_retention_days: int = 14
+    # A smaller copy of every capture is kept for good (see ARCHIVE_DIR) - except captures that
+    # show a window of one of these apps, which are deleted from both tiers after the retention
+    # period. Signal chats with disappearing messages must not outlive the conversation itself.
+    archive_max_width: int = 640
+    archive_quality: int = 60
+    private_apps: list[str] = field(default_factory=lambda: ["Signal"])
 
     # classification
     lookahead_seconds: float = 120.0
@@ -92,6 +105,13 @@ class Config:
     # Passive-consumption domains: watching here is NEVER focused work (categorical rule) -
     # the state machine forces these segments to 'distracted' unless a human review overrides.
     passive_domains: list[str] = field(default_factory=lambda: ["youtube.com"])
+    # Correspondence surfaces (chat + email): a prior toward the 'correspondence' content label.
+    correspondence_apps: list[str] = field(default_factory=lambda: ["Signal", "Messages", "WhatsApp", "Telegram",
+                                                                    "Slack", "Discord", "Mail", "Superhuman", "Spark"])
+    correspondence_domains: list[str] = field(default_factory=lambda: ["mail.google.com", "outlook.live.com",
+                                                                       "outlook.office.com", "web.whatsapp.com",
+                                                                       "web.telegram.org", "app.slack.com",
+                                                                       "discord.com", "messenger.com"])
     ignore_apps: list[str] = field(default_factory=list)
     # Windows that are "neutral": recorded, but never a switch/event and transparent to focus spans
     # (e.g. a presence-check form). Case-insensitive substrings matched against app, title and URL.
@@ -182,8 +202,30 @@ def load_api_key() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
+SCREENSHOT_DIR = DATA_DIR / "screenshots"        # full size, pruned after screenshot_retention_days
+ARCHIVE_DIR = SCREENSHOT_DIR / "archive"         # archive_max_width copies, kept for good
+PRIVATE_MARK = "_priv"                           # filename suffix: shows a private app; never archived past retention
+
+
 def ensure_dirs() -> None:
-    (DATA_DIR / "screenshots").mkdir(parents=True, exist_ok=True)
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def screenshot_file(name: str | None) -> Path | None:
+    """Where a capture lives now: the full-size file while it is retained, then the archive copy."""
+    if not name:
+        return None
+    base = Path(name).name
+    for d in (SCREENSHOT_DIR, ARCHIVE_DIR):
+        p = d / base
+        if p.exists():
+            return p
+    return None
+
+
+# Touched by the collector every poll. The app bundle's native launcher watches its mtime and
+# restarts the Python process when it stops ticking (see build_app.py).
+HEARTBEAT_PATH = DATA_DIR / "heartbeat"
 
 
 _DAY_HOUR = None

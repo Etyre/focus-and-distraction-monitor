@@ -4,7 +4,7 @@ Every ~15 minutes (lazily, so after-context exists), one Claude call evaluates a
 segments together, with surrounding context and sampled screenshots. For each segment it
 judges:
   1. CONTENT - what kind of activity the segment is:
-     creative | task | reading | planning | other | passive
+     creative | task | correspondence | reading | planning | other | passive
      ("task" describes the activity's nature regardless of Toggl - Toggl is span-level
      evidence of deliberate focus, not evidence of task-nature.)
   2. SWITCH - what the switch INTO the segment was, attention-wise:
@@ -47,11 +47,12 @@ class AnteCand(BaseModel):
 
 class SegJudgement(BaseModel):
     segment_id: int
-    content: str = Field(description="One of: creative, task, reading, planning, other, passive, meeting, idle, transition.")
+    content: str = Field(description="One of: creative, task, correspondence, reading, planning, other, passive, meeting, idle, transition.")
     switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
     antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is interruption (a new thread).")
     interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
+    hybrid: bool = Field(default=False, description="True when the activity (reading, task, creative, planning...) was being done INSIDE a live discussion with someone - e.g. reading a bill together on a call while taking notes. Keep content = the activity; hybrid marks the live-discussion dimension. False for solo work and for plain meetings (content='meeting').")
     note: str = Field(description="One short sentence of reasoning.")
 
 
@@ -66,8 +67,15 @@ segment marked EVALUATE. For each one output:
 
 1. content - what the activity IS:
    - creative: making something (writing an essay/doc, coding, video editing).
-   - task: executing discrete tasks (email, forms, errands, admin, logistics). Judge the \
+   - task: executing discrete tasks (forms, errands, admin, logistics, purchases). Judge the \
 activity's nature only - whether a Toggl timer is running is NOT part of this judgment.
+   - correspondence: communicating with people in writing - chatting on Signal/Messages/\
+WhatsApp/Slack, reading and answering email, replying to comments or DMs. The exchange itself \
+is the activity. (A live voice/video call is 'meeting'; a message that is really a piece of \
+writing the person is absorbed in composing can be 'creative'.) Correspondence is interactive, \
+so on its own it is never part of a focus span - but label the segment's nature regardless: \
+email processed between other tasks under a running Toggl entry is still 'correspondence' \
+content, and the span logic decides that it belongs to the task block.
    - reading: reading posts/papers/books. (Whether notes are being taken matters for spans, not \
 for this label - reading without notes is still 'reading' content, unless it is really passive \
 browsing/consumption.)
@@ -75,9 +83,16 @@ browsing/consumption.)
    - other: real engaged activity fitting none of the above.
    - passive: passive consumption - watching videos, scrolling feeds, browsing without an \
 objective, reading comics/entertainment. When in doubt between 'other' and 'passive', lean passive: \
-this person's calibration is that the system has been far too optimistic about focus.
+this person's calibration is that the system has been far too optimistic about focus. That lean \
+applies to AMBIGUOUS ENGAGEMENT only - a segment long enough that consumption could have happened. \
+It does not apply to segments too short for any engagement (see 'transition' below).
    - meeting: a live conversation - video call (Zoom/Meet/FaceTime), call notes or live transcript \
-(e.g. Otter) during one.
+(e.g. Otter) during one. When the conversation is the ACTIVITY. If instead an activity (reading a \
+document, working through a task, writing, planning) is being carried on INSIDE a live discussion - \
+reading a bill with a colleague on a call while taking notes, pairing on code, going through a plan \
+together - keep content = that activity and set hybrid=true. Evidence: a call/meeting window or a \
+Toggl entry naming another person ("with Dave"), notes growing through input-idle stretches (listening), \
+a transcript side panel. Hybrid stretches count as meeting time, not independent focus.
    - idle: the window was open but keyboard/mouse input was idle for most of the segment and \
 nothing suggests engaged reading or watching - the person was likely away or disengaged. \
 Log lines show "(input idle ...)" when recorded. A mostly-input-idle segment can NOT be task, \
@@ -86,7 +101,12 @@ were plausibly reading/watching the screen.
    - transition: rapidly passing through desktops, windows, or tabs on the WAY to a specific \
 target - travel, not attention. Typically a chain of very short segments ending somewhere the \
 person settles. Transitions are never attention shifts in themselves; their switch is \
-'continuation' of whatever the person is heading toward.
+'continuation' of whatever the person is heading toward. Also transition: a window that was \
+already sitting open on a desktop and got cycled past - a segment of roughly 15 seconds or less \
+with no screenshot and no scroll/typing evidence, flanked by segments of the same thread, is a \
+pass-through regardless of what the window contains (a Substack post, a feed, a comic). Ten \
+seconds is not consumption; do not label it passive or an interruption on the strength of the \
+window's name alone.
 2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
 editor<->terminal, stepping through desktops to find something; also staying within one ongoing \
@@ -158,7 +178,7 @@ class ChunkEvaluator:
 
     def _examples(self, conn) -> str:
         rows = conn.execute("""
-            SELECT r.segment_id, r.content, r.switch_label, r.interruption_kind, r.note,
+            SELECT r.segment_id, r.content, r.switch_label, r.interruption_kind, r.note, r.hybrid,
                    g.app, g.domain, g.title
             FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
             ORDER BY r.created DESC LIMIT 20""").fetchall()
@@ -168,14 +188,18 @@ class ChunkEvaluator:
         for r in rows:
             what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
             verdict = " / ".join(v for v in (r["content"], r["switch_label"], r["interruption_kind"]) if v)
+            if r["hybrid"]:
+                verdict += " + hybrid (inside a live discussion)"
+            elif r["hybrid"] == 0:
+                verdict += " (solo, not hybrid)"
             note = f" ({r['note']})" if r["note"] else ""
             lines.append(f"- {what} -> {verdict}{note}")
         return "\n".join(lines)
 
     def _system_blocks(self, conn) -> list[dict]:
-        stamp = conn.execute("SELECT COALESCE(MAX(created),0) FROM seg_reviews").fetchone()[0]
+        from .classifiers.claude_vision import _rules_doc, _rules_mtime
+        stamp = (conn.execute("SELECT COALESCE(MAX(created),0) FROM seg_reviews").fetchone()[0], _rules_mtime())
         if self._system is None or stamp != self._examples_stamp:
-            from .classifiers.claude_vision import _rules_doc
             self._system = SYSTEM.format(rules=_rules_doc(),
                                          about_me=self.cfg.about_me.strip() or "(no description given)",
                                          examples=self._examples(conn))
@@ -343,9 +367,9 @@ class ChunkEvaluator:
                     if cands:
                         comb["antecedent"] = {str(i): p for i, p in cands}
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante))
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id, hybrid)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid))))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
@@ -453,7 +477,35 @@ def derive_kind(conn, cfg: Config | None = None, segment_id: int = 0, note: str 
         return 0
 
 
-def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
+CHAT_TOOLS = [
+    {"name": "propose_judgment",
+     "description": ("Propose the judgment of THIS segment that the person's clarification implies, for "
+                     "them to confirm with one click. Call it when they have told you what was really "
+                     "going on and no offered option (or your own judgment) captures it, or when they "
+                     "correct you. Do NOT call it for a mere question, or when an existing option already "
+                     "says the same thing (point them to that option instead). The label must be in "
+                     "their own words, as a review-question option would read."),
+     "input_schema": {"type": "object", "properties": {
+         "label": {"type": "string", "description": "The answer as an option label, in the person's own terms, e.g. 'A window that was just open on my desktop, not looked at'."},
+         "content": {"type": ["string", "null"], "enum": list(CONTENTS) + [None], "description": "Content label this asserts, or null to leave the content as judged."},
+         "switch_label": {"type": ["string", "null"], "enum": list(SWITCHES) + [None], "description": "continuation | interruption | return, or null to leave the thread relation as judged."},
+         "antecedent_id": {"type": ["integer", "null"], "description": "For continuation/return: the id of the segment this continues (from the log), else null."},
+         "hybrid": {"type": ["boolean", "null"], "description": "true = the activity was done inside a live discussion; false = solo; null = no ruling."},
+         "note": {"type": "string", "description": "One sentence, in the person's words, stored as the precedent future judgments see: what was really going on and why it is labelled this way."}},
+         "required": ["label", "note"]}},
+    {"name": "propose_rule",
+     "description": ("Propose ONE general rule for the person's rules document, for them to approve. Only "
+                     "when their clarification reveals a GENERAL lesson the current rules/precedents miss "
+                     "(e.g. 'sub-15-second windows with no input are pass-throughs, whatever the page') - "
+                     "never a restatement of this one case, and never something the rules already say."),
+     "input_schema": {"type": "object", "properties": {
+         "rule": {"type": "string", "description": "The rule, one or two sentences, in the second person as the rules doc is written ('If I ...')."}},
+         "required": ["rule"]}},
+]
+
+
+def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
+               question_id: int | None = None) -> dict:
     """Talk to "the one who made the decision": reconstitute the EXACT evaluation conversation
     (same system prompt, same user message with the same screenshots, its actual response), then
     continue it with the reviewer's questions - so mistakes can be triangulated and the
@@ -484,7 +536,10 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
         preface = (f"[The person you monitor is now reviewing your judgments above, in particular "
                    f"{who}. Answer their questions about what you saw and why you judged as you did; "
                    f"if you now think you were wrong, say so plainly and say what instruction or "
-                   f"information would have led you to the right judgment.]\n\n")
+                   f"information would have led you to the right judgment. You cannot change any "
+                   f"record yourself: when they tell you what was really going on, call propose_judgment "
+                   f"(and propose_rule for a general lesson) - the proposal appears as a button they "
+                   f"click to apply; otherwise nothing you say changes anything.]\n\n")
     else:
         # No transcript: an informed stand-in built from what actually decided this segment.
         preds = conn.execute("SELECT model, p_content, p_switch, p_kind FROM seg_predictions WHERE segment_id=?",
@@ -498,6 +553,18 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
                    f"before transcripts were kept, or deferred to the local (non-LLM) models. "
                    f"What is on record:\n{vtxt}\nPer-model probability outputs:\n{ptxt}\n"
                    f"Help the person triangulate whether the judgment was right.]\n\n")
+    if question_id is not None:
+        # A follow-up on a review question: the person is looking at that question and its
+        # options, so the evaluator must know exactly what was asked.
+        qrow = conn.execute("SELECT * FROM review_questions WHERE id=?", (question_id,)).fetchone()
+        if qrow is not None:
+            opts = "\n".join(f"  {n}. {o.get('label')}" for n, o in enumerate(_json.loads(qrow["options"]), 1))
+            preface += (f"[The person was shown this review question about that segment and is asking "
+                        f"a follow-up before answering it. Help them decide: say concretely what you "
+                        f"saw (screens, titles, times), what would distinguish the options, and which "
+                        f"option you lean toward and how sure you are. Be brief.\n"
+                        f"Context shown: {qrow['context']}\n"
+                        f"Question: {qrow['question']}\nOptions:\n{opts}]\n\n")
     for i, m in enumerate(messages):
         role = "assistant" if m.get("role") == "assistant" else "user"
         text = (m.get("text") or "").strip()
@@ -505,12 +572,37 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict]) -> str:
             text = preface + text
             preface = ""
         api_msgs.append({"role": role, "content": text})
-    resp = ev.client.messages.create(model=(run["model"] if run is not None and run["model"] else cfg.claude_model),
-                                     max_tokens=1024, system=system, messages=api_msgs,
-                                     output_config={"effort": "low"})
-    if resp.stop_reason == "refusal":
-        return "(Claude declined to answer that.)"
-    return "".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"
+    model = run["model"] if run is not None and run["model"] else cfg.claude_model
+    resp = ev.client.messages.create(model=model, max_tokens=1024, system=system, messages=api_msgs,
+                                     tools=CHAT_TOOLS, output_config={"effort": "low"})
+    from .classifiers.claude_vision import _cost
+    text = ("(Claude declined to answer that.)" if resp.stop_reason == "refusal"
+            else "".join(b.text for b in resp.content if b.type == "text").strip())
+    proposal: dict = {}
+    for b in resp.content:
+        if b.type != "tool_use":
+            continue
+        if b.name == "propose_judgment":
+            j = dict(b.input)
+            if j.get("content") not in CONTENTS:
+                j["content"] = None
+            if j.get("switch_label") not in SWITCHES:
+                j["switch_label"] = None
+            if j["switch_label"] not in ("continuation", "return"):
+                j["antecedent_id"] = None
+            if not (j.get("label") or "").strip():
+                continue
+            proposal["judgment"] = {"label": j["label"].strip(), "content": j["content"],
+                                    "switch_label": j["switch_label"], "antecedent_id": j.get("antecedent_id"),
+                                    "hybrid": j.get("hybrid"), "note": (j.get("note") or "").strip()}
+        elif b.name == "propose_rule" and (b.input.get("rule") or "").strip():
+            proposal["rule"] = b.input["rule"].strip()
+    if not text:
+        text = "(proposal below)" if proposal else "(no reply)"
+    from .chat import log_exchange
+    mid = log_exchange(conn, "evaluator", str(segment_id), messages, text, _cost(resp.usage), model,
+                       question_id, proposal or None)
+    return {"reply": text, "proposal": proposal or None, "message_id": mid}
 
 
 class AuditFlag(BaseModel):
@@ -628,6 +720,70 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
                      (key, n, cost, time.time()))
     log.info("daily audit %s: %d flag(s) ($%.3f)", key, n, cost)
     return n
+
+
+def _invalidate_derived(conn, t0: float, t1: float, questions: bool, summaries: bool) -> tuple[int, int]:
+    """Drop what was built ON TOP of judgments that just changed, so it gets rebuilt from the new
+    ones: open review questions for re-judged segments (answered ones stay - the person's ruling
+    stands), and span summaries overlapping the stretch (the summarizer regenerates any span
+    without one, and the coherence check re-runs on the new summary)."""
+    nq = ns = 0
+    if questions:
+        nq = conn.execute("""DELETE FROM review_questions WHERE status='open' AND segment_id IN
+                             (SELECT id FROM segments WHERE start >= ? AND start < ?)""", (t0, t1)).rowcount
+    if summaries:
+        ns = conn.execute("DELETE FROM span_summaries WHERE start < ? AND end > ?", (t1, t0)).rowcount
+    return nq, ns
+
+
+def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> int:
+    """Re-judge stretches whose upstream data changed after they were evaluated (reeval_queue -
+    e.g. a Toggl entry the person corrected later). Same evaluator, same context, plus a note
+    saying why; the person's own edits still outrank the result. Each re-judged chunk retires
+    the open questions written from the old judgments; when the whole stretch is done its span
+    summaries are dropped so they are rewritten from the new judgments."""
+    cfg = cfg or load_config()
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
+        return 0
+    done = 0
+    for _ in range(max_chunks):
+        q = conn.execute("SELECT * FROM reeval_queue WHERE done_at IS NULL ORDER BY t0 LIMIT 1").fetchone()
+        if not q:
+            break
+        horizon = time.time() - LAZY_S
+        start = max(q["t0"], q["done_to"] or q["t0"])
+        end = min(q["t1"], horizon)
+        if end - start < 30:   # nothing (left) to re-judge
+            _, ns = _invalidate_derived(conn, q["t0"], q["t1"], questions=False, summaries=True)
+            conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            continue
+        c1 = end if end - start <= CHUNK_S * 1.5 else start + CHUNK_S
+        extra = (f"the {q['reason']} for this window AFTER your earlier judgment of it - the Toggl "
+                 f"entries listed above are the corrected ones and are AUTHORITATIVE: if a screenshot "
+                 f"shows a Toggl timer with a different name or still running, that is the uncorrected "
+                 f"state and must be ignored. Re-judge every segment against the listed entries; where "
+                 f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
+                 f"entries, change it.")
+        try:
+            n = _get().evaluate_chunk(conn, start, c1, extra=extra)
+        except Exception:
+            log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
+            conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            break
+        nq, _ = _invalidate_derived(conn, start, c1, questions=True, summaries=False)
+        finished = c1 >= end
+        if finished:
+            _, ns = _invalidate_derived(conn, q["t0"], q["t1"], questions=False, summaries=True)
+            conn.execute("UPDATE reeval_queue SET done_to=?, done_at=? WHERE id=?", (c1, time.time(), q["id"]))
+        else:
+            ns = 0
+            conn.execute("UPDATE reeval_queue SET done_to=? WHERE id=?", (c1, q["id"]))
+        log.info("re-evaluated %s-%s (%s): %d segments, %d stale question(s) retired%s",
+                 dt.datetime.fromtimestamp(start).strftime("%m-%d %H:%M"),
+                 dt.datetime.fromtimestamp(c1).strftime("%H:%M"), q["reason"], n, nq,
+                 f", {ns} span summary(ies) dropped for rewrite" if finished else "")
+        done += 1
+    return done
 
 
 def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float | None = None) -> int:

@@ -21,7 +21,8 @@ from . import db
 
 log = logging.getLogger("seg_models")
 
-CONTENTS = ("creative", "task", "reading", "planning", "other", "passive", "meeting", "idle", "transition")
+CONTENTS = ("creative", "task", "correspondence", "reading", "planning", "other", "passive", "meeting", "idle",
+            "transition")
 SWITCHES = ("continuation", "interruption", "return")
 KINDS = ("self_distraction", "focus_start", "detour")
 HEADS = {"content": CONTENTS, "switch": SWITCHES, "kind": KINDS}
@@ -69,7 +70,8 @@ def features(cfg, seg: dict, prev: dict | None) -> dict:
         "passive_dom": 1.0 if _dom_in(dom, cfg.passive_domains) else 0.0,
         "distraction_dom": 1.0 if _dom_in(dom, cfg.distraction_domains) else 0.0,
         "meeting": 1.0 if any(m.lower() in app.lower() for m in MEETING_APPS) or _dom_in(dom, MEETING_DOMAINS) else 0.0,
-        "mail": 1.0 if "mail" in dom or app == "Mail" else 0.0,
+        "correspondence": 1.0 if (app in cfg.correspondence_apps or _dom_in(dom, cfg.correspondence_domains)
+                                  or "mail" in dom or app == "Mail") else 0.0,
     }
     if prev is not None:
         f["prev_dom=" + (prev.get("domain") or prev.get("app") or "")] = 1.0
@@ -86,20 +88,20 @@ def heuristic_predict(cfg, seg: dict, prev: dict | None) -> dict:
         content = _uniformish(CONTENTS, "meeting", 0.75)
     elif f["passive_dom"]:
         content = _norm({"passive": 0.6, "reading": 0.2, "other": 0.1, "task": 0.04,
-                         "creative": 0.02, "planning": 0.02, "meeting": 0.02})
-    elif f["mail"]:
-        content = _uniformish(CONTENTS, "task", 0.6)
+                         "creative": 0.02, "planning": 0.02, "meeting": 0.02, "correspondence": 0.02})
+    elif f["correspondence"]:
+        content = _uniformish(CONTENTS, "correspondence", 0.6)
     elif f["notes"]:
         content = _norm({"planning": 0.3, "creative": 0.25, "reading": 0.2, "task": 0.1,
-                         "other": 0.1, "passive": 0.03, "meeting": 0.02})
+                         "other": 0.1, "passive": 0.03, "meeting": 0.02, "correspondence": 0.02})
     elif f["authoring"]:
         content = _uniformish(CONTENTS, "creative", 0.55)
     elif f["distraction_dom"]:
         content = _norm({"passive": 0.4, "reading": 0.3, "other": 0.15, "task": 0.05,
-                         "creative": 0.04, "planning": 0.03, "meeting": 0.03})
+                         "creative": 0.04, "planning": 0.03, "meeting": 0.03, "correspondence": 0.03})
     else:
-        content = _norm({"reading": 0.25, "other": 0.2, "task": 0.2, "creative": 0.15,
-                         "planning": 0.1, "passive": 0.07, "meeting": 0.03})
+        content = _norm({"reading": 0.25, "other": 0.2, "task": 0.15, "creative": 0.15,
+                         "planning": 0.1, "correspondence": 0.07, "passive": 0.07, "meeting": 0.03})
     if f["short"] and not f["same_ctx_prev"]:
         content = {k: v * 0.55 for k, v in content.items()}
         content["transition"] = content.get("transition", 0.0) + 0.45

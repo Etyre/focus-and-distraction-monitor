@@ -12,12 +12,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import LABEL_HELP, LABEL_NAMES, LABELS, db, ensemble, stats, toggl
-from .config import DATA_DIR, load_config, logical_date
+from .config import CONFIG_PATH, DATA_DIR, load_config, logical_date, screenshot_file
 
 app = FastAPI(title="Focus Monitor")
 cfg = load_config()
 HTML = (Path(__file__).parent / "dashboard.html").read_text()
 log = logging.getLogger("web")
+STARTED = time.time()
+# Set by the menu bar app: a callable that restarts the process. None when serving headless.
+restart_hook = None
 
 
 def conn():
@@ -40,6 +43,7 @@ def _kick_question_generation():
                 for _ in range(3):  # drain a burst; stop as soon as a pass yields nothing
                     if questions.generate_pending(c2, cfg) == 0:
                         break
+                questions.score_questions(c2, limit=200)
             finally:
                 c2.close()
         except Exception:
@@ -85,13 +89,19 @@ def api_day(day: str | None = None):
         LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
         WHERE e.uncertain = 1 AND rv.segment_id IS NULL""")}
     qsrc = {r[0]: r[1] for r in c.execute("SELECT segment_id, source FROM review_questions WHERE status='open'")}
+    from .questions import PRIORITY_CUT
+    qprio = {r[0]: r[1] for r in c.execute("SELECT segment_id, priority FROM review_questions WHERE status='open' AND priority IS NOT NULL")}
     urat = {r[0]: (r[1] or "") for r in c.execute("""SELECT e.segment_id, e.rationale FROM seg_evals e
         LEFT JOIN seg_reviews rv ON rv.segment_id = e.segment_id
         WHERE e.uncertain = 1 AND rv.segment_id IS NULL""")}
     def _tier(sid):
+        if sid in qprio:  # scored: stakes x uncertainty decides the dot size
+            return "high" if qprio[sid] >= PRIORITY_CUT else "routine"
         srcq = qsrc.get(sid, "")
         rat = urat.get(sid, "")
-        if srcq in ("coherence", "audit") or "daily audit" in rat or "your correction" in rat:
+        # Propagation questions stay high-tier even after a re-judgment rewrote the rationale
+        # (answering then clearing an answer does exactly that).
+        if srcq in ("coherence", "audit", "propagation") or "daily audit" in rat or "your correction" in rat:
             return "high"
         return "routine"
     for s in segs:
@@ -102,7 +112,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "toggl_id", "toggl_desc", "review_tier")} for s in segs]
+                                   "state", "label", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
@@ -113,9 +123,26 @@ def api_day(day: str | None = None):
     def _title(r):
         row = _summ.lookup(c, r["start"], r["end"])
         return row["title"] if row is not None else None
+    # How far the day's headline metrics could still move, if every open question went the
+    # other way: the per-metric sum of open questions' stakes (an upper bound, since answers
+    # overlap). Zero = the totals are settled as far as the questions can tell.
+    import json as _json
+    from .questions import STAKE_METRICS
+    slack = {k: 0.0 for k in STAKE_METRICS}
+    n_prio = 0
+    for r in c.execute("""SELECT q.stakes_detail, q.priority FROM review_questions q JOIN segments g ON g.id=q.segment_id
+                          WHERE q.status='open' AND q.scored_at IS NOT NULL AND g.start>=? AND g.start<?""", (t0, t1)):
+        try:
+            det = _json.loads(r["stakes_detail"] or "{}")
+        except ValueError:
+            det = {}
+        for k in slack:
+            slack[k] += float(det.get(k) or 0)
+        n_prio += int((r["priority"] or 0) >= PRIORITY_CUT)
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
-            "spend_total": db.spend_total(c), "budget_total": cfg.total_budget_usd,
+            "spend_avg_30d": db.spend_daily_avg(c, 30), "budget": cfg.daily_budget_usd,
             "to_review": len(selected), "reviewed": reviewed,  # open questions + unresolved flags today
+            "metric_slack": slack, "priority_open": n_prio,
             "short_breaks": stats.short_breaks(c, t0, t1),
             "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
                        "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
@@ -123,6 +150,7 @@ def api_day(day: str | None = None):
             "focus_spans": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "ended_by": r["ended_by"],
                              "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
+                             "hybrid": bool(r.get("hybrid")),
                              "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
                              "coherence_issue": _coherence(r), "title": _title(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
@@ -135,6 +163,24 @@ def api_day(day: str | None = None):
                               "reason": r.get("disq_reason", "does not meet the focused-work standard"),
                               "summary": _summary(r)}
                              for r in se.get("disqualified", [])]}
+
+
+_toggl = None
+@app.post("/api/toggl/resync")
+def api_toggl_resync(days: float = 7):
+    """Manual: pull the last `days` of Toggl entries again, so entries you corrected later are
+    reflected. Runs synchronously (one API call) and returns what changed."""
+    global _toggl
+    if not toggl.token():
+        raise HTTPException(400, "no Toggl API token set (menu bar → Set Toggl API Token)")
+    if _toggl is None:
+        _toggl = toggl.TogglSync(conn())
+    r = _toggl.resync(max(1.0, min(days, 92)) * 24)
+    if r is None:
+        if time.time() < _toggl.quota_until:
+            raise HTTPException(429, f"Toggl's hourly API quota is used up - try again in {int(_toggl.quota_until - time.time()) // 60 + 1} min")
+        raise HTTPException(502, "Toggl sync failed - see app.log")
+    return r
 
 
 @app.get("/api/metrics")
@@ -189,7 +235,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     coherence_issue = (row["issue"] if row is not None and not row["coherent"] else None)
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
     keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
-            "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+            "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
     in_span_ids = {id(s) for s in sp["segments"]}
     segs = []
     for s in (day_segs or sp["segments"]):
@@ -199,7 +245,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
         d["in_span"] = id(s) in in_span_ids or (day_segs is None)
         segs.append(d)
     return {"day": day, "start": sp["start"], "end": sp["end"], "duration": sp["duration"],
-            "focus_min": sp["focus_min"], "subtype": sp.get("subtype"),
+            "focus_min": sp["focus_min"], "subtype": sp.get("subtype"), "hybrid": bool(sp.get("hybrid")),
             "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
             "summary": row["summary"] if row else None,
@@ -364,11 +410,18 @@ def api_switch(switch_id: int):
     ts = full["switch"]["ts"]
     to_id = full["to"]["id"]
     import json as _json
-    qrow = c.execute("SELECT * FROM review_questions WHERE segment_id=? AND status='open' LIMIT 1", (to_id,)).fetchone()
+    # An answered question stays on the card (greyed, changeable) - a misclick must be easy to fix.
+    qrow = c.execute("SELECT * FROM review_questions WHERE segment_id=? AND status IN ('open','answered','unsure')"
+                     " ORDER BY (status='open') DESC, created DESC LIMIT 1", (to_id,)).fetchone()
     full["question"] = None
     if qrow:
+        from . import questions as _q
         full["question"] = dict(qrow)
+        full["question"].pop("undo", None)
         full["question"]["options"] = _json.loads(full["question"]["options"])
+        full["question"]["stakes_text"] = _q.stakes_text(qrow["stakes_detail"]) if qrow["scored_at"] else None
+        full["question"]["tier"] = (("priority" if (qrow["priority"] or 0) >= _q.PRIORITY_CUT else "routine")
+                                    if qrow["scored_at"] else None)
     else:
         # Flagged but no question composed yet: start composing now so a reload has it.
         flagged = c.execute("""SELECT 1 FROM seg_evals e LEFT JOIN seg_reviews r ON r.segment_id=e.segment_id
@@ -397,7 +450,7 @@ def api_switch(switch_id: int):
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
         keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
-                "url", "activity", "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+                "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
         tl_ids = [s["id"] for s in full["timeline"]]
@@ -468,22 +521,57 @@ class SpanChatReq(BaseModel):
 QCTX_S = 900.0  # timeline context on each side of a question's segment (matches ~what the generator saw)
 
 
+def _shots_for(c, timeline: list[dict]) -> list[dict]:
+    """Every capture of the given segments (for the scrubber), oldest first; falls back to each
+    segment's first screenshot for segments recorded before per-shot history existed."""
+    ids = [s["id"] for s in timeline]
+    if not ids:
+        return []
+    qs = ",".join("?" * len(ids))
+    rows = [dict(r) for r in c.execute(
+        f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", ids)]
+    return rows or [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
+                    for s in timeline if s.get("first_screenshot")]
+
+
 @app.get("/api/questions/queue")
 def api_questions_queue(limit: int = 30):
+    """Open review questions in review order: the priority tier first (an answer could move
+    the day's headline metrics, weighted by the model's uncertainty), then the rest; each tier
+    in chronological order."""
+    from . import questions as _q
+    from .config import logical_date
     c = conn()
     import json as _json
+    try:
+        _q.score_questions(c, limit=25)  # catch up on a few stale ones; the loop does the bulk
+    except Exception:
+        log.exception("question scoring failed")
     out = []
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
-            "content", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
-    for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
+            "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
+    rows = [dict(r) for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
                                  g.app, g.title, g.domain,
                                  (SELECT id FROM switches WHERE to_segment = q.segment_id LIMIT 1) AS switch_id
                           FROM review_questions q JOIN segments g ON g.id = q.segment_id
-                          WHERE q.status = 'open' ORDER BY q.created DESC LIMIT ?""", (limit,)):
-        d = dict(r)
+                          WHERE q.status = 'open'""")]
+    for d in rows:
+        d["tier"] = ("priority" if (d.get("priority") or 0) >= _q.PRIORITY_CUT else
+                     "routine" if d.get("priority") is not None else "unscored")
+        d["day"] = logical_date(d["seg_start"]).isoformat()
+    rows.sort(key=lambda d: ({"priority": 0, "routine": 1, "unscored": 2}[d["tier"]], d["seg_start"]))
+    counts = {"priority": sum(1 for d in rows if d["tier"] == "priority"), "total": len(rows)}
+    # Every priority question is offered - as many as it takes to pin down the day's metrics -
+    # and the limit only trims the routine tail.
+    shown = [d for d in rows if d["tier"] == "priority"] + [d for d in rows if d["tier"] != "priority"][:limit]
+    for d in shown:
+        d.pop("undo", None)
         d["options"] = _json.loads(d["options"])
+        d["stakes_text"] = _q.stakes_text(d.get("stakes_detail"))
+        d["queue_counts"] = counts
         segs = stats.labelled_segments(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
         d["timeline"] = [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0]
+        d["timeline_shots"] = _shots_for(c, d["timeline"])
         d["toggl_entries"] = [{"start": max(e["start"], d["seg_start"] - QCTX_S),
                                "end": min(e["stop"] or time.time(), d["seg_end"] + QCTX_S),
                                "description": e["description"], "project": e["project"]}
@@ -502,12 +590,13 @@ def api_questions_queue(limit: int = 30):
             segs = stats.labelled_segments(c, seg_start - QCTX_S, seg_end + QCTX_S)
             out.append({
                 "id": None, "pending": True, "segment_id": t["segment_id"], "source": t["source"],
-                "context": t["reason"], "question": None, "options": [],
+                "context": t["reason"], "question": None, "options": [], "tier": None,
                 "seg_start": seg_start, "seg_end": seg_end,
                 "app": g["app"], "title": g["title"], "domain": g["domain"],
                 "switch_id": (lambda r: r["id"] if r else None)(c.execute(
                     "SELECT id FROM switches WHERE to_segment=? LIMIT 1", (t["segment_id"],)).fetchone()),
                 "timeline": [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0],
+                "timeline_shots": _shots_for(c, [s for s in segs if s["duration"] > 0]),
                 "toggl_entries": [{"start": max(e["start"], seg_start - QCTX_S),
                                    "end": min(e["stop"] or time.time(), seg_end + QCTX_S),
                                    "description": e["description"], "project": e["project"]}
@@ -524,48 +613,149 @@ class QAnswer(BaseModel):
     note: str | None = None
 
 
+def _restore_rows(c, table: str, key: str, key_val, row: dict | None):
+    if row is None:
+        c.execute(f"DELETE FROM {table} WHERE {key}=?", (key_val,))
+    else:
+        cols = list(row)
+        c.execute(f"INSERT OR REPLACE INTO {table}({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                  [row[k] for k in cols])
+
+
+def _undo_question_answer(c, undo_json: str | None) -> dict:
+    """Put back whatever a previous answer to a review question overwrote (the segment review,
+    and the legacy switch review), so changing or clearing an answer leaves no residue."""
+    import json as _json
+    u = _json.loads(undo_json) if undo_json else {}
+    if u.get("seg_id") is not None:
+        _restore_rows(c, "seg_reviews", "segment_id", u["seg_id"], u.get("seg_review"))
+    if u.get("switch_id") is not None:
+        _restore_rows(c, "reviews", "switch_id", u["switch_id"], u.get("review"))
+        c.execute("UPDATE switches SET status=? WHERE id=?", (u.get("switch_status"), u["switch_id"]))
+    return u
+
+
 @app.post("/api/questions/{qid}/answer")
 def api_question_answer(qid: int, a: QAnswer):
+    return _answer_question(conn(), qid, a.option_index, a.note)
+
+
+def _answer_question(c, qid: int, option_index: int, note: str | None) -> dict:
+    """Record the chosen option of a review question as the person's judgment (segment review +
+    legacy switch review), undoing any earlier answer first. Shared by the option buttons and
+    by applying a judgment the evaluator proposed in chat."""
     import json as _json
-    c = conn()
     q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
     if not q:
         raise HTTPException(404)
     opts = _json.loads(q["options"])
-    if not (0 <= a.option_index < len(opts)):
+    if not (0 <= option_index < len(opts)):
         raise HTTPException(400, "bad option")
-    o = opts[a.option_index]
+    o = opts[option_index]
+    a = QAnswer(option_index=option_index, note=note)
     with db.tx(c):
-        if o.get("switch_label") or o.get("content"):
+        # Re-answering (fixing a misclick): first put back what the earlier answer overwrote.
+        old_u = (_undo_question_answer(c, q["undo"]) if q["status"] == "answered"
+                 else (_json.loads(q["undo"]) if q["status"] == "unsure" and q["undo"] else {}))
+        ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
+        undo = {"uncertain": old_u.get("uncertain", ev0["uncertain"] if ev0 else None)}
+        if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None:
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
+            undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
             osw = o.get("switch_label")
             ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id"))
                     if osw in ("continuation", "return")
                     else (None if osw else (prev["antecedent_id"] if prev else None)))
-            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created)"
-                      " VALUES (?,?,?,?,?,?,?)",
+            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid)"
+                      " VALUES (?,?,?,?,?,?,?,?)",
                       (o["segment_id"],
                        o.get("content") or (prev["content"] if prev else None),
                        osw or (prev["switch_label"] if prev else None),
                        o.get("interruption_kind") if osw == "interruption" else (None if osw else (prev["interruption_kind"] if prev else None)),
                        ante,
-                       (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time()))
+                       (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
+                       (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None))))
             from . import propagation
             propagation.note_event(c, o["segment_id"])
             old = _NEW2OLD.get((o.get("switch_label"),
                                 o.get("interruption_kind") if o.get("switch_label") == "interruption" else None))
             sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (o["segment_id"],)).fetchone()
             if old and sw:
+                prev_rev = c.execute("SELECT * FROM reviews WHERE switch_id=?", (sw["id"],)).fetchone()
+                undo.update(switch_id=sw["id"], review=dict(prev_rev) if prev_rev else None,
+                            switch_status=c.execute("SELECT status FROM switches WHERE id=?", (sw["id"],)).fetchone()[0])
                 c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
                           (sw["id"], old, (a.note.strip() if a.note and a.note.strip() else o["label"]), time.time()))
                 c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
-        c.execute("UPDATE review_questions SET status='answered', answer=?, note=?, answered_at=? WHERE id=?",
-                  (o["label"], (a.note.strip() or None) if a.note else None, time.time(), qid))
+        c.execute("UPDATE review_questions SET status='answered', answer=?, answer_index=?, note=?, answered_at=?, undo=?"
+                  " WHERE id=?",
+                  (o["label"], a.option_index, (a.note.strip() or None) if a.note else None, time.time(),
+                   _json.dumps(undo), qid))
         # The answer resolves the doubt this question was generated for, even when the chosen
         # option edits a different segment - otherwise the needs-review dot never goes away.
         c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     if o.get("switch_label") == "interruption" and not o.get("interruption_kind"):
         _kick_kind_derivation(o["segment_id"], a.note)
+    return {"ok": True}
+
+
+@app.get("/api/questions/{qid}/state")
+def api_question_state(qid: int):
+    """The current status of one question - the queue panel re-checks this when it shows a
+    question, so an answer given elsewhere (the capture page) is reflected."""
+    q = conn().execute("SELECT status, answer, answer_index, note FROM review_questions WHERE id=?", (qid,)).fetchone()
+    if not q:
+        raise HTTPException(404)
+    return dict(q)
+
+
+@app.post("/api/questions/{qid}/reopen")
+def api_question_reopen(qid: int):
+    """Clear an answer (or an 'I can't tell'): undo its edits and put the question back to open."""
+    import json as _json
+    c = conn()
+    q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
+    if not q:
+        raise HTTPException(404)
+    if q["status"] not in ("answered", "unsure"):
+        return {"ok": True}
+    with db.tx(c):
+        u = _undo_question_answer(c, q["undo"]) if q["status"] == "answered" else (_json.loads(q["undo"]) if q["undo"] else {})
+        c.execute("UPDATE review_questions SET status='open', answer=NULL, answer_index=NULL, note=NULL,"
+                  " answered_at=NULL, undo=NULL WHERE id=?", (qid,))
+        if u.get("uncertain") is not None:
+            c.execute("UPDATE seg_evals SET uncertain=? WHERE segment_id=?", (u["uncertain"], q["segment_id"]))
+    return {"ok": True}
+
+
+class UnsureReq(BaseModel):
+    note: str | None = None
+
+
+@app.post("/api/questions/{qid}/unsure")
+def api_question_unsure(qid: int, body: UnsureReq):
+    """'I can't tell': the question is resolved without a ruling - the model's judgment stands,
+    the needs-review flag clears, and the record of an unanswerable doubt is kept so the question
+    generator learns which doubts are not worth raising. Reopen puts it back."""
+    import json as _json
+    c = conn()
+    q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
+    if not q:
+        raise HTTPException(404)
+    with db.tx(c):
+        if q["status"] == "answered":
+            _undo_question_answer(c, q["undo"])
+            undo = _json.loads(q["undo"]) if q["undo"] else {}
+            undo = {"uncertain": undo.get("uncertain")}
+        elif q["status"] == "unsure":
+            undo = _json.loads(q["undo"]) if q["undo"] else {}
+        else:
+            ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
+            undo = {"uncertain": ev0["uncertain"] if ev0 else None}
+        c.execute("UPDATE review_questions SET status='unsure', answer=?, answer_index=NULL, note=?, answered_at=?, undo=?"
+                  " WHERE id=?", ("(can't tell)", (body.note.strip() or None) if body.note else None, time.time(),
+                                  _json.dumps(undo), qid))
+        c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     return {"ok": True}
 
 
@@ -580,17 +770,110 @@ def api_question_dismiss(qid: int):
     return {"ok": True}
 
 
+@app.get("/api/chat/{kind}/{ref}")
+def api_chat_history(kind: str, ref: str):
+    """Stored conversation for one item (kind: evaluator | switch | span), oldest first."""
+    from . import chat as _chat
+    if kind not in ("evaluator", "switch", "span"):
+        raise HTTPException(400, "bad kind")
+    return _chat.history(conn(), kind, ref)
+
+
 class EvalChatReq(BaseModel):
     messages: list[dict]
+    question_id: int | None = None  # set when this is a follow-up on a review question
 
 
 @app.post("/api/segment/{segment_id}/evaluator-chat")
 def api_evaluator_chat(segment_id: int, req: EvalChatReq):
     from . import evaluator
     try:
-        return {"reply": evaluator.chat_reply(conn(), cfg, segment_id, req.messages)}
+        return evaluator.chat_reply(conn(), cfg, segment_id, req.messages, req.question_id)
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+def _chat_message(c, mid: int):
+    import json as _json
+    m = c.execute("SELECT * FROM chat_messages WHERE id=?", (mid,)).fetchone()
+    if not m or m["role"] != "assistant" or not m["proposal"]:
+        raise HTTPException(404, "no proposal on that message")
+    return m, _json.loads(m["proposal"])
+
+
+def _save_proposal(c, mid: int, proposal: dict):
+    import json as _json
+    c.execute("UPDATE chat_messages SET proposal=? WHERE id=?", (_json.dumps(proposal), mid))
+
+
+class ApplyJudgmentReq(BaseModel):
+    question_id: int | None = None  # the question on screen; defaults to the one the chat was about
+
+
+@app.post("/api/chat/message/{mid}/apply-judgment")
+def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
+    """Apply a judgment the evaluator proposed in chat. With a review question: the proposal
+    becomes a new option (in the person's words) and is answered - so it is greyed, undoable and
+    re-answerable like any other. Without one: it is a direct edit of the segment's judgment."""
+    import json as _json
+    c = conn()
+    m, prop = _chat_message(c, mid)
+    j = prop.get("judgment")
+    if not j or m["kind"] != "evaluator":
+        raise HTTPException(400, "no judgment proposed")
+    segment_id = int(m["ref"])
+    qid = body.question_id if body.question_id is not None else m["question_id"]
+    q = c.execute("SELECT * FROM review_questions WHERE id=? AND segment_id=?", (qid, segment_id)).fetchone() if qid else None
+    applied = prop.setdefault("applied", {})
+    if q is not None:
+        opts = _json.loads(q["options"])
+        idx = next((i for i, o in enumerate(opts) if o.get("proposed_from") == mid), None)
+        if idx is None:
+            opts.append({"label": j["label"], "segment_id": segment_id,
+                         "switch_label": j.get("switch_label"), "antecedent_id": j.get("antecedent_id"),
+                         "interruption_kind": None, "content": j.get("content"), "hybrid": j.get("hybrid"),
+                         "proposed_from": mid})
+            idx = len(opts) - 1
+            with db.tx(c):
+                c.execute("UPDATE review_questions SET options=? WHERE id=?", (_json.dumps(opts), q["id"]))
+        _answer_question(c, q["id"], idx, j.get("note") or None)
+        applied["judgment"] = {"at": time.time(), "question_id": q["id"], "option_index": idx}
+        with db.tx(c):
+            _save_proposal(c, mid, prop)
+        return {"ok": True, "question_id": q["id"], "option_index": idx, "options": opts, "proposal": prop}
+    api_seg_eval_review(segment_id, SegEvalReview(content=j.get("content"), switch_label=j.get("switch_label"),
+                                                   antecedent_id=j.get("antecedent_id"), hybrid=j.get("hybrid"),
+                                                   note=j.get("note") or j["label"]))
+    applied["judgment"] = {"at": time.time(), "segment_id": segment_id}
+    with db.tx(c):
+        _save_proposal(c, mid, prop)
+    return {"ok": True, "segment_id": segment_id, "proposal": prop}
+
+
+@app.post("/api/chat/message/{mid}/apply-rule")
+def api_chat_apply_rule(mid: int):
+    """Append a rule the evaluator proposed to the rules document, under a 'Lessons from
+    reviews' heading, dated. Every model prompt that embeds the rules picks it up on its next
+    build (the evaluator re-reads the file when its mtime changes)."""
+    from .classifiers.claude_vision import RULES_PATH
+    c = conn()
+    m, prop = _chat_message(c, mid)
+    rule = (prop.get("rule") or "").strip()
+    if not rule:
+        raise HTTPException(400, "no rule proposed")
+    applied = prop.setdefault("applied", {})
+    if not applied.get("rule"):
+        heading = "### Lessons from reviews"
+        text = RULES_PATH.read_text() if RULES_PATH.exists() else ""
+        if heading not in text:
+            text = text.rstrip("\n") + "\n\n" + heading + "\n\n"
+        line = f"* {rule} (added {dt.date.today().isoformat()} from a review of segment {m['ref']})\n"
+        text = text.rstrip("\n") + "\n" + line
+        RULES_PATH.write_text(text)
+        applied["rule"] = {"at": time.time()}
+        with db.tx(c):
+            _save_proposal(c, mid, prop)
+    return {"ok": True, "proposal": prop}
 
 
 @app.post("/api/span/chat")
@@ -622,6 +905,7 @@ class SegEvalReview(BaseModel):
     interruption_kind: str | None = None
     antecedent_id: int | None = None  # thread pointer, for continuation/return assertions
     note: str | None = None
+    hybrid: bool | None = None  # the activity was done inside a live discussion (None = no ruling)
 
 
 def _valid_antecedent(c, segment_id: int, ante: int | None) -> int | None:
@@ -664,10 +948,11 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
     with db.tx(c):
         ante = (_valid_antecedent(c, segment_id, r.antecedent_id)
                 if r.switch_label in ("continuation", "return") else None)
-        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created)"
-                  " VALUES (?,?,?,?,?,?,?)",
-                  (segment_id, r.content, r.switch_label, r.interruption_kind, ante, r.note, time.time()))
-        if r.content or r.switch_label:
+        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid)"
+                  " VALUES (?,?,?,?,?,?,?,?)",
+                  (segment_id, r.content, r.switch_label, r.interruption_kind, ante, r.note, time.time(),
+                   None if r.hybrid is None else int(r.hybrid)))
+        if r.content or r.switch_label or r.hybrid is not None:
             from . import propagation
             propagation.note_event(c, segment_id)
         old = _NEW2OLD.get((r.switch_label, r.interruption_kind if r.switch_label == "interruption" else None))
@@ -722,10 +1007,44 @@ def api_labels():
     return {k: {"name": LABEL_NAMES[k], "help": LABEL_HELP[k]} for k in LABELS}
 
 
+class RestartBody(BaseModel):
+    only_if_stale: bool = False
+
+
+def _source_files() -> list[Path]:
+    here = Path(__file__).parent
+    return sorted(here.glob("*.py")) + sorted(here.glob("*.html")) + [CONFIG_PATH]
+
+
+@app.post("/api/restart")
+def api_restart(body: RestartBody):
+    """Dev convenience: relaunch the app so it picks up edited source (HTML is read once at import).
+
+    With only_if_stale, a no-op unless some source file is newer than this process. Refuses to
+    restart code that will not even compile - the launcher gives up after a burst of crashes,
+    and a half-finished edit must not take the monitor down."""
+    files = [f for f in _source_files() if f.exists()]
+    newest = max((f.stat().st_mtime for f in files), default=0)
+    if body.only_if_stale and newest <= STARTED:
+        return {"restarted": False, "reason": "up to date"}
+    for f in files:
+        if f.suffix == ".py":
+            try:
+                compile(f.read_text(), str(f), "exec")
+            except SyntaxError as e:
+                return JSONResponse(status_code=409, content={
+                    "restarted": False, "reason": f"{Path(e.filename).name}:{e.lineno}: {e.msg}"})
+    if restart_hook is None:
+        return {"restarted": False, "reason": "not running as the menu bar app"}
+    info = restart_hook()
+    log.info("restart requested; dashboard reopen=%s", info.get("reopen"))
+    return {"restarted": True, **info}
+
+
 @app.get("/shot/{name}")
 def shot(name: str):
-    p = DATA_DIR / "screenshots" / Path(name).name
-    if not p.exists():
+    p = screenshot_file(name)
+    if p is None:
         raise HTTPException(404)
     return FileResponse(p, media_type="image/jpeg")
 
