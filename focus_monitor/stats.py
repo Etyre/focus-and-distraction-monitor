@@ -56,9 +56,12 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         f"SELECT * FROM seg_evals WHERE segment_id IN ({q})", ids)}
     rv = {r["segment_id"]: r for r in conn.execute(
         f"SELECT * FROM seg_reviews WHERE segment_id IN ({q})", ids)}
+    for s in segs:  # provenance: which chat reply (if any) the person's edit came out of
+        r0 = rv.get(s["id"])
+        s["review_chat_mid"] = r0["chat_message_id"] if r0 is not None and "chat_message_id" in r0.keys() else None
     if overrides:
         blank = {"segment_id": None, "content": None, "switch_label": None, "interruption_kind": None,
-                 "antecedent_id": None, "note": None, "created": now, "hybrid": None}
+                 "antecedent_id": None, "note": None, "created": now, "hybrid": None, "focus_exception": None}
         for sid, o in overrides.items():
             if sid not in ids:
                 continue
@@ -92,7 +95,10 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         ante = g("antecedent_id")
         u_ante = u is not None and bool(u["antecedent_id"])
         hyb = (u["hybrid"] if u is not None and u["hybrid"] is not None else (e["hybrid"] if e is not None else 0))
-        return g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante, u_ante, int(hyb or 0)
+        # The person's explicit "counts as focus anyway" ruling - a review-only field.
+        fex = int((u["focus_exception"] if u is not None and "focus_exception" in u.keys() else 0) or 0)
+        return (g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante, u_ante,
+                int(hyb or 0), fex)
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -141,8 +147,9 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb = v
+            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb, v_fex = v
             s["hybrid"] = v_hyb
+            s["focus_exception"] = v_fex
             # Thread pointer: meaningful only for continuation/return (an interruption IS
             # the birth of a new thread). Link confidence: 1.0 for a user-pinned edge, else
             # the evaluator's conditional p for its top candidate (0.85 for pre-prob rows).
@@ -162,10 +169,11 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
                       "detour": "interrupted"}.get(vkind or "detour", "interrupted")
             if content == "passive":
                 st = "distracted"  # Rules doc: passive consumption never counts toward focus
-            elif content == "correspondence" and st == "focus" and not s.get("toggl_id"):
+            elif content == "correspondence" and st == "focus" and not s.get("toggl_id") and not v_fex:
                 # Rules doc: focus spans are independent work, never interactive - chatting or
                 # answering mail is a diversion, not focus. The one exception is correspondence
-                # processed inside a Toggl-covered task block, which rides along with that span.
+                # processed inside a Toggl-covered task block, which rides along with that span -
+                # unless the person explicitly ruled this block an exception (focus_exception).
                 st = "interrupted"
             label = ("continuation" if vsw in ("continuation", "return") else
                      {"self_distraction": "distraction", "focus_start": "task_change",
@@ -305,7 +313,9 @@ def span_subtype(sp: dict, cfg) -> str | None:
     for s in fsegs:
         c = s.get("content")
         if c in CONTENT2SUB:
-            grp[CONTENT2SUB[c]] += s["duration"]
+            # Correspondence the person ruled an exception (drafting on their own schedule) is
+            # creative work for the span's kind - there is no Toggl task block to attach it to.
+            grp["creative_work" if (c == "correspondence" and s.get("focus_exception")) else CONTENT2SUB[c]] += s["duration"]
             continue
         if c in ("passive", "idle", "transition"):
             continue
@@ -406,6 +416,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
     keep_q, keep_d = [], []
     for sp in qualifying:
         r = _span_review_for(rows, sp)
+        sp["review_chat_mid"] = r["chat_message_id"] if r is not None and "chat_message_id" in r.keys() else None
         if r is None:
             sp["confirmed"] = False
             keep_q.append(sp)
@@ -422,6 +433,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
             keep_q.append(sp)
     for sp in disqualified:
         r = _span_review_for(rows, sp)
+        sp["review_chat_mid"] = r["chat_message_id"] if r is not None and "chat_message_id" in r.keys() else None
         if r is not None and r["verdict"] == "focus":
             sp["confirmed"] = True
             sp["subtype"] = r["subtype"] if r["subtype"] in SUBTYPES else "other_focused"
@@ -795,3 +807,32 @@ def focus_context(conn, from_seg: dict | None) -> tuple[str, float]:
         if sp["end"] >= end - 1 and sp["start"] <= end:
             return "focus", sp["focus_min"]
     return "focus", 0.0
+
+
+def day_stamp(conn, t0: float, t1: float) -> str:
+    """Fingerprint of everything the Day view draws from. The dashboard polls it and reloads the
+    day only when it changes - so an edit made anywhere (a chat, the review queue, a Toggl
+    correction, the evaluator catching up) shows on the timeline within seconds. The live
+    segment's end is rounded to the minute so an open day refreshes about once a minute."""
+    import hashlib
+    qs = (
+        ("SELECT COUNT(*), MAX(id), CAST(MAX(COALESCE(end, start)) / 60 AS INTEGER) FROM segments"
+         " WHERE start >= ? AND start < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(e.created) FROM seg_evals e JOIN segments g ON g.id = e.segment_id"
+         " WHERE g.start >= ? AND g.start < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(r.created) FROM seg_reviews r JOIN segments g ON g.id = r.segment_id"
+         " WHERE g.start >= ? AND g.start < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(r.created) FROM reviews r JOIN switches s ON s.id = r.switch_id"
+         " WHERE s.ts >= ? AND s.ts < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(e.created) FROM ensemble e JOIN switches s ON s.id = e.switch_id"
+         " WHERE s.ts >= ? AND s.ts < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(created) FROM span_reviews WHERE start < ? AND end > ?", (t1, t0)),
+        ("SELECT COUNT(*), MAX(created) FROM span_summaries WHERE start < ? AND end > ?", (t1, t0)),
+        ("SELECT COUNT(*), MAX(q.created), MAX(q.answered_at), SUM(q.status = 'open') FROM review_questions q"
+         " JOIN segments g ON g.id = q.segment_id WHERE g.start >= ? AND g.start < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(start), MAX(COALESCE(stop, 0)), SUM(LENGTH(COALESCE(description, '')))"
+         " FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ?", (t1, t1, t0)),
+        ("SELECT COUNT(*), MAX(end) FROM inactivity WHERE start >= ? AND start < ?", (t0, t1)),
+    )
+    raw = "|".join(",".join(str(v) for v in conn.execute(sql, args).fetchone()) for sql, args in qs)
+    return hashlib.md5(raw.encode()).hexdigest()[:16]

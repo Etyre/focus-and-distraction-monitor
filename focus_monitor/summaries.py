@@ -66,7 +66,7 @@ def seg_line(s) -> str:
     title = (s.get("title") or "")[:70]
     bits = [t, "%4.1fm" % (s["duration"] / 60), s.get("state", ""), what, title]
     if s.get("content"):
-        bits.append(f"<{s['content']}>")
+        bits.append(f"<{s['content']}>" + (" <FOCUS EXCEPTION by ruling>" if s.get("focus_exception") else ""))
     if s.get("label") and s["label"] != "continuation":
         bits.append(f"<switch: {s['label']}>")
     if s.get("activity"):

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import LABEL_HELP, LABEL_NAMES, LABELS, db, ensemble, stats, toggl
+from . import LABEL_HELP, LABEL_NAMES, LABELS, db, edits, ensemble, stats, toggl
 from .config import CONFIG_PATH, DATA_DIR, load_config, logical_date, screenshot_file
 
 app = FastAPI(title="Focus Monitor")
@@ -112,7 +112,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier")} for s in segs]
+                                   "state", "label", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
@@ -140,6 +140,7 @@ def api_day(day: str | None = None):
             slack[k] += float(det.get(k) or 0)
         n_prio += int((r["priority"] or 0) >= PRIORITY_CUT)
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
+            "stamp": stats.day_stamp(c, t0, t1),
             "spend_avg_30d": db.spend_daily_avg(c, 30), "budget": cfg.daily_budget_usd,
             "to_review": len(selected), "reviewed": reviewed,  # open questions + unresolved flags today
             "metric_slack": slack, "priority_open": n_prio,
@@ -148,6 +149,7 @@ def api_day(day: str | None = None):
                        "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
             "count_events": cfg.count_events, "min_focus_span_min": cfg.min_focus_span_min,
             "focus_spans": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "ended_by": r["ended_by"],
+                             "review_chat_mid": r.get("review_chat_mid"),
                              "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
                              "hybrid": bool(r.get("hybrid")),
@@ -160,6 +162,7 @@ def api_day(day: str | None = None):
             "distractions": [{"start": r["start"], "end": r["end"], "duration": r["duration"], "is_event": r["is_event"],
                               "where": sorted({s["domain"] or s["app"] for s in r["segments"]})} for r in se["distractions"]],
             "disqualified": [{"start": r["start"], "end": r["end"], "duration": r["duration"],
+                              "review_chat_mid": r.get("review_chat_mid"),
                               "reason": r.get("disq_reason", "does not meet the focused-work standard"),
                               "summary": _summary(r)}
                              for r in se.get("disqualified", [])]}
@@ -306,16 +309,17 @@ class SpanReview(BaseModel):
 
 @app.post("/api/span/review")
 def api_span_review(r: SpanReview):
-    if r.verdict not in ("focus", "not_focus"):
-        raise HTTPException(400, "bad verdict")
-    if r.subtype is not None and r.subtype not in stats.SUBTYPES:
-        raise HTTPException(400, "bad subtype")
-    c = conn()
-    with db.tx(c):
-        c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (r.start - 60, r.end + 60))
-        c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created) VALUES (?,?,?,?,?,?)",
-                  (r.start, r.end, r.verdict, r.subtype, r.note, time.time()))
+    try:
+        edits.write_span_review(conn(), r.start, r.end, r.verdict, r.subtype, r.note)
+    except edits.BadEdit as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+@app.delete("/api/span/review")
+def api_span_unreview(start: float, end: float):
+    """Withdraw the verdict on a span (the span goes back to the system's own call)."""
+    return {"ok": True, "deleted": edits.delete_span_review(conn(), start, end)}
 
 
 @app.get("/api/efficiency")
@@ -518,6 +522,56 @@ class SpanChatReq(BaseModel):
     messages: list[dict]
 
 
+_day_chat = None
+def get_day_chat():
+    global _day_chat
+    if _day_chat is None:
+        from .chat import DayChat
+        _day_chat = DayChat(cfg)
+    return _day_chat
+
+
+@app.get("/api/day/stamp")
+def api_day_stamp(day: str | None = None):
+    """Cheap change fingerprint of a day; the Day view polls it and redraws only when it moves."""
+    d = dt.date.fromisoformat(day) if day else logical_date()
+    t0, t1 = stats.day_bounds(d)
+    return {"day": d.isoformat(), "stamp": stats.day_stamp(conn(), t0, t1)}
+
+
+@app.get("/api/chat/message/{mid}")
+def api_chat_message(mid: int):
+    """Where a chat reply lives, so a flagged judgment can open the conversation it came from."""
+    c = conn()
+    m = c.execute("SELECT id, kind, ref, role, text, created, question_id FROM chat_messages WHERE id=?", (mid,)).fetchone()
+    if not m:
+        raise HTTPException(404)
+    out = dict(m)
+    if m["kind"] == "evaluator":  # the segment chat lives on the capture card, keyed by switch
+        sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (int(m["ref"]),)).fetchone()
+        out["switch_id"] = sw["id"] if sw else None
+    return out
+
+
+class DayChatReq(BaseModel):
+    day: str            # logical day, YYYY-MM-DD
+    messages: list[dict]
+
+
+@app.post("/api/day/chat")
+def api_day_chat(req: DayChatReq):
+    """Talk with Claude about a whole day. History is kept per day (chat kind 'day', ref = the date)."""
+    import datetime as _dt
+    try:
+        day = _dt.date.fromisoformat(req.day)
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    try:
+        return get_day_chat().reply(conn(), day, req.messages)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 QCTX_S = 900.0  # timeline context on each side of a question's segment (matches ~what the generator saw)
 
 
@@ -640,7 +694,8 @@ def api_question_answer(qid: int, a: QAnswer):
     return _answer_question(conn(), qid, a.option_index, a.note)
 
 
-def _answer_question(c, qid: int, option_index: int, note: str | None) -> dict:
+def _answer_question(c, qid: int, option_index: int, note: str | None,
+                     chat_message_id: int | None = None) -> dict:
     """Record the chosen option of a review question as the person's judgment (segment review +
     legacy switch review), undoing any earlier answer first. Shared by the option buttons and
     by applying a judgment the evaluator proposed in chat."""
@@ -666,15 +721,17 @@ def _answer_question(c, qid: int, option_index: int, note: str | None) -> dict:
             ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id"))
                     if osw in ("continuation", "return")
                     else (None if osw else (prev["antecedent_id"] if prev else None)))
-            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid)"
-                      " VALUES (?,?,?,?,?,?,?,?)",
+            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid, chat_message_id, focus_exception)"
+                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
                       (o["segment_id"],
                        o.get("content") or (prev["content"] if prev else None),
                        osw or (prev["switch_label"] if prev else None),
                        o.get("interruption_kind") if osw == "interruption" else (None if osw else (prev["interruption_kind"] if prev else None)),
                        ante,
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
-                       (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None))))
+                       (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None)),
+                       chat_message_id if chat_message_id is not None else o.get("proposed_from"),
+                       prev["focus_exception"] if prev else None))  # a question answer never touches the ruling
             from . import propagation
             propagation.note_event(c, o["segment_id"])
             old = _NEW2OLD.get((o.get("switch_label"),
@@ -772,9 +829,9 @@ def api_question_dismiss(qid: int):
 
 @app.get("/api/chat/{kind}/{ref}")
 def api_chat_history(kind: str, ref: str):
-    """Stored conversation for one item (kind: evaluator | switch | span), oldest first."""
+    """Stored conversation for one item (kind: evaluator | switch | span | day), oldest first."""
     from . import chat as _chat
-    if kind not in ("evaluator", "switch", "span"):
+    if kind not in ("evaluator", "switch", "span", "day"):
         raise HTTPException(400, "bad kind")
     return _chat.history(conn(), kind, ref)
 
@@ -836,14 +893,19 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
             idx = len(opts) - 1
             with db.tx(c):
                 c.execute("UPDATE review_questions SET options=? WHERE id=?", (_json.dumps(opts), q["id"]))
-        _answer_question(c, q["id"], idx, j.get("note") or None)
+        _answer_question(c, q["id"], idx, j.get("note") or None, chat_message_id=mid)
         applied["judgment"] = {"at": time.time(), "question_id": q["id"], "option_index": idx}
         with db.tx(c):
             _save_proposal(c, mid, prop)
         return {"ok": True, "question_id": q["id"], "option_index": idx, "options": opts, "proposal": prop}
-    api_seg_eval_review(segment_id, SegEvalReview(content=j.get("content"), switch_label=j.get("switch_label"),
-                                                   antecedent_id=j.get("antecedent_id"), hybrid=j.get("hybrid"),
-                                                   note=j.get("note") or j["label"]))
+    try:
+        derive = edits.write_seg_review(c, segment_id, content=j.get("content"), switch_label=j.get("switch_label"),
+                                        antecedent_id=j.get("antecedent_id"), hybrid=j.get("hybrid"),
+                                        note=j.get("note") or j["label"], chat_message_id=mid)
+    except edits.BadEdit as e:
+        raise HTTPException(400, str(e))
+    if derive:
+        _kick_kind_derivation(segment_id, j.get("note"))
     applied["judgment"] = {"at": time.time(), "segment_id": segment_id}
     with db.tx(c):
         _save_proposal(c, mid, prop)
@@ -906,23 +968,13 @@ class SegEvalReview(BaseModel):
     antecedent_id: int | None = None  # thread pointer, for continuation/return assertions
     note: str | None = None
     hybrid: bool | None = None  # the activity was done inside a live discussion (None = no ruling)
+    focus_exception: bool | None = None  # the person's explicit ruling: counts as independent focus anyway
 
 
-def _valid_antecedent(c, segment_id: int, ante: int | None) -> int | None:
-    """An antecedent must name a real segment that starts before this one; else None."""
-    if ante is None or ante == segment_id:
-        return None
-    row = c.execute("""SELECT (SELECT start FROM segments WHERE id=?) < g.start AS earlier
-                       FROM segments g WHERE g.id=?""", (ante, segment_id)).fetchone()
-    return ante if row and row["earlier"] else None
+_valid_antecedent = edits.valid_antecedent
 
 
-# The user's edit of the evaluator's judgment maps onto the legacy 4-label review scheme so the
-# older per-switch models keep learning from the same corrections.
-_NEW2OLD = {("continuation", None): "continuation", ("return", None): "task_change",
-            ("interruption", "self_distraction"): "distraction",
-            ("interruption", "focus_start"): "task_change",
-            ("interruption", "detour"): "interruption"}
+_NEW2OLD = edits.NEW2OLD
 
 
 @app.get("/api/segment/{segment_id}/shots")
@@ -935,33 +987,15 @@ def api_segment_shots(segment_id: int):
 
 @app.post("/api/segment/{segment_id}/eval-review")
 def api_seg_eval_review(segment_id: int, r: SegEvalReview):
-    from .evaluator import CONTENTS, KINDS, SWITCHES
-    if r.content is not None and r.content not in CONTENTS:
-        raise HTTPException(400, "bad content label")
-    if r.switch_label is not None and r.switch_label not in SWITCHES:
-        raise HTTPException(400, "bad switch label")
-    if r.interruption_kind is not None and r.interruption_kind not in KINDS:
-        raise HTTPException(400, "bad interruption kind")
+    """The person's direct edit of a segment's judgment (no chat involved: chat_message_id stays NULL)."""
     c = conn()
-    if not c.execute("SELECT 1 FROM segments WHERE id=?", (segment_id,)).fetchone():
-        raise HTTPException(404)
-    with db.tx(c):
-        ante = (_valid_antecedent(c, segment_id, r.antecedent_id)
-                if r.switch_label in ("continuation", "return") else None)
-        c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid)"
-                  " VALUES (?,?,?,?,?,?,?,?)",
-                  (segment_id, r.content, r.switch_label, r.interruption_kind, ante, r.note, time.time(),
-                   None if r.hybrid is None else int(r.hybrid)))
-        if r.content or r.switch_label or r.hybrid is not None:
-            from . import propagation
-            propagation.note_event(c, segment_id)
-        old = _NEW2OLD.get((r.switch_label, r.interruption_kind if r.switch_label == "interruption" else None))
-        sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (segment_id,)).fetchone()
-        if old and sw:
-            c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
-                      (sw["id"], old, r.note, time.time()))
-            c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
-    if r.switch_label == "interruption" and not r.interruption_kind:
+    try:
+        derive = edits.write_seg_review(c, segment_id, content=r.content, switch_label=r.switch_label,
+                                        interruption_kind=r.interruption_kind, antecedent_id=r.antecedent_id,
+                                        note=r.note, hybrid=r.hybrid, focus_exception=r.focus_exception)
+    except edits.BadEdit as e:
+        raise HTTPException(400 if "no segment" not in str(e) else 404, str(e))
+    if derive:
         _kick_kind_derivation(segment_id, r.note)
     return {"ok": True}
 

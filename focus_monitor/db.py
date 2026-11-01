@@ -130,7 +130,11 @@ CREATE TABLE IF NOT EXISTS seg_reviews (      -- the user's edits to those judgm
     interruption_kind TEXT,
     note TEXT,
     created REAL NOT NULL,
-    hybrid INTEGER                            -- 1/0 = the person ruled on 'inside a live discussion'; NULL = unset
+    hybrid INTEGER,                           -- 1/0 = the person ruled on 'inside a live discussion'; NULL = unset
+    chat_message_id INTEGER,                  -- provenance: the chat reply (chat_messages.id) this edit came out of
+    focus_exception INTEGER                   -- 1 = the person RULED this block counts as independent focus although its
+                                              --     content (correspondence with no Toggl entry) normally cannot. Only
+                                              --     ever set at their explicit request - never derived, never proposed.
 );
 
 CREATE TABLE IF NOT EXISTS eval_runs (        -- chunk evaluation bookkeeping + full transcript
@@ -163,14 +167,15 @@ CREATE TABLE IF NOT EXISTS span_reviews (     -- the user's verdict on each hypo
     verdict TEXT NOT NULL,        -- 'focus' | 'not_focus'
     subtype TEXT,                 -- confirmed/changed subtype when verdict='focus'
     note TEXT,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    chat_message_id INTEGER       -- provenance: the chat reply this verdict came out of, if any
 );
 CREATE INDEX IF NOT EXISTS span_reviews_start ON span_reviews(start);
 
 CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review questions (primary review
     id INTEGER PRIMARY KEY,                   --  stream): contextualized, options map to edits
     segment_id INTEGER NOT NULL REFERENCES segments(id),  -- the segment whose judgment is in doubt
-    source TEXT NOT NULL,         -- self_uncertain | disagreement | coherence | audit
+    source TEXT NOT NULL,         -- self_uncertain | disagreement | coherence | audit | ... | chat (raised in a chat)
     context TEXT NOT NULL,        -- 1-2 sentence narrative setting up the question
     question TEXT NOT NULL,
     options TEXT NOT NULL,        -- JSON [{label, segment_id, switch_label?, interruption_kind?, content?}]
@@ -181,14 +186,15 @@ CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review question
     created REAL NOT NULL,
     answered_at REAL,
     answer_index INTEGER,         -- which option was chosen (so the card can show it and let it be changed)
-    undo TEXT                     -- JSON: what the answer overwrote, so a changed/cleared answer restores it
+    undo TEXT,                    -- JSON: what the answer overwrote, so a changed/cleared answer restores it
+    chat_message_id INTEGER       -- provenance: set when Claude raised this question in a chat (source='chat')
 );
 CREATE INDEX IF NOT EXISTS review_questions_status ON review_questions(status);
 
 CREATE TABLE IF NOT EXISTS chat_messages (    -- every in-app conversation with Claude, verbatim
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,           -- evaluator (about a segment) | switch | span
-    ref TEXT NOT NULL,            -- segment id / switch id / span start (unix seconds, rounded)
+    kind TEXT NOT NULL,           -- evaluator (about a segment) | switch | span | day
+    ref TEXT NOT NULL,            -- segment id / switch id / span start (unix seconds, rounded) / YYYY-MM-DD
     role TEXT NOT NULL,           -- user | assistant
     text TEXT NOT NULL,
     question_id INTEGER,          -- the review question on screen when asked, if any
@@ -318,6 +324,14 @@ def connect() -> sqlite3.Connection:
     cmcols = {r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")}
     if cmcols and "proposal" not in cmcols:
         conn.execute("ALTER TABLE chat_messages ADD COLUMN proposal TEXT")
+    # Provenance: judgments that came out of a conversation with Claude point back at the reply.
+    for t in ("seg_reviews", "span_reviews", "review_questions"):
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
+        if cols and "chat_message_id" not in cols:
+            conn.execute(f"ALTER TABLE {t} ADD COLUMN chat_message_id INTEGER")
+    srcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
+    if srcols and "focus_exception" not in srcols:
+        conn.execute("ALTER TABLE seg_reviews ADD COLUMN focus_exception INTEGER")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
         conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")

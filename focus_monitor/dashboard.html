@@ -58,6 +58,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 .cmsg.user{align-self:flex-end;background:var(--focus);color:#fff}
 .cmsg.assistant{align-self:flex-start;background:var(--surface);border:1px solid var(--grid)}
 .cmsg.pending{align-self:flex-start;color:var(--muted)}
+.cmsg.hilite{outline:2px solid var(--taskchange);outline-offset:2px}
 .chatrow{display:flex;gap:8px}.chatrow input{flex:1}
 .proposal{align-self:flex-start;max-width:90%;margin-left:14px;padding:7px 10px;border:1.5px dashed var(--taskchange);border-radius:8px;font-size:13px}.proposal.done{border-style:solid;border-color:var(--focus)}.proposal button{text-align:left;margin:4px 0}
 </style>
@@ -75,9 +76,14 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <button onclick="shiftDay(-1)">◀</button><input type="date" id="daypick" onchange="loadDay()"><button onclick="shiftDay(1)">▶</button>
     <button onclick="setToday()">Today</button>
     <button id="togglSync" class="small" title="Pull the last 7 days of Toggl entries again - use after correcting entries in Toggl. (The last 30 hours re-sync every 2 minutes by themselves; the last 7 days every 6 hours.)" onclick="togglResync()">↻ re-sync Toggl</button><span id="togglSyncMsg" class="muted small"></span>
-    
+    <button id="dayChatBtn" class="small" style="margin-left:auto" title="Talk with Claude about this whole day: how it went, where attention broke, whether the system's calls look right. It sees the day's metrics, spans, events, Toggl entries, the full activity log and a few screenshots." onclick="toggleDayChat()">💬 Ask about this day</button>
   </div>
   <div class="tiles" id="tiles"></div>
+  <div class="card hidden" id="dayChatCard">
+    <div class="row" style="justify-content:space-between"><b>Ask Claude about <span id="dayChatDay"></span></b><span><span class="muted small">one conversation per day, kept</span> <button class="small" onclick="toggleDayChat()">close</button></span></div>
+    <div id="daychatlog" class="chatlog" style="max-height:380px"></div>
+    <div class="chatrow"><input id="daychatinput" placeholder="e.g. How did today go against what I intended? Where did my attention break down, and what would you change?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendDayChat();}"><button class="primary" onclick="sendDayChat()">Send</button></div>
+  </div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
     <span><button onclick="zoomView(0.33)" title="Zoom in (+)">＋</button> <button onclick="zoomView(3)" title="Zoom out (−)">－</button> <button onclick="resetZoom()" title="Reset (0)">reset</button></span>
@@ -186,6 +192,7 @@ function shiftDay(n){const d=new Date($('#daypick').value+'T12:00:00');d.setDate
 async function loadDay(){
   if(!$('#daypick').value)setToday();
   const d=await api('/api/day?day='+$('#daypick').value);
+  DAY_STAMP=d.stamp;
   const m=d.metrics;
   const overBudget=d.spend_avg_30d>=d.budget;
   // "± x" under a headline metric: how far open review questions could still move it.
@@ -197,9 +204,10 @@ async function loadDay(){
   document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
   COUNT_EVENTS=d.count_events; MIN_SPAN=d.min_focus_span_min;
   drawTimeline(d);
+  syncDayChat();
   const spansSorted=d.focus_spans.slice().sort((a,b)=>a.start-b.start);
   $('#spans').innerHTML='<tr><th>Type</th><th>Focus</th><th>Start</th><th>End</th><th>Length</th><th>Interruptions</th><th>Ended by</th><th>Toggl</th><th>Apps</th></tr>'+spansSorted
-    .map((s,i)=>`<tr><td title="${subName[s.subtype]}"><span class="sw" style="background:${subColor[s.subtype]}"></span>${s.fully_absorbed?' <span title="fully absorbed (0 interruptions)">◆</span>':''}</td><td class="focdesc" data-sp="${i}">${s.title?esc(s.title):'<span class="muted small">(pending)</span>'}</td><td>${fmtT(s.start)}</td><td>${fmtT(s.end)}</td><td><b>${fmtMin(s.duration/60)}</b>${s.detour_min>0.5?` <span class="muted small">(${fmtMin(s.focus_min)} focused)</span>`:''}</td><td class="small">${s.detours?s.detours+' ('+fmtMin(s.detour_min)+')':'–'}</td><td class="small" style="color:${s.ended_by==='distracted'?'var(--distracted)':s.ended_by==='interrupted'?'var(--interrupted)':'var(--muted)'}">${esc(s.ended_by)}</td><td class="small">${esc(s.toggl.join(' · '))}</td><td class="small muted">${esc(s.apps.join(', '))}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
+    .map((s,i)=>`<tr><td title="${subName[s.subtype]}"><span class="sw" style="background:${subColor[s.subtype]}"></span>${s.fully_absorbed?' <span title="fully absorbed (0 interruptions)">◆</span>':''}${s.review_chat_mid?` <span title="verdict set in a chat with Claude — click to open that conversation" style="cursor:pointer" onclick="openChatMsg(${s.review_chat_mid})">💬</span>`:''}</td><td class="focdesc" data-sp="${i}">${s.title?esc(s.title):'<span class="muted small">(pending)</span>'}</td><td>${fmtT(s.start)}</td><td>${fmtT(s.end)}</td><td><b>${fmtMin(s.duration/60)}</b>${s.detour_min>0.5?` <span class="muted small">(${fmtMin(s.focus_min)} focused)</span>`:''}</td><td class="small">${s.detours?s.detours+' ('+fmtMin(s.detour_min)+')':'–'}</td><td class="small" style="color:${s.ended_by==='distracted'?'var(--distracted)':s.ended_by==='interrupted'?'var(--interrupted)':'var(--muted)'}">${esc(s.ended_by)}</td><td class="small">${esc(s.toggl.join(' · '))}</td><td class="small muted">${esc(s.apps.join(', '))}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
   $('#spans').querySelectorAll('td.focdesc').forEach(td=>{const s=spansSorted[+td.dataset.sp];
     if(!s.summary&&!s.title)return;
     td.addEventListener('mousemove',e=>showTT(e,`${s.title?'<b>'+esc(s.title)+'</b><br>':''}${s.summary?esc(s.summary):'<span class="muted">(no summary yet)</span>'}`));
@@ -318,7 +326,7 @@ function el_render(el,s,d,segs,flags){
       const bb=el.querySelector('svg').getBoundingClientRect();
       const tCur=TL.view0+((e.clientX-bb.left)/bb.width*1200-8)/(1200-16)*(TL.view1-TL.view0);
       const shot=shotNearest(g,Math.max(g.clip_start,Math.min(g.clip_end,tCur)))||g.first_screenshot;
-      showTT(e,`${shot?`<img src="/shot/${shot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
+      showTT(e,`${shot?`<img src="/shot/${shot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}${g.review_chat_mid?'<div style="font-weight:600">💬 judgment changed in a chat with Claude — open the block for the conversation</div>':''}${g.focus_exception?'<div style="color:var(--taskchange);font-weight:600">⚑ exception: counts as independent focus by your ruling</div>':''}${spanStart?'<div style="color:var(--taskchange);font-weight:600">⚑ start of this '+(sp0?'focus span':'(disqualified) span')+' — click to review if wrong</div>':''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'&&sp0?subColor[sp0.subtype]:(g.state==='idle'?'var(--muted)':'var(--interrupted)')}">${kind}</span>${g.content?' · <b>'+g.content+'</b>':''}${g.uncertain?' · <i>uncertain</i>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':'<br><span class="muted small">⏱ no Toggl entry</span>'}${holder&&holder.summary?'<br><span class="small" style="opacity:.85">📝 '+esc(holder.summary)+'</span>':''}${g.source==='transit'?'<br><i>transit — part of one transition</i>':(g.label?'<br><span class="muted small">model: '+g.label+' ('+g.source+')'+(g.needs_review?' · needs review':'')+'</span>':'')}`);});
     r.addEventListener('mouseleave',hideTT);
     if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.own_switch_id||g.switch_id);});});
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag;
@@ -445,7 +453,7 @@ function togglTrack(entries,x,t0,t1,L,yText,yBar,emptyMsg){
   return s;
 }
 let qQueue=[],qqi=0;
-const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?',thread_link:'the model is unsure which thread this continues'};
+const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?',thread_link:'the model is unsure which thread this continues',chat:'raised by Claude in a conversation with you'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';
   const t0=q.seg_start-900,t1=q.seg_end+900,W=1000,L=14,R=14,x=t=>L+(t-t0)/(t1-t0)*(W-L-R);
@@ -499,7 +507,7 @@ function renderQuestion(){
       ${qSettled(q)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands, and the generator learns not to ask this kind of thing" onclick="unsureQuestion(${q.id})">I can't tell</button> <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>`}
     </div>${qAnsweredLine(q,'reopenQuestion')}${qNoteField(q,'saveQuestionNote')}`;
   $('#reviewCard').innerHTML=`
-    <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button></div></div>
+    <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}${q.chat_message_id?` · <a href="#" onclick="event.preventDefault();openChatMsg(${q.chat_message_id})">open the conversation</a>`:''}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button></div></div>
     <div class="small muted" style="margin:6px 0">${esc(q.app)}${q.domain?' · '+esc(q.domain):''}${q.title?' · '+esc(q.title.slice(0,70)):''} ${q.switch_id?`· <a href="#" onclick="openSegment(${q.switch_id});return false">open the capture</a>`:''}</div>
     ${qPriorityLine(q)}
     <div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">${esc(q.context)}</div>
@@ -563,7 +571,7 @@ async function applyJudgment(mid,key){
 async function applyRule(mid,key){
   let r;try{r=await api(`/api/chat/message/${mid}/apply-rule`,{method:'POST'});}catch(e){alert('could not add the rule: '+e.message);return;}
   const m=(CHAT[key]||[]).find(x=>x.id===mid);if(m)m.proposal=r.proposal;
-  if(key.startsWith('q'))renderQChat();else if(current)renderChat(current.switch.id);}
+  if(key.startsWith('q'))renderQChat();else if(key.startsWith('day'))renderDayChat();else if(current)renderChat(current.switch.id);}
 function renderQChat(){const log=$('#qchatlog');if(!log)return;const k='q'+currentQSeg;
   log.innerHTML=(CHAT[k]||[]).map(m=>chatMsgHtml(m,k)).join('');
   log.scrollTop=log.scrollHeight;}
@@ -670,6 +678,58 @@ function renderSpanCard(sp,oneOff){
   renderSpanChat();
   chatLoad('sp'+spanChatKey(),'span',spanChatKey(),renderSpanChat);
 }
+// ---- whole-day chat (Day view). One thread per logical day, keyed by the date.
+function dayChatKey(){return 'day'+$('#daypick').value;}
+function toggleDayChat(){const c=$('#dayChatCard');c.classList.toggle('hidden');if(!c.classList.contains('hidden')){syncDayChat();$('#daychatinput').focus();}}
+function syncDayChat(){if($('#dayChatCard').classList.contains('hidden'))return;const day=$('#daypick').value;
+  $('#dayChatDay').textContent=new Date(day+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+  renderDayChat();chatLoad(dayChatKey(),'day',day,renderDayChat);}
+let HILITE_MSG=null;
+// Every change the chat made is a card under the reply: what, where, and buttons to open or undo it.
+// The same ids are stored on the edited rows (chat_message_id), which is what the 💬 flags point back to.
+const DAY_DETAILS=new Set();  // replies whose change list is expanded
+function toggleDayDetails(mid){if(DAY_DETAILS.has(mid))DAY_DETAILS.delete(mid);else DAY_DETAILS.add(mid);renderDayChat();}
+// What the chat changed, as ONE compact line per reply (expand for the grouped list). The same
+// ids are stored on the edited rows (chat_message_id), which is what the audit links point back to.
+function dayAppliedHtml(m){const p=m.proposal||{};let h='';const ch=p.applied_changes||[];
+  const segs=ch.filter(a=>a.kind==='segment'),spans=ch.filter(a=>a.kind==='span'),qs=ch.filter(a=>a.kind==='question');
+  if(ch.length){const bits=[];if(segs.length)bits.push(`${segs.length} block${segs.length>1?'s':''} edited`);if(spans.length)bits.push(`${spans.length} span verdict${spans.length>1?'s':''}`);if(qs.length)bits.push(`${qs.length} review question${qs.length>1?'s':''} opened`);
+    const open=DAY_DETAILS.has(m.id);
+    h+=`<div class="proposal done small">✎ ${bits.join(' · ')} <a href="#" onclick="event.preventDefault();toggleDayDetails(${m.id})">${open?'hide':'details'}</a>${segs.length?` · <button class="small" onclick="undoChatSegEdits([${segs.map(a=>a.segment_id).join(',')}])">undo all block edits</button>`:''}`;
+    if(open){
+      // group identical edits: same labels and note, shown as one line with the time range
+      const groups=new Map();segs.forEach(a=>{const k=a.summary+'\n'+(a.note||'');if(!groups.has(k))groups.set(k,[]);groups.get(k).push(a);});
+      h+=[...groups.values()].map(g=>`<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--grid)">${g.length} block${g.length>1?'s':''} ${esc(g[0].when)}${g.length>1?'–'+esc(g[g.length-1].when):''}: ${esc(g[0].summary)}${g[0].note?`<div class="muted">note: “${esc(g[0].note)}”</div>`:''}<div class="muted">${g.slice(0,40).map(a=>a.switch_id?`<a href="#" title="block #${a.segment_id}" onclick="event.preventDefault();openSegment(${a.switch_id})">${esc(a.when)}</a>`:esc(a.when)).join(' ')}${g.length>40?' …':''} · <button class="small" onclick="undoChatSegEdits([${g.map(a=>a.segment_id).join(',')}])">undo these</button></div></div>`).join('');
+      h+=spans.map(a=>`<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--grid)">span ${fmtT(a.start)}–${fmtT(a.end)}: ${esc(a.summary||'')}${a.note?`<div class="muted">note: “${esc(a.note)}”</div>`:''}<div class="muted"><button class="small" onclick="openSpanReview(${(a.start+a.end)/2})">open</button> <button class="small" onclick="undoChatSpanEdit(${a.start},${a.end})">undo</button></div></div>`).join('');
+      h+=qs.map(a=>`<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--grid)">❓ question #${a.question_id}: ${esc(a.question||'')} <button class="small" onclick="location.hash='review'">review queue</button></div>`).join('');}
+    h+='</div>';}
+  if(p.rule){const done=!!(p.applied&&p.applied.rule);
+    h+=`<div class="proposal${done?' done':''}"><div class="muted small">${done?'✓ added to your rules document':'Proposed general rule — add it to your rules?'}</div><div style="margin:4px 0">${esc(p.rule)}</div>${done?'':`<button onclick="applyRule(${m.id},'${dayChatKey()}')">add to my rules</button>`}</div>`;}
+  return h;}
+async function undoChatSegEdits(ids){if(!confirm(`Undo ${ids.length} block edit${ids.length>1?'s':''}? The blocks go back to the evaluator's own judgment.`))return;
+  for(const id of ids){try{await api(`/api/segment/${id}/eval-review`,{method:'DELETE'});}catch(e){alert('could not undo block '+id+': '+e.message);break;}}
+  loadDay();}
+function renderDayChat(){const log=$('#daychatlog');if(!log)return;
+  const h=CHAT[dayChatKey()]||[];
+  log.innerHTML=h.length?h.map(m=>`<div class="cmsg ${m.role}${m.id&&m.id===HILITE_MSG?' hilite':''}" data-mid="${m.id||''}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>${m.role==='assistant'?dayAppliedHtml(m):''}`).join(''):'<div class="muted small">Nothing asked about this day yet.</div>';
+  const hl=HILITE_MSG&&log.querySelector(`[data-mid="${HILITE_MSG}"]`);
+  if(hl){hl.scrollIntoView({block:'center'});HILITE_MSG=null;}else log.scrollTop=log.scrollHeight;}
+async function sendDayChat(){const day=$('#daypick').value,k=dayChatKey(),inp=$('#daychatinput'),q=inp.value.trim();if(!day||!q)return;
+  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});inp.value='';renderDayChat();
+  const log=$('#daychatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
+  let changed=false;
+  try{const r=await api('/api/day/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({day,messages:CHAT[k]})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});changed=!!(r.applied&&r.applied.length);}
+  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
+  renderDayChat();if(changed)loadDay();}
+async function undoChatSpanEdit(start,end){try{await api(`/api/span/review?start=${start}&end=${end}`,{method:'DELETE'});}catch(e){alert('could not undo: '+e.message);return;}loadDay();}
+// A 💬 flag anywhere opens the conversation the judgment came from.
+async function openChatMsg(mid){let m;try{m=await api('/api/chat/message/'+mid);}catch(e){alert('that conversation is gone: '+e.message);return;}
+  if(m.kind==='day'){HILITE_MSG=mid;$('#daypick').value=m.ref;const onDay=(location.hash||'#day')==='#day';
+    if(onDay)await loadDay();else location.hash='day';
+    const c=$('#dayChatCard');if(c.classList.contains('hidden'))c.classList.remove('hidden');syncDayChat();}
+  else if(m.kind==='evaluator'){if(m.switch_id)openSegment(m.switch_id);else alert('that chat belongs to segment #'+m.ref+' (open it from the Captures view)');}
+  else if(m.kind==='switch')openSegment(+m.ref);
+  else if(m.kind==='span')openSpanReview(+m.ref+30);}
 function spanChatKey(){return currentSpan?Math.round(currentSpan.start):null;}
 function renderSpanChat(){const log=$('#spanchatlog');if(!log)return;
   log.innerHTML=(CHAT['sp'+spanChatKey()]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
@@ -792,6 +852,7 @@ function switchTLBind(f){
 let segEvalSel=null;
 function evalBtns(cur,vals,names,field){return vals.map(v=>`<button class="small" style="${cur===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEdit('${field}','${v}')">${names[v]||v}</button>`).join(' ');}
 async function segEditHybrid(){segEvalSel.hybrid=!segEvalSel.hybrid;return segEdit('hybrid-toggle',null);}
+async function segEditException(){segEvalSel.focus_exception=!segEvalSel.focus_exception;return segEdit('hybrid-toggle',null);}
 async function segEdit(field,val){
   if(field!=='note'&&field!=='hybrid-toggle'){
     segEvalSel[field]=segEvalSel[field]===val?null:val;
@@ -812,13 +873,14 @@ async function renderSwitch(id){
   const spanLine=sp?`<div class="small" style="margin:4px 0">${sp.is_start?'<b style="color:var(--taskchange)">⚑ This capture is the START of a span</b> — ':''}${sp.relation==='leaving'?'this switch LEFT ':'inside '}${sp.disq_reason?'<span style="color:var(--interrupted)">a disqualified span ('+esc(sp.disq_reason)+')</span>':'a <b>'+(subName[sp.subtype]||sp.subtype)+'</b> span'} ${fmtT(sp.start)}–${fmtT(sp.end)}${sp.summary?'<br>📝 <span style="opacity:.85">'+esc(sp.summary)+'</span>':''}</div>`:'';
   const ev=f.to_eval,evr=f.to_seg_review;
   segEvalSel={content:(evr&&evr.content)||(ev&&ev.content)||null,switch_label:(evr&&evr.switch_label)||(ev&&ev.switch_label)||null,interruption_kind:(evr&&evr.interruption_kind)||(ev&&ev.interruption_kind)||null,
-    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:!!(ev&&ev.hybrid)};
+    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:!!(ev&&ev.hybrid),focus_exception:!!(evr&&evr.focus_exception)};
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
-    <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?' · <b>edited by you</b>':''):'not yet evaluated — runs ~15 min behind'}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
+    <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?(evr.chat_message_id?` · <b>edited in a chat with Claude</b> <a href="#" onclick="event.preventDefault();openChatMsg(${evr.chat_message_id})">open conversation</a>`:' · <b>edited by you</b>'):''):'not yet evaluated — runs ~15 min behind'}${evr&&evr.note?` · <span title="${esc(evr.note)}">note: ${esc(evr.note.slice(0,80))}${evr.note.length>80?'…':''}</span>`:''}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{return:'return from interruption'},'switch_label')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalSel.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalSel.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalSel.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalSel.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
     <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
   </div>`;
@@ -835,7 +897,7 @@ async function renderSwitch(id){
     </div>`;
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
-    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid ${qSettled(f.question)?'var(--grid)':'var(--taskchange)'};border-radius:6px"><b${qSettled(f.question)?' class="muted"':''}>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}</span>${qPriorityLine(f.question)}<div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${qOptButtons(f.question,'answerCardQuestion')}${qSettled(f.question)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands" onclick="unsureQuestion(${f.question.id})">I can't tell</button>`}</div>${qAnsweredLine(f.question,'reopenCardQuestion')}${qNoteField(f.question,'saveCardQuestionNote')}</div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
+    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid ${qSettled(f.question)?'var(--grid)':'var(--taskchange)'};border-radius:6px"><b${qSettled(f.question)?' class="muted"':''}>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}${f.question.chat_message_id?` · <a href="#" onclick="event.preventDefault();openChatMsg(${f.question.chat_message_id})">open the conversation</a>`:''}</span>${qPriorityLine(f.question)}<div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${qOptButtons(f.question,'answerCardQuestion')}${qSettled(f.question)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands" onclick="unsureQuestion(${f.question.id})">I can't tell</button>`}</div>${qAnsweredLine(f.question,'reopenCardQuestion')}${qNoteField(f.question,'saveCardQuestionNote')}</div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
     ${switchTL(f)}
     ${SCRUB.moments.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · ${detailTarget==='#reviewCard'?'⌥←/⌥→ jump spans · ⌘←/⌘→ previous/next review item':'⌘←/⌘→ jump spans'}</div>`:''}
     <div class="shots" style="margin:10px 0">
@@ -963,7 +1025,14 @@ async function loadEffDetail(id){
   $('#effDetailCard').scrollIntoView({behavior:'smooth'});
 }
 show(location.hash.slice(1)||'day');
-setInterval(()=>{if((location.hash||'#day')==='#day')loadDay();},60000);
+// The timeline follows the data: poll a cheap fingerprint of the day and redraw only when it changes
+// (an edit from a chat, an answered question, a Toggl correction, the evaluator catching up).
+let DAY_STAMP=null,DAY_BUSY=false;
+async function pollDay(){if((location.hash||'#day')!=='#day'||DAY_BUSY||!$('#daypick').value)return;
+  try{const r=await api('/api/day/stamp?day='+$('#daypick').value);
+    if(DAY_STAMP!==null&&r.stamp!==DAY_STAMP){DAY_BUSY=true;try{await loadDay();}finally{DAY_BUSY=false;}}}
+  catch(e){}}
+setInterval(pollDay,4000);
 </script>
 </body>
 </html>
