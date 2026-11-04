@@ -13,6 +13,7 @@ directory - move the project and rebuild.
 """
 from __future__ import annotations
 
+import os
 import plistlib
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent
 PYTHON = ROOT / ".venv/bin/python"
-DIST = ROOT / "dist"
+DIST = Path(os.environ.get("FOCUS_MONITOR_DIST", ROOT / "dist"))  # override for test builds
 APP = DIST / "Focus Monitor.app"
 BUNDLE_ID = "com.elityre.focusmonitor"
 
@@ -41,6 +42,13 @@ LAUNCHER_C = r"""
 #include <unistd.h>
 /* Spawn Python as a child and supervise it, so the .app (not Python) stays the responsible
    process that macOS attributes Screen Recording / Accessibility / Automation permissions to.
+
+   The child is a copy of the interpreter stub that lives INSIDE this bundle, not Homebrew's
+   Python.app. 2026-11-04: on macOS 26.6.2 Control Center hosts menu bar items only for
+   processes whose bundle carries a sealed signature. Homebrew's Python.app is ad-hoc signed
+   with its Info.plist unbound, so its status item was created, reported visible, and never
+   got a slot - the eye vanished. The same stub run from a signed bundle is placed at once.
+   The venv is reached through PYTHONPATH because the stub no longer sits in .venv/bin.
 
    The supervisor restarts the child when it crashes, and when it stops ticking: the collector
    touches HEARTBEAT every poll. 2026-09-04: macOS froze the Python process for three days
@@ -81,6 +89,8 @@ static pid_t spawn(void) {
     pid_t pid = fork();
     if (pid == 0) {
         char *args[] = {"%(python)s", "-m", "focus_monitor", "app", NULL};
+        setenv("PYTHONPATH", "%(pythonpath)s", 1);
+        setenv("PYTHONNOUSERSITE", "1", 1);
         execv("%(python)s", args);
         perror("execv");
         _exit(1);
@@ -213,16 +223,30 @@ def signing_identity() -> str:
     return "-"
 
 
+def interpreter_facts() -> tuple[Path, str]:
+    """The framework interpreter stub behind the venv, and the PYTHONPATH that reproduces the venv."""
+    out = subprocess.run([str(PYTHON), "-c", "import sys, sysconfig; print(sys.base_prefix); "
+                          "print(sysconfig.get_paths()['purelib'])"], capture_output=True, text=True,
+                         check=True).stdout.split()
+    stub = Path(out[0]) / "Resources/Python.app/Contents/MacOS/Python"
+    if not stub.exists():
+        sys.exit(f"framework interpreter not found at {stub}")
+    return stub, f"{ROOT}:{out[1]}"
+
+
 def main() -> None:
     if not PYTHON.exists():
         sys.exit(f"venv python not found at {PYTHON}")
+    stub, pythonpath = interpreter_facts()
     if APP.exists():
         shutil.rmtree(APP)
     (APP / "Contents/MacOS").mkdir(parents=True)
     (APP / "Contents/Resources").mkdir(parents=True)
 
     src = DIST / "launcher.c"
-    src.write_text(LAUNCHER_C % {"root": ROOT, "python": PYTHON})
+    embedded = APP / "Contents/MacOS/Python"
+    shutil.copy2(stub, embedded)
+    src.write_text(LAUNCHER_C % {"root": ROOT, "python": embedded, "pythonpath": pythonpath})
     subprocess.run(["clang", "-O2", "-o", str(APP / "Contents/MacOS/FocusMonitor"), str(src)], check=True)
     src.unlink()
 
@@ -249,6 +273,9 @@ def main() -> None:
     (APP / "Contents/PkgInfo").write_text("APPL????")
 
     identity = signing_identity()
+    # The embedded interpreter is a second executable in Contents/MacOS: the bundle signature
+    # below does not cover it, and Control Center refuses status items from an unsealed binary.
+    subprocess.run(["codesign", "--force", "--sign", identity, "--identifier", BUNDLE_ID, str(embedded)], check=True)
     for attempt in range(5):
         # Strip Finder detritus that blocks signing. Finder (this is an iCloud-synced folder) can
         # re-tag the bundle with FinderInfo between the strip and the sign, so retry.
