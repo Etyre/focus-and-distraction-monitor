@@ -83,6 +83,13 @@ switch_label='interruption'.
 Content questions are equally welcome when content is the doubt: "was drafting that Signal \
 message routine correspondence ('correspondence') or writing you were absorbed in ('creative')?" - each \
 option sets a content label.
+In form 2, the "something different" option must say what the DIFFERENT undertaking on \
+return would be ("back on the page only to grab a quote for the message you were writing"), \
+never that the diversion "had become the real focus" or "was a new beginning": how long the \
+diversion ran, and whether that ended the span, is the app's break rule (5 minutes), not the \
+person's call - and a diversion under the threshold cannot have become a span at all. If you \
+cannot name a plausible different undertaking on return, the doubt is not a thread question; \
+omit it.
 In general, do NOT ask the person whether something was "a quick detour or the start of a new \
 focus" - that answer mixes two facts: whether it was a separate thread (theirs to say) and \
 whether it went on long and coherently enough to be its own span (the app records the data and \
@@ -231,14 +238,21 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
             ap = json.loads(r["probs"]).get("antecedent") or {}
         except ValueError:
             continue
-        if ap and max(ap.values()) < 0.6:
+        if ap and ante_top(ap) < 0.6:
             out.append({"segment_id": r["segment_id"], "source": "thread_link",
                         "reason": (f"the evaluator was torn about which thread this continues "
-                                   f"(top attachment only {max(ap.values()):.0%} confident)"),
+                                   f"(top attachment only {ante_top(ap):.0%} confident)"),
                         "ts": r["start"]})
     out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
     out.sort(key=lambda x: ({"coherence": 0, "propagation": 1, "audit": 2, "ensemble": 3}.get(x["source"], 4), -x["ts"]))
     return out
+
+
+def ante_top(ap: dict) -> float:
+    """The evaluator's confidence in its top thread attachment, with the candidates renormalized
+    to sum to 1 (rows stored before 2026-11-05 may carry a lone candidate at 0.2)."""
+    tot = sum(ap.values())
+    return max(ap.values()) / tot if tot > 0 else 0.0
 
 
 PASSTHROUGH_LABEL = "Neither - just a window I passed through or had open, not actually looked at"
@@ -273,7 +287,7 @@ def _uncertainty(conn, segment_id: int, source: str) -> float:
             pr = json.loads(row["probs"])
             tops = [max(pr[k].values()) for k in ("content", "switch") if pr.get(k)]
             if source == "thread_link" and pr.get("antecedent"):
-                tops = [max(pr["antecedent"].values())]
+                tops = [ante_top(pr["antecedent"])]
             if tops:
                 u = 1.0 - min(tops)
         except (ValueError, AttributeError, TypeError):

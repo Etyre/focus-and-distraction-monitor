@@ -365,6 +365,13 @@ class ChunkEvaluator:
                     if rsw == "interruption":
                         cands = []  # a new thread has no antecedent
                     cands.sort(key=lambda x: -x[1])
+                    # The candidates' probabilities are conditional on same-thread and must sum
+                    # to 1. The model sometimes returns one candidate carrying 0.2 (or three
+                    # summing to 0.7); taken at face value that reads as doubt about the
+                    # attachment and raises a pointless review question. Renormalize.
+                    tot = sum(p for _, p in cands)
+                    if tot > 0:
+                        cands = [(i, p / tot) for i, p in cands]
                     ante = cands[0][0] if cands else None
                     if cands:
                         comb["antecedent"] = {str(i): p for i, p in cands}

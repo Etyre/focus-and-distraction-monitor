@@ -626,7 +626,7 @@ async function reopenCardQuestion(id){
 function qSettled(q){return q.status==='answered'||q.status==='unsure'||q.status==='none';}
 // Why this question is where it is in the queue: what an answer could move, and how unsure the model is.
 function qPriorityLine(q){if(!q||q.tier==null||q.pending||qSettled(q))return '';
-  const u=q.uncertainty!=null?` · model ${Math.round(100*(1-q.uncertainty))}% sure`:'';
+  const u=q.uncertainty!=null?` · model ${Math.round(100*(1-q.uncertainty))}% sure${q.source==='thread_link'?' which thread this continues':''}`:'';
   return q.tier==='priority'?`<div class="small" style="margin:4px 0;color:var(--taskchange)"><b>⚑ priority</b> — ${esc(q.stakes_text||'')}${u}</div>`
     :`<div class="muted small" style="margin:4px 0">routine — ${esc(q.stakes_text||'no effect on the day\'s metrics')}${u}</div>`;}
 function qOptButtons(q,fn){const done=qSettled(q);
