@@ -415,7 +415,7 @@ def api_switch(switch_id: int):
     to_id = full["to"]["id"]
     import json as _json
     # An answered question stays on the card (greyed, changeable) - a misclick must be easy to fix.
-    qrow = c.execute("SELECT * FROM review_questions WHERE segment_id=? AND status IN ('open','answered','unsure')"
+    qrow = c.execute("SELECT * FROM review_questions WHERE segment_id=? AND status IN ('open','answered','unsure','none')"
                      " ORDER BY (status='open') DESC, created DESC LIMIT 1", (to_id,)).fetchone()
     full["question"] = None
     if qrow:
@@ -711,7 +711,7 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
     with db.tx(c):
         # Re-answering (fixing a misclick): first put back what the earlier answer overwrote.
         old_u = (_undo_question_answer(c, q["undo"]) if q["status"] == "answered"
-                 else (_json.loads(q["undo"]) if q["status"] == "unsure" and q["undo"] else {}))
+                 else (_json.loads(q["undo"]) if q["status"] in ("unsure", "none") and q["undo"] else {}))
         ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
         undo = {"uncertain": old_u.get("uncertain", ev0["uncertain"] if ev0 else None)}
         if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None:
@@ -774,7 +774,7 @@ def api_question_reopen(qid: int):
     q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
     if not q:
         raise HTTPException(404)
-    if q["status"] not in ("answered", "unsure"):
+    if q["status"] not in ("answered", "unsure", "none"):
         return {"ok": True}
     with db.tx(c):
         u = _undo_question_answer(c, q["undo"]) if q["status"] == "answered" else (_json.loads(q["undo"]) if q["undo"] else {})
@@ -789,13 +789,10 @@ class UnsureReq(BaseModel):
     note: str | None = None
 
 
-@app.post("/api/questions/{qid}/unsure")
-def api_question_unsure(qid: int, body: UnsureReq):
-    """'I can't tell': the question is resolved without a ruling - the model's judgment stands,
-    the needs-review flag clears, and the record of an unanswerable doubt is kept so the question
-    generator learns which doubts are not worth raising. Reopen puts it back."""
+def _settle_without_ruling(c, qid: int, status: str, answer: str, note: str | None) -> dict:
+    """Resolve a question without choosing an option. Any earlier answer is undone; the
+    needs-review flag clears (the person has looked); the record is kept for the generator."""
     import json as _json
-    c = conn()
     q = c.execute("SELECT * FROM review_questions WHERE id=?", (qid,)).fetchone()
     if not q:
         raise HTTPException(404)
@@ -804,16 +801,34 @@ def api_question_unsure(qid: int, body: UnsureReq):
             _undo_question_answer(c, q["undo"])
             undo = _json.loads(q["undo"]) if q["undo"] else {}
             undo = {"uncertain": undo.get("uncertain")}
-        elif q["status"] == "unsure":
+        elif q["status"] in ("unsure", "none"):
             undo = _json.loads(q["undo"]) if q["undo"] else {}
         else:
             ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
             undo = {"uncertain": ev0["uncertain"] if ev0 else None}
-        c.execute("UPDATE review_questions SET status='unsure', answer=?, answer_index=NULL, note=?, answered_at=?, undo=?"
-                  " WHERE id=?", ("(can't tell)", (body.note.strip() or None) if body.note else None, time.time(),
+        c.execute("UPDATE review_questions SET status=?, answer=?, answer_index=NULL, note=?, answered_at=?, undo=?"
+                  " WHERE id=?", (status, answer, (note.strip() or None) if note else None, time.time(),
                                   _json.dumps(undo), qid))
         c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     return {"ok": True}
+
+
+@app.post("/api/questions/{qid}/unsure")
+def api_question_unsure(qid: int, body: UnsureReq):
+    """'I can't tell': the question is resolved without a ruling - the model's judgment stands,
+    the needs-review flag clears, and the record of an unanswerable doubt is kept so the question
+    generator learns which doubts are not worth raising. Reopen puts it back."""
+    return _settle_without_ruling(conn(), qid, "unsure", "(can't tell)", body.note)
+
+
+@app.post("/api/questions/{qid}/none")
+def api_question_none(qid: int, body: UnsureReq):
+    """'None of the above': the person knows what happened but no option says it. Nothing is
+    written to the segment's judgment (there is no option to write); the note is the record in
+    their words, and the evaluator chat under the question is where it becomes a judgment - a
+    proposal applied there is appended as a new option and answers the question. The generator
+    is shown these so its options cover the real readings next time."""
+    return _settle_without_ruling(conn(), qid, "none", "(none of the options)", body.note)
 
 
 @app.post("/api/questions/{qid}/dismiss")

@@ -561,12 +561,24 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         qrow = conn.execute("SELECT * FROM review_questions WHERE id=?", (question_id,)).fetchone()
         if qrow is not None:
             opts = "\n".join(f"  {n}. {o.get('label')}" for n, o in enumerate(_json.loads(qrow["options"]), 1))
-            preface += (f"[The person was shown this review question about that segment and is asking "
-                        f"a follow-up before answering it. Help them decide: say concretely what you "
-                        f"saw (screens, titles, times), what would distinguish the options, and which "
-                        f"option you lean toward and how sure you are. Be brief.\n"
-                        f"Context shown: {qrow['context']}\n"
-                        f"Question: {qrow['question']}\nOptions:\n{opts}]\n\n")
+            if qrow["status"] == "none":
+                # Every option was rejected: the job is to find the reading that fits and hand
+                # it back as a proposal (which becomes a new option when applied).
+                preface += (f"[The person was shown this review question about that segment and answered "
+                            f"NONE OF THE ABOVE - no option describes what actually happened"
+                            + (f"; their note: \"{qrow['note']}\"" if qrow["note"] else "")
+                            + f". Work out with them what it really was (ask one concrete thing if you "
+                            f"must), then call propose_judgment with the answer in their words so it can "
+                            f"be applied. Be brief.\n"
+                            f"Context shown: {qrow['context']}\n"
+                            f"Question: {qrow['question']}\nRejected options:\n{opts}]\n\n")
+            else:
+                preface += (f"[The person was shown this review question about that segment and is asking "
+                            f"a follow-up before answering it. Help them decide: say concretely what you "
+                            f"saw (screens, titles, times), what would distinguish the options, and which "
+                            f"option you lean toward and how sure you are. Be brief.\n"
+                            f"Context shown: {qrow['context']}\n"
+                            f"Question: {qrow['question']}\nOptions:\n{opts}]\n\n")
     for i, m in enumerate(messages):
         role = "assistant" if m.get("role") == "assistant" else "user"
         text = (m.get("text") or "").strip()

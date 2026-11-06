@@ -504,7 +504,7 @@ function renderQuestion(){
     :`<div style="margin:10px 0"><b>${esc(q.question)}</b></div>
     <div class="row" style="flex-wrap:wrap;gap:6px;margin:8px 0">
       ${qOptButtons(q,'answerQuestion')}
-      ${qSettled(q)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands, and the generator learns not to ask this kind of thing" onclick="unsureQuestion(${q.id})">I can't tell</button> <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>`}
+      ${qSettled(q)?'':`<button class="small" style="border-color:var(--muted)" title="you know what happened but no option says it — nothing is changed; tell the evaluator below what it really was and apply its proposal (it becomes a new option)" onclick="noneQuestion(${q.id})">None of the above</button> <button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands, and the generator learns not to ask this kind of thing" onclick="unsureQuestion(${q.id})">I can't tell</button> <button class="small" style="border-color:var(--muted)" onclick="dismissQuestion(${q.id})">not worth answering</button>`}
     </div>${qAnsweredLine(q,'reopenQuestion')}${qNoteField(q,'saveQuestionNote')}`;
   $('#reviewCard').innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Review question</b> · ${new Date(q.seg_start*1000).toLocaleString()} <span class="muted small">· ${qSourceName[q.source]||q.source}${q.chat_message_id?` · <a href="#" onclick="event.preventDefault();openChatMsg(${q.chat_message_id})">open the conversation</a>`:''}</span></div><div>${qqi+1}/${qQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button></div></div>
@@ -597,11 +597,12 @@ async function saveNote(id,idx){
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:qNoteVal(id)})});
   qNoteSaved=id;}
 async function saveUnsureNote(id){await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});qNoteSaved=id;}
+async function saveNoneNote(id){await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});qNoteSaved=id;}
 async function saveQuestionNote(id){const q=qQueue.find(x=>x.id===id);if(!q)return;const note=qNoteVal(id);
-  if(q.status==='unsure')await saveUnsureNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
+  if(q.status==='unsure')await saveUnsureNote(id);else if(q.status==='none')await saveNoneNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
   q.note=note;renderQuestion();}
 async function saveCardQuestionNote(id){const q=current&&current.question;if(!q||q.id!==id)return;
-  if(q.status==='unsure')await saveUnsureNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
+  if(q.status==='unsure')await saveUnsureNote(id);else if(q.status==='none')await saveNoneNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
   renderSwitch(current.switch.id);}
 async function answerQuestion(id,idx){
   const note=qNoteVal(id);
@@ -622,7 +623,7 @@ async function reopenCardQuestion(id){
 }
 // Option buttons for a review question. Once answered: the chosen one is marked, the rest are
 // greyed but still clickable - clicking another one replaces the answer (the server undoes the first).
-function qSettled(q){return q.status==='answered'||q.status==='unsure';}
+function qSettled(q){return q.status==='answered'||q.status==='unsure'||q.status==='none';}
 // Why this question is where it is in the queue: what an answer could move, and how unsure the model is.
 function qPriorityLine(q){if(!q||q.tier==null||q.pending||qSettled(q))return '';
   const u=q.uncertainty!=null?` · model ${Math.round(100*(1-q.uncertainty))}% sure`:'';
@@ -631,12 +632,23 @@ function qPriorityLine(q){if(!q||q.tier==null||q.pending||qSettled(q))return '';
 function qOptButtons(q,fn){const done=qSettled(q);
   return q.options.map((o,i)=>{const mine=done&&q.answer_index===i;
     return `<button style="text-align:left;${mine?'border-color:var(--focus);font-weight:600':(done?'opacity:.45':'')}" ${mine?'disabled':''} title="${done&&!mine?'change your answer to this':''}" onclick="${fn}(${q.id},${i})">${mine?'✓ ':''}${i+1}. ${esc(o.label)}</button>`;}).join('');}
-function qAnsweredLine(q,undoFn){if(q.status==='unsure')return `<div class="muted small" style="margin:4px 0">? you couldn't tell — the model's judgment stands; click an option if you work it out · <a href="#" onclick="${undoFn}(${q.id});return false">clear</a></div>`;
+function qAnsweredLine(q,undoFn){if(q.status==='none')return `<div class="small" style="margin:4px 0;color:var(--taskchange)">✗ none of the options fit — nothing was changed. Tell the evaluator below what was really going on; its proposed answer, once applied, becomes a new option here. Or click an option if one does fit after all · <a href="#" onclick="${undoFn}(${q.id});return false">clear</a></div>`;
+  if(q.status==='unsure')return `<div class="muted small" style="margin:4px 0">? you couldn't tell — the model's judgment stands; click an option if you work it out · <a href="#" onclick="${undoFn}(${q.id});return false">clear</a></div>`;
   return q.status==='answered'?`<div class="muted small" style="margin:4px 0">✓ answered — click another option to change it · <a href="#" onclick="${undoFn}(${q.id});return false">clear my answer</a></div>`:'';}
 async function unsureQuestion(id){
   await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});
   const q=qQueue.find(x=>x.id===id);if(q){q.status='unsure';q.answer_index=null;}
   if(reviewMode==='question')renderQuestion();else if(current){if(current.question&&current.question.id===id){current.question.status='unsure';current.question.answer_index=null;}renderSwitch(current.switch.id);}}
+// 'None of the above': settle the question without a ruling and move the person's note into the
+// evaluator chat (unsent) - the proposal that comes back is the way the real answer gets recorded.
+async function noneQuestion(id){
+  const note=qNoteVal(id);
+  await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:note})});
+  const q=qQueue.find(x=>x.id===id);if(q){q.status='none';q.answer_index=null;q.note=note;}
+  let inp=null;
+  if(reviewMode==='question'){renderQuestion();inp=$('#qchatinput');}
+  else if(current){if(current.question&&current.question.id===id){Object.assign(current.question,{status:'none',answer_index:null,note:note});}renderSwitch(current.switch.id);inp=$('#chatinput');}
+  if(inp){if(!inp.value.trim())inp.value=note?`None of those options fit. What actually happened: ${note}`:'None of those options fit. What actually happened was: ';inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}}
 async function dismissQuestion(id){
   await api(`/api/questions/${id}/dismiss`,{method:'POST'});
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
@@ -897,7 +909,7 @@ async function renderSwitch(id){
     </div>`;
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
-    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid ${qSettled(f.question)?'var(--grid)':'var(--taskchange)'};border-radius:6px"><b${qSettled(f.question)?' class="muted"':''}>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}${f.question.chat_message_id?` · <a href="#" onclick="event.preventDefault();openChatMsg(${f.question.chat_message_id})">open the conversation</a>`:''}</span>${qPriorityLine(f.question)}<div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${qOptButtons(f.question,'answerCardQuestion')}${qSettled(f.question)?'':`<button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands" onclick="unsureQuestion(${f.question.id})">I can't tell</button>`}</div>${qAnsweredLine(f.question,'reopenCardQuestion')}${qNoteField(f.question,'saveCardQuestionNote')}</div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
+    ${f.question?`<div style="margin:8px 0;padding:8px;border:1.5px solid ${qSettled(f.question)?'var(--grid)':'var(--taskchange)'};border-radius:6px"><b${qSettled(f.question)?' class="muted"':''}>Review question</b> <span class="muted small">· ${qSourceName[f.question.source]||f.question.source}${f.question.chat_message_id?` · <a href="#" onclick="event.preventDefault();openChatMsg(${f.question.chat_message_id})">open the conversation</a>`:''}</span>${qPriorityLine(f.question)}<div class="small" style="margin:4px 0">${esc(f.question.context)}</div><div style="margin:6px 0"><b>${esc(f.question.question)}</b></div><div class="row" style="flex-wrap:wrap;gap:6px">${qOptButtons(f.question,'answerCardQuestion')}${qSettled(f.question)?'':`<button class="small" style="border-color:var(--muted)" title="you know what happened but no option says it — nothing is changed; tell the evaluator below what it really was and apply its proposal (it becomes a new option)" onclick="noneQuestion(${f.question.id})">None of the above</button> <button class="small" style="border-color:var(--muted)" title="you looked and genuinely can't tell — the model's judgment stands" onclick="unsureQuestion(${f.question.id})">I can't tell</button>`}</div>${qAnsweredLine(f.question,'reopenCardQuestion')}${qNoteField(f.question,'saveCardQuestionNote')}</div>`:(f.question_pending?`<div style="margin:8px 0;padding:8px;border:1.5px dashed var(--taskchange);border-radius:6px"><b>✍︎ Review question being written…</b> <span class="muted small">this segment is flagged; the model is composing its question — it will be here on reload in a few seconds</span></div>`:'')}
     ${switchTL(f)}
     ${SCRUB.moments.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · ${detailTarget==='#reviewCard'?'⌥←/⌥→ jump spans · ⌘←/⌘→ previous/next review item':'⌘←/⌘→ jump spans'}</div>`:''}
     <div class="shots" style="margin:10px 0">

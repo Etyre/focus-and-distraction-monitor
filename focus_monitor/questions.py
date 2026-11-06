@@ -410,6 +410,24 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             "Doubts of the same shape (same kind of moment, same kind of distinction) are not worth raising: "
             "if a DOUBT below is one of those, either ask something the person CAN know instead, or omit it.\n"
             + "\n".join(ulines)})
+    missed = conn.execute("""SELECT q.question, q.options, q.note, g.app, g.domain, g.title
+                             FROM review_questions q JOIN segments g ON g.id = q.segment_id
+                             WHERE q.status = 'none' ORDER BY q.answered_at DESC LIMIT 12""").fetchall()
+    if missed:
+        mlines = []
+        for u in missed:
+            try:
+                labels = "; ".join(o.get("label", "") for o in json.loads(u["options"])
+                                   if o.get("label") != PASSTHROUGH_LABEL)
+            except ValueError:
+                labels = ""
+            mlines.append(f"- [{u['app']} {u['domain'] or ''} | {(u['title'] or '')[:50]}] {u['question']}"
+                          f"  (offered: {labels})" + (f"  (what it really was, in their words: {u['note']})" if u["note"] else ""))
+        content_blocks.append({"type": "text", "text":
+            "For these recent questions the person answered NONE OF THE ABOVE - the options did not "
+            "include what actually happened. The options must cover the plausible readings: when a "
+            "DOUBT below is of the same shape, include the kind of reading they named.\n"
+            + "\n".join(mlines)})
     content_blocks.append({"type": "text", "text": "\n\n".join(parts)
               + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id). "
               "A DOUBT may be omitted when no question the person could answer would resolve it."})
