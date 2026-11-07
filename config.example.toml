@@ -60,11 +60,8 @@ few_shot_reviews = 40          # recent human reviews shown to Claude as example
 # Free text shown to the Claude classifier. Describe your work, habits, tools,
 # what tends to be a distraction for you vs. an intentional choice.
 about_me = """
-I read, take notes, and write essays. Flipping between a reading window and my notes is
-normal focused work. Asking Claude a question that branches off what I'm reading/writing is
-still focus; asking about a random unrelated thought is an interruption. Email is sometimes
-a deliberate choice and sometimes a distraction. LessWrong, Amazon, Bumble and blocked URLs
-are usually distractions - unless I settle in and start taking notes on something.
+Describe your work, habits and tools here: what counts as focused work for you, what is a
+deliberate choice vs. a distraction. This text is shown to the Claude classifier verbatim.
 """
 
 # Domains that are usually stimulation-seeking for you.

@@ -1,5 +1,40 @@
+# environments / build output
 .venv/
 __pycache__/
 *.pyc
-.DS_Store
 dist/
+build/
+.DS_Store
+.claude/settings.local.json
+
+# personal config (committed twin: config.example.toml)
+config.toml
+env
+*.env
+!*.example
+
+# state and data (live in ~/Library/Application Support/FocusMonitor, never here)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite*
+*.jsonl
+*.log
+screenshots/
+
+# large media / exports
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+*.mov
+*.m4a
+*.wav
+*.csv
+*.xlsx
+*.zip
+*.icns
+*.pkl
+*.joblib

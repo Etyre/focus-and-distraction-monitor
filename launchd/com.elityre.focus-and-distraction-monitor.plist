@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Headless variant (no menu bar eye). The recommended way to run is the Login Item
+     dist/Focus Monitor.app (see README); use this only if you want launchd supervision instead.
+     The API key is read from the Keychain (service FocusMonitor) or Application Support/FocusMonitor/env. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.elityre.focus-and-distraction-monitor</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/elityre/Documents/agent-coding/focus-and-distraction-monitor/.venv/bin/python</string>
+    <string>-m</string><string>focus_monitor</string><string>run</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/elityre/Documents/agent-coding/focus-and-distraction-monitor</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/elityre/Library/Logs/focus-and-distraction-monitor.launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/elityre/Library/Logs/focus-and-distraction-monitor.launchd.log</string>
+</dict></plist>

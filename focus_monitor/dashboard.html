@@ -147,6 +147,27 @@ function cycleTheme(){const t=THEMES[(THEMES.indexOf(savedTheme())+1)%THEMES.len
 applyTheme(savedTheme());
 document.addEventListener('DOMContentLoaded',()=>applyTheme(savedTheme()));
 
+// ---- drafts are never lost: every text field saves to localStorage as you type, keyed by field +
+// the record it belongs to (switch, segment, question, span, day), and is restored the moment the
+// field is rendered again. Cleared only when the text was successfully sent or saved.
+function draftKey(el){
+  if(!el||!el.id||!(el.tagName==='TEXTAREA'||(el.tagName==='INPUT'&&(!el.type||el.type==='text'||el.type==='search'))))return null;
+  const id=el.id;let field=id,rec='';
+  if(id==='daychatinput')rec=$('#daypick').value||'';
+  else if(id==='qchatinput')rec=currentQSeg??'';
+  else if(id.startsWith('qNote')){field='qNote';rec=id.slice(5);}
+  else if(id==='spanNote'||id==='spanchatinput')rec=(typeof spanChatKey==='function'&&spanChatKey())||'';
+  else if(id==='segNoteEv')rec=(typeof current!=='undefined'&&current)?current.to.id:'';
+  else if(id==='chatinput'||id==='note')rec=(typeof current!=='undefined'&&current)?current.switch.id:'';
+  return `fm.draft.${field}.${rec}`;}
+function draftSave(el){const k=draftKey(el);if(!k)return;try{if(el.value)localStorage.setItem(k,el.value);else localStorage.removeItem(k);}catch(e){}}
+function draftClear(el,blank=true){if(!el)return;const k=draftKey(el);try{if(k)localStorage.removeItem(k);}catch(e){}if(blank)el.value='';}
+function draftRestore(root){const els=root.matches&&root.matches('textarea,input')?[root]:[];if(root.querySelectorAll)els.push(...root.querySelectorAll('textarea,input'));
+  for(const el of els){const k=draftKey(el);if(!k)continue;try{const v=localStorage.getItem(k);if(v!=null&&v!==el.value)el.value=v;}catch(e){}}}
+document.addEventListener('input',e=>draftSave(e.target));
+new MutationObserver(ms=>{for(const m of ms)for(const n of m.addedNodes)if(n.nodeType===1)draftRestore(n);}).observe(document.documentElement,{childList:true,subtree:true});
+document.addEventListener('DOMContentLoaded',()=>draftRestore(document.body));
+
 const $=s=>document.querySelector(s);
 const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 const fmtMin=m=>m>=60?`${Math.floor(m/60)}h ${Math.round(m%60)}m`:`${Math.round(m)}m`;
@@ -191,6 +212,7 @@ function setToday(){$('#daypick').value=new Date(Date.now()-DAY_START_HOUR*3600*
 function shiftDay(n){const d=new Date($('#daypick').value+'T12:00:00');d.setDate(d.getDate()+n);$('#daypick').value=d.toLocaleDateString('en-CA');loadDay();}
 async function loadDay(){
   if(!$('#daypick').value)setToday();
+  {const inp=$('#daychatinput');if(inp){inp.value='';draftRestore(inp);}}  // this day's unsent question, if any
   const d=await api('/api/day?day='+$('#daypick').value);
   DAY_STAMP=d.stamp;
   const m=d.metrics;
@@ -576,14 +598,14 @@ function renderQChat(){const log=$('#qchatlog');if(!log)return;const k='q'+curre
   log.innerHTML=(CHAT[k]||[]).map(m=>chatMsgHtml(m,k)).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,inp=$('#qchatinput'),t=inp.value.trim();if(!t)return;
-  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:t});inp.value='';renderQChat();
+  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:t});draftClear(inp);renderQChat();
   const log=$('#qchatlog');log.innerHTML+='<div class="cmsg pending2">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
   try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k],question_id:(qQueue[qqi]||{}).id||null})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
+  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#qchatinput');if(i2&&!i2.value){i2.value=t;draftSave(i2);}}
   renderQChat();}
 async function answerCardQuestion(id,idx){
   const note=qNoteVal(id);
-  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});draftClear($('#qNote'+id),false);
   const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
   if(current)renderSwitch(current.switch.id);
 }
@@ -594,10 +616,10 @@ function qNoteVal(id){const el=$('#qNote'+id);return (el&&el.value.trim())||null
 function qNoteField(q,saveFn){const done=qSettled(q),just=qNoteSaved===q.id;if(just)qNoteSaved=null;
   return `<div class="row" style="gap:6px;align-items:flex-end;margin-top:6px;flex-wrap:nowrap"><textarea id="qNote${q.id}" rows="2" style="flex:1" placeholder="optional note about your answer — context the model should know (used as a precedent)" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();${done?`${saveFn}(${q.id})`:''}}">${esc(q.note||'')}</textarea>${done?`<button class="primary" style="flex:none" title="⌘⏎" onclick="${saveFn}(${q.id})">Save note</button>`:''}</div><div class="muted small" style="margin-top:2px">${done?(just?'✓ note saved':'edit the note and press Save note (⌘⏎)'):'saved along with the option you click'}</div>`;}
 async function saveNote(id,idx){
-  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:qNoteVal(id)})});
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:qNoteVal(id)})});draftClear($('#qNote'+id),false);
   qNoteSaved=id;}
-async function saveUnsureNote(id){await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});qNoteSaved=id;}
-async function saveNoneNote(id){await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});qNoteSaved=id;}
+async function saveUnsureNote(id){await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});draftClear($('#qNote'+id),false);qNoteSaved=id;}
+async function saveNoneNote(id){await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});draftClear($('#qNote'+id),false);qNoteSaved=id;}
 async function saveQuestionNote(id){const q=qQueue.find(x=>x.id===id);if(!q)return;const note=qNoteVal(id);
   if(q.status==='unsure')await saveUnsureNote(id);else if(q.status==='none')await saveNoneNote(id);else if(q.answer_index!=null)await saveNote(id,q.answer_index);else return;
   q.note=note;renderQuestion();}
@@ -606,7 +628,7 @@ async function saveCardQuestionNote(id){const q=current&&current.question;if(!q|
   renderSwitch(current.switch.id);}
 async function answerQuestion(id,idx){
   const note=qNoteVal(id);
-  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});
+  await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});draftClear($('#qNote'+id),false);
   // The question stays up, marked answered, so a misclick is one click to fix; ⌘→ / s moves on.
   const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
   renderQuestion();
@@ -636,14 +658,14 @@ function qAnsweredLine(q,undoFn){if(q.status==='none')return `<div class="small"
   if(q.status==='unsure')return `<div class="muted small" style="margin:4px 0">? you couldn't tell — the model's judgment stands; click an option if you work it out · <a href="#" onclick="${undoFn}(${q.id});return false">clear</a></div>`;
   return q.status==='answered'?`<div class="muted small" style="margin:4px 0">✓ answered — click another option to change it · <a href="#" onclick="${undoFn}(${q.id});return false">clear my answer</a></div>`:'';}
 async function unsureQuestion(id){
-  await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});
+  await api(`/api/questions/${id}/unsure`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:qNoteVal(id)})});draftClear($('#qNote'+id),false);
   const q=qQueue.find(x=>x.id===id);if(q){q.status='unsure';q.answer_index=null;}
   if(reviewMode==='question')renderQuestion();else if(current){if(current.question&&current.question.id===id){current.question.status='unsure';current.question.answer_index=null;}renderSwitch(current.switch.id);}}
 // 'None of the above': settle the question without a ruling and move the person's note into the
 // evaluator chat (unsent) - the proposal that comes back is the way the real answer gets recorded.
 async function noneQuestion(id){
   const note=qNoteVal(id);
-  await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:note})});
+  await api(`/api/questions/${id}/none`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:note})});draftClear($('#qNote'+id),false);
   const q=qQueue.find(x=>x.id===id);if(q){q.status='none';q.answer_index=null;q.note=note;}
   let inp=null;
   if(reviewMode==='question'){renderQuestion();inp=$('#qchatinput');}
@@ -727,11 +749,11 @@ function renderDayChat(){const log=$('#daychatlog');if(!log)return;
   const hl=HILITE_MSG&&log.querySelector(`[data-mid="${HILITE_MSG}"]`);
   if(hl){hl.scrollIntoView({block:'center'});HILITE_MSG=null;}else log.scrollTop=log.scrollHeight;}
 async function sendDayChat(){const day=$('#daypick').value,k=dayChatKey(),inp=$('#daychatinput'),q=inp.value.trim();if(!day||!q)return;
-  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});inp.value='';renderDayChat();
+  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});draftClear(inp);renderDayChat();
   const log=$('#daychatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
   let changed=false;
   try{const r=await api('/api/day/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({day,messages:CHAT[k]})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});changed=!!(r.applied&&r.applied.length);}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
+  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});if(!inp.value){inp.value=q;draftSave(inp);}}
   renderDayChat();if(changed)loadDay();}
 async function undoChatSpanEdit(start,end){try{await api(`/api/span/review?start=${start}&end=${end}`,{method:'DELETE'});}catch(e){alert('could not undo: '+e.message);return;}loadDay();}
 // A 💬 flag anywhere opens the conversation the judgment came from.
@@ -747,14 +769,15 @@ function renderSpanChat(){const log=$('#spanchatlog');if(!log)return;
   log.innerHTML=(CHAT['sp'+spanChatKey()]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendSpanChat(){if(!currentSpan)return;const k='sp'+spanChatKey(),inp=$('#spanchatinput'),q=inp.value.trim();if(!q)return;
-  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});inp.value='';renderSpanChat();
+  CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});draftClear(inp);renderSpanChat();
   const log=$('#spanchatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
   try{const r=await api('/api/span/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:currentSpan.start,end:currentSpan.end,messages:CHAT[k]})});CHAT[k].push({role:'assistant',text:r.reply});}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});}
+  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#spanchatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
   renderSpanChat();}
 async function spanReview(verdict,subtype){
   const sp=currentSpan;
   await api('/api/span/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:sp.start,end:sp.end,verdict:verdict,subtype:subtype,note:($('#spanNote')&&$('#spanNote').value)||null})});
+  draftClear($('#spanNote'),false);
   if(spanOneOff){loadQueue();return;}
   sqi++;
   if(sqi<spanQueue.length)renderSpanReview();else loadQueue();
@@ -872,6 +895,7 @@ async function segEdit(field,val){
   }
   const note=($('#segNoteEv')&&$('#segNoteEv').value.trim())||null;
   await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...segEvalSel,note:note})});
+  draftClear($('#segNoteEv'),false);
   renderSwitch(current.switch.id);
 }
 async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
@@ -934,7 +958,7 @@ async function renderSwitch(id){
 // Conversations are stored server-side; pull one in the first time its panel opens this session.
 async function chatLoad(key,kind,ref,paint){if(CHAT[key])return;
   try{const h=await api(`/api/chat/${kind}/${ref}`);if(h.length&&!CHAT[key]){CHAT[key]=h;paint();}}catch(e){}}
-async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});if(detailTarget==='#segCard')renderSwitch(id);else next();}
+async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});draftClear(nEl,false);if(detailTarget==='#segCard')renderSwitch(id);else next();}
 async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
 function skip(){reviewStep(1);}
 function next(){if(reviewMode!=='switch')return reviewStep(1);qi++;if(qi<queue.length)renderSwitch(queue[qi].switch.id);else loadQueue();}
@@ -942,10 +966,10 @@ function renderChat(id){const log=$('#chatlog');if(!log)return;
   log.innerHTML=(CHAT[id]||[]).map(m=>chatMsgHtml(m,String(id))).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#chatinput'),q=inp.value.trim();if(!q)return;
-  CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});inp.value='';renderChat(id);
+  CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});draftClear(inp);renderChat(id);
   const log=$('#chatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
   try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id],question_id:(current.question||{}).id||null})});CHAT[id].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
-  catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});}
+  catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#chatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
   renderChat(id);}
 document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#review'&&(e.metaKey||e.ctrlKey)&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){reviewStep(e.key==='ArrowRight'?1:-1);e.preventDefault();}else if((h==='#segments'||h==='#review')&&(current||reviewMode==='question')&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){
     const dir=e.key==='ArrowRight'?1:-1;

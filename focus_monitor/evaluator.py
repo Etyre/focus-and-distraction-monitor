@@ -594,13 +594,17 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
             preface = ""
         api_msgs.append({"role": role, "content": text})
     model = run["model"] if run is not None and run["model"] else cfg.claude_model
+    system = llm.with_preamble(system)
+    tools = CHAT_TOOLS + [llm.CONTACT_TOOL]
     resp = ev.client.messages.create(model=model, max_tokens=1024, system=system, messages=api_msgs,
-                                     tools=CHAT_TOOLS, output_config={"effort": "low"})
+                                     tools=tools, output_config={"effort": "low"})
     from .classifiers.claude_vision import _cost
-    text = ("(Claude declined to answer that.)" if resp.stop_reason == "refusal"
+    rec = llm.contacted("evaluator_chat", model, system, api_msgs, resp, tools)
+    text = (llm.contact_notice(rec) if rec
+            else "(Claude declined to answer that.)" if resp.stop_reason == "refusal"
             else "".join(b.text for b in resp.content if b.type == "text").strip())
     proposal: dict = {}
-    for b in resp.content:
+    for b in ([] if rec else resp.content):
         if b.type != "tool_use":
             continue
         if b.name == "propose_judgment":

@@ -5,7 +5,7 @@ import logging
 
 import anthropic
 
-from . import LABEL_HELP, db
+from . import LABEL_HELP, db, llm
 from .classifiers.base import build_context
 from .classifiers.claude_vision import _b64
 from .config import Config
@@ -41,9 +41,9 @@ class ReviewChat:
         self.client = anthropic.Anthropic()
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
-        self.system = SYSTEM.format(
+        self.system = llm.with_preamble(SYSTEM.format(
             labels="\n".join(f"- {k}: {v}" for k, v in LABEL_HELP.items()),
-            about_me=cfg.about_me.strip() or "(no description given)")
+            about_me=cfg.about_me.strip() or "(no description given)"))
 
     def _context_blocks(self, conn, switch_id: int) -> list[dict]:
         ctx = build_context(conn, switch_id)
@@ -93,14 +93,20 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024)
     api_msgs = _api_messages(ctx_blocks, messages)
     if not api_msgs:
         return "", 0.0
+    system = llm.with_preamble(system)
+    tools = [llm.CONTACT_TOOL]
     resp = client.messages.create(
         model=cfg.claude_model, max_tokens=max_tokens,
         system=system,
         messages=api_msgs,
+        tools=tools,
         output_config={"effort": "low"},
     )
     from .classifiers.claude_vision import _cost
     cost = _cost(resp.usage)
+    rec = llm.contacted("chat", cfg.claude_model, system, api_msgs, resp, tools)
+    if rec:
+        return llm.contact_notice(rec), cost
     if resp.stop_reason == "refusal":
         return "(Claude declined to answer that.)", cost
     return ("".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"), cost
@@ -194,8 +200,8 @@ class SpanChat:
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
         from .classifiers.claude_vision import _rules_doc
-        self.system = SPAN_SYSTEM.format(rules=_rules_doc(),
-                                         about_me=cfg.about_me.strip() or "(no description given)")
+        self.system = llm.with_preamble(SPAN_SYSTEM.format(
+            rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
 
     def _context_blocks(self, conn, start: float, end: float) -> list[dict]:
         import datetime as dt
@@ -405,8 +411,8 @@ class DayChat:
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
         from .classifiers.claude_vision import _rules_doc
-        self.system = DAY_SYSTEM.format(rules=_rules_doc(),
-                                        about_me=cfg.about_me.strip() or "(no description given)")
+        self.system = llm.with_preamble(DAY_SYSTEM.format(
+            rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
 
     def _context_blocks(self, conn, day) -> list[dict]:
         import datetime as dt
@@ -505,11 +511,16 @@ class DayChat:
         cost, text = 0.0, ""
         try:
             api_msgs = _api_messages(self._context_blocks(conn, day), messages)
+            tools = DAY_TOOLS + [llm.CONTACT_TOOL]
             for _ in range(8):
                 resp = self.client.messages.create(
                     model=self.cfg.claude_model, max_tokens=8192, system=self.system, messages=api_msgs,
-                    tools=DAY_TOOLS, output_config={"effort": "low"})
+                    tools=tools, output_config={"effort": "low"})
                 cost += _cost(resp.usage)
+                rec = llm.contacted("day_chat", self.cfg.claude_model, self.system, api_msgs, resp, tools)
+                if rec:   # the model wants Eli: no tool runs, no further turns
+                    text = llm.contact_notice(rec)
+                    break
                 if resp.stop_reason == "refusal":
                     text = "(Claude declined to answer that.)"
                     break

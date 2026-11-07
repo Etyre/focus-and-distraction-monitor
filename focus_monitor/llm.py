@@ -10,9 +10,17 @@ cfg.subscription_retry_min from now), after which the subscription is tried agai
 SDK failure falls back to the API for that one call. Chat calls that use tools stay on the API.
 
 Every call is logged to llm_calls (backend, tokens, API-equivalent cost, latency) so the two
-can be compared. The cost written into the existing cost_usd columns is the API-equivalent
+can be compared, and every successful one is appended to ~/.claude/app-usage/Focus-monitor.jsonl
+for the Claude usage dashboard (usage_log.py), which otherwise could not see subscription calls. The cost written into the existing cost_usd columns is the API-equivalent
 price on BOTH backends, so the daily budget keeps working as a usage governor either way;
 llm_calls says what was actually billed to the key.
+
+Every system prompt that goes through here starts with the shared preamble from
+~/Documents/agent-coding/shared (llm_contact.system_prompt), and every response is run through
+llm_contact.check: if the model asked to talk to Eli (the contact_eli tool on the API backend, or
+an "@ELI:" line on either), the contact is recorded in the LLM inbox, Eli is notified, and the
+call returns parsed_output=None with stop_reason "contact_eli" so the caller drops that task
+without retrying. The subscription backend runs with no tools, so there the marker is the way.
 """
 from __future__ import annotations
 
@@ -20,18 +28,24 @@ import asyncio
 import datetime as dt
 import logging
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from . import db
+sys.path.insert(0, "/Users/elityre/Documents/agent-coding/shared")
+import llm_contact  # noqa: E402  (shared/llm_contact.py: preamble, contact_eli tool, inbox)
+
+from . import db, usage_log
 from .config import (DATA_DIR, PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT,
                      load_config)
 
 log = logging.getLogger("llm")
 
 SDK_TIMEOUT_S = 300.0
+APP_NAME = "focus-monitor"      # how this app is named in the LLM inbox
+CONTACT_TOOL = llm_contact.CONTACT_TOOL
 
 
 @dataclass
@@ -51,6 +65,7 @@ class Result:
     backend: str = "api"
     latency_ms: int = 0
     cost_usd: float = 0.0
+    raw_response: Any = None   # what the backend returned, for llm_contact.check (subscription only)
 
 
 class SubscriptionLimit(Exception):
@@ -81,6 +96,7 @@ def _db():
     with _lock:
         if _conn is None:
             _conn = db.connect()
+            usage_log.backfill(_conn)   # calls made before this logging existed, or while the app was down
         return _conn
 
 
@@ -120,18 +136,21 @@ def subscription_available(cfg=None) -> bool:
 
 def _log(site: str, backend: str, model: str, effort: str | None, usage, latency_ms: int,
          ok: bool, error: str | None) -> None:
+    now = time.time()   # the same stamp goes to both logs, so a backfill can tell what is already logged
     try:
         c = _db()
         with _lock:
             c.execute("INSERT INTO llm_calls(ts, site, backend, model, effort, input_tokens, output_tokens,"
                       " cache_read, cache_write, cost_usd, latency_ms, ok, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (time.time(), site, backend, model, effort,
+                      (now, site, backend, model, effort,
                        getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0,
                        getattr(usage, "cache_read_input_tokens", 0) or 0,
                        getattr(usage, "cache_creation_input_tokens", 0) or 0,
                        call_cost(usage) if usage is not None else 0.0, latency_ms, int(ok), error))
     except Exception:
         log.exception("llm_calls log failed")
+    if ok and usage is not None:
+        usage_log.append(now, site, backend, model, usage, call_cost(usage))
 
 
 # ---------------------------------------------------------------- the door
@@ -141,11 +160,14 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
     cfg = cfg or _config()
     model = kw.get("model", "")
     effort = (kw.get("output_config") or {}).get("effort")
+    kw["system"] = with_preamble(kw.get("system"))
     if subscription_available(cfg):
         t0 = time.time()
         try:
             r = _sdk_parse(cfg, **kw)
             _log(site, "subscription", model, effort, r.usage, r.latency_ms, True, None)
+            if contacted(site, model, kw["system"], kw.get("messages"), r.raw_response):
+                r.parsed_output, r.stop_reason = None, "contact_eli"
             return r
         except SubscriptionLimit as e:
             _block(e.until, str(e))
@@ -156,6 +178,11 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
             _last_error = f"{type(e).__name__}: {e}"[:300]
             log.warning("subscription call failed at %s (%s) - using the API for this call", site, _last_error)
             _log(site, "subscription", model, effort, None, int((time.time() - t0) * 1000), False, _last_error)
+    # The API backend takes tools alongside structured output, so contact_eli rides along; a
+    # call to it comes back without parsed output, which every caller already treats as "no
+    # answer" and does not retry.
+    tools = [t for t in (kw.get("tools") or []) if t.get("name") != CONTACT_TOOL["name"]] + [CONTACT_TOOL]
+    kw["tools"] = tools
     t0 = time.time()
     try:
         resp = client.beta.messages.parse(**kw)
@@ -166,6 +193,8 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
     ms = int((time.time() - t0) * 1000)
     r = Result(resp.parsed_output, resp.usage, resp.stop_reason, "api", ms, call_cost(resp.usage))
     _log(site, "api", model, effort, resp.usage, ms, True, None)
+    if contacted(site, model, kw["system"], kw.get("messages"), resp, tools):
+        r.parsed_output, r.stop_reason = None, "contact_eli"
     return r
 
 
@@ -192,6 +221,44 @@ def _system_text(system) -> str:
     if isinstance(system, str):
         return system
     return "\n\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in (system or []))
+
+
+def with_preamble(system):
+    """The shared preamble in front of a system prompt (str or list of text blocks), once.
+    It goes inside the first block so an existing cache_control on that block still covers it."""
+    pre = llm_contact.preamble()
+    if system is None:
+        return pre
+    if isinstance(system, str):
+        return system if system.startswith(pre) else llm_contact.system_prompt(system)
+    blocks = [dict(b) if isinstance(b, dict) else {"type": "text", "text": str(b)} for b in system]
+    if not blocks:
+        return [{"type": "text", "text": pre}]
+    if not (blocks[0].get("text") or "").startswith(pre):
+        blocks[0]["text"] = llm_contact.system_prompt(blocks[0].get("text") or "")
+    return blocks
+
+
+def contacted(site: str, model: str, system, messages, response, tools=None) -> dict | None:
+    """Record a contact_eli call or an @ELI: line, if the response has one. Returns the inbox
+    record (truthy = stop this task, no retry), else None."""
+    try:
+        rec = llm_contact.check(app=APP_NAME, model=model, system=_system_text(system), messages=messages,
+                                response=response, tools=tools)
+    except Exception:
+        log.exception("llm_contact.check failed at %s", site)
+        return None
+    if rec is None:
+        return None
+    log.warning("the model asked to talk to Eli at %s (inbox %s): %s - this task stops here",
+                site, rec["id"], rec["message"][:200])
+    return rec
+
+
+def contact_notice(rec: dict) -> str:
+    """What a chat shows the person in place of a reply when the model contacted Eli."""
+    return (f"(Claude asked to talk to Eli instead of continuing; this conversation stops here. "
+            f"The message is in the LLM inbox: llm-inbox show {rec['id']})")
 
 
 def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=None, **_ignored) -> Result:
@@ -253,7 +320,9 @@ def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=Non
                   int(u.get("cache_creation_input_tokens") or 0), int(u.get("cache_read_input_tokens") or 0))
     parsed = output_format.model_validate(res.structured_output) if res.structured_output is not None else None
     stop = "refusal" if res.stop_reason == "refusal" else ("end_turn" if parsed is not None else res.stop_reason)
-    return Result(parsed, usage, stop, "subscription", ms, call_cost(usage))
+    raw = {"role": "assistant", "content": [{"type": "text", "text": res.result or ""}],
+           "stop_reason": res.stop_reason, "structured_output": res.structured_output}
+    return Result(parsed, usage, stop, "subscription", ms, call_cost(usage), raw)
 
 
 def _run_async(coro):

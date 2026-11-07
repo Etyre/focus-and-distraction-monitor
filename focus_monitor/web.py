@@ -182,7 +182,7 @@ def api_toggl_resync(days: float = 7):
     if r is None:
         if time.time() < _toggl.quota_until:
             raise HTTPException(429, f"Toggl's hourly API quota is used up - try again in {int(_toggl.quota_until - time.time()) // 60 + 1} min")
-        raise HTTPException(502, "Toggl sync failed - see app.log")
+        raise HTTPException(502, "Toggl sync failed - see ~/Library/Logs/focus-and-distraction-monitor.log")
     return r
 
 

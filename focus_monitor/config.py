@@ -12,6 +12,8 @@ DATA_DIR = Path(
     os.environ.get("FOCUS_MONITOR_DATA", Path.home() / "Library/Application Support/FocusMonitor")
 )
 CONFIG_PATH = Path(os.environ.get("FOCUS_MONITOR_CONFIG", PROJECT_DIR / "config.toml"))
+# The app log (timestamped, rotated). Overridable so a test run does not write into the real log.
+LOG_PATH = Path(os.environ.get("FOCUS_MONITOR_LOG", Path.home() / "Library/Logs/focus-and-distraction-monitor.log"))
 
 # Dev restart: the Python process exits with this status and the .app launcher (build_app.py)
 # relaunches it at once, outside its crash budget. The launcher hard-codes the same number.

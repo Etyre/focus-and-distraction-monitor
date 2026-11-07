@@ -1,3 +1,18 @@
+"""Focus & Distraction Monitor - entry point (`python -m focus_monitor <command>`).
+
+Watches the active window on this Mac, screenshots on every window switch, and has an ensemble of
+models (Claude vision + rules + a learned model trained on the person's reviews) judge whether each
+switch continued focus, interrupted it, was a self-distraction, or started a new task. A menu bar
+eye (`app`) runs the collector, the classifier and the dashboard (http://127.0.0.1:8790) in one
+process; `run` is the headless equivalent; `collect` / `classify` / `web` run the pieces alone.
+
+Config:  ./config.toml (next to this package; FOCUS_MONITOR_CONFIG overrides)
+Secrets: Keychain service "FocusMonitor" (accounts "anthropic", "toggl"), else
+         ~/Library/Application Support/FocusMonitor/env
+Data:    ~/Library/Application Support/FocusMonitor/ (focus.db, screenshots/, launcher.log;
+         FOCUS_MONITOR_DATA overrides)
+Log:     ~/Library/Logs/focus-and-distraction-monitor.log (FOCUS_MONITOR_LOG overrides)
+"""
 from __future__ import annotations
 
 import argparse
@@ -5,7 +20,7 @@ import datetime as dt
 import logging
 import threading
 
-from .config import DATA_DIR, load_api_key, load_config, screenshot_file
+from .config import DATA_DIR, LOG_PATH, load_api_key, load_config, screenshot_file
 
 
 def main():
@@ -34,9 +49,10 @@ def main():
     from .config import ensure_dirs
     ensure_dirs()
     from logging.handlers import RotatingFileHandler
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(),
-                                  RotatingFileHandler(DATA_DIR / "app.log", maxBytes=5_000_000, backupCount=2)])
+                                  RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=2)])
     cfg = load_config()
     load_api_key()
 
