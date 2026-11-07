@@ -17,7 +17,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import Config, load_config
 from .seg_models import CONTENTS, KINDS, SWITCHES
 
@@ -137,7 +137,7 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         client = _get_client()
 
         def _call(eff):
-            return client.beta.messages.parse(
+            return llm.parse(client, site="propagation", 
                 model=cfg.claude_model, max_tokens=6000,
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": content_blocks}],

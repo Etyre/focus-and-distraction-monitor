@@ -63,6 +63,12 @@ class Config:
     defer_accuracy: float = 0.85
     defer_min_feedback: int = 25
     daily_audit: bool = True           # one end-of-day LLM sweep re-checks the day, flags errors
+    # Which account pays for the judgment calls: "api" = the API key, per token; "subscription" =
+    # the person's claude.ai login through the Claude Code binary (Agent SDK). On the subscription,
+    # a usage-limit error switches to the API key until the limit resets (see llm.py).
+    llm_backend: str = "api"
+    subscription_retry_min: float = 30.0   # retry the subscription this long after a limit error
+                                           # when the error does not name its reset time
     # frugality: skip Claude when local models are this accurate on recent reviews AND this confident
     frugal_accuracy_threshold: float = 0.85
     frugal_confidence_threshold: float = 0.85

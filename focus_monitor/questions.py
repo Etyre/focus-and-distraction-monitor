@@ -23,7 +23,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config,
                      load_config)
 from .seg_models import CONTENTS, KINDS, SWITCHES
@@ -446,7 +446,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
               + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id). "
               "A DOUBT may be omitted when no question the person could answer would resolve it."})
     system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
-    resp = _client().beta.messages.parse(
+    resp = llm.parse(_client(), site="questions", 
         model=cfg.claude_model, max_tokens=4000,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": content_blocks}],

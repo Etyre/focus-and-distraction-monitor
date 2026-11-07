@@ -255,7 +255,39 @@ CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finish
     title TEXT                                -- short phrase: the object of attention
 );
 CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
+
+CREATE TABLE IF NOT EXISTS llm_calls (        -- every structured-output model call (llm.py): which
+    id INTEGER PRIMARY KEY,                   -- backend served it, what it cost at API prices
+    ts REAL NOT NULL,
+    site TEXT NOT NULL,                       -- evaluator / vision / questions / summary / ...
+    backend TEXT NOT NULL,                    -- api | subscription
+    model TEXT,
+    effort TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read INTEGER NOT NULL DEFAULT 0,
+    cache_write INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,         -- API-equivalent, whichever backend
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 1,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS llm_calls_ts ON llm_calls(ts);
+
+CREATE TABLE IF NOT EXISTS kv (               -- small persistent app state (e.g. the subscription block)
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
+
+
+def kv_get(conn, key: str) -> str | None:
+    r = conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+    return r[0] if r else None
+
+
+def kv_set(conn, key: str, value: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES (?,?)", (key, value))
 
 
 def connect() -> sqlite3.Connection:

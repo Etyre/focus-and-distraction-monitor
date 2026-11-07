@@ -15,7 +15,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config)
 
 log = logging.getLogger("efforts")
@@ -73,7 +73,7 @@ def judge(conn, cfg: Config, client, role: str, primary_effort: str, primary_jso
     for _tid, eff, rj in shadows:
         parts.append(f"OUTPUT at effort={eff}:\n{rj[:6000]}")
     try:
-        resp = client.beta.messages.parse(
+        resp = llm.parse(client, site="effort_judge", 
             model=cfg.claude_model, max_tokens=1000,
             system=[{"type": "text", "text": JUDGE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n\n".join(parts)}],

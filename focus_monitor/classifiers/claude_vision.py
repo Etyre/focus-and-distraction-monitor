@@ -8,7 +8,7 @@ from pathlib import Path
 import anthropic
 from pydantic import BaseModel, Field
 
-from .. import LABEL_HELP, LABELS, db
+from .. import LABEL_HELP, LABELS, db, llm
 from ..config import (DATA_DIR, PRICE_CACHE_READ, screenshot_file, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT,
                       Config)
 from .base import Classifier, SwitchContext, normalize, seg_desc
@@ -173,7 +173,7 @@ class ClaudeVisionClassifier(Classifier):
         content.append({"type": "text", "text": ctx.narrative() + "\n\nClassify the FROM -> TO switch."})
 
         try:
-            resp = self.client.beta.messages.parse(
+            resp = llm.parse(self.client, site="vision", 
                 model=self.cfg.claude_model,
                 max_tokens=2048,
                 system=self._system_blocks(),

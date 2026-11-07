@@ -16,7 +16,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import Config, load_config
 
 log = logging.getLogger("resolver")
@@ -91,7 +91,7 @@ class ThreadResolver:
                   + f"\n\nSWITCH UNDER JUDGMENT at {dt.datetime.fromtimestamp(sw['ts']).strftime('%H:%M:%S')}: "
                   + f"TO {sw['app']} {sw['domain'] or ''} | {(sw['title'] or '')[:80]}\n"
                   + "What is being continued?")
-        resp = self.client.beta.messages.parse(
+        resp = llm.parse(self.client, site="resolver", 
             model=MODEL, max_tokens=300,
             system=[{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": prompt}],

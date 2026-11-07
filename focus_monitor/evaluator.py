@@ -26,7 +26,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config,
                      load_config)
 
@@ -301,7 +301,7 @@ class ChunkEvaluator:
                        + "\n\nJudge every segment marked EVALUATE (all of them, by id).")
         content.append({"type": "text", "text": prompt_text})
         system_text = self._system_blocks(conn)[0]["text"]
-        resp = self.client.beta.messages.parse(
+        resp = llm.parse(self.client, site="evaluator", 
             model=self.cfg.claude_model, max_tokens=8000,
             system=self._system_blocks(conn),
             messages=[{"role": "user", "content": content}],
@@ -398,7 +398,7 @@ class ChunkEvaluator:
             from . import efforts as _eff
 
             def _call(eff):
-                return self.client.beta.messages.parse(
+                return llm.parse(self.client, site="evaluator_shadow", 
                     model=self.cfg.claude_model, max_tokens=8000,
                     system=self._system_blocks(conn),
                     messages=[{"role": "user", "content": content}],
@@ -691,7 +691,7 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
     content.append({"type": "text", "text": AUDIT_PROMPT.format(log="\n".join(lines))})
     ev = _get()
-    resp = ev.client.beta.messages.parse(
+    resp = llm.parse(ev.client, site="audit", 
         model=cfg.claude_model, max_tokens=4000,
         system=ev._system_blocks(conn),
         messages=[{"role": "user", "content": content}],
@@ -706,7 +706,7 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
         from . import efforts as _eff
 
         def _acall(eff):
-            return ev.client.beta.messages.parse(
+            return llm.parse(ev.client, site="audit_shadow", 
                 model=cfg.claude_model, max_tokens=4000,
                 system=ev._system_blocks(conn),
                 messages=[{"role": "user", "content": content}],

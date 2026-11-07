@@ -756,6 +756,13 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
     return {"ok": True}
 
 
+@app.get("/api/llm/status")
+def api_llm_status():
+    """Which account the judgment calls are drawing on right now, and today's calls per backend."""
+    from . import llm
+    return llm.status()
+
+
 @app.get("/api/questions/{qid}/state")
 def api_question_state(qid: int):
     """The current status of one question - the queue panel re-checks this when it shows a

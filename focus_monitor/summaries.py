@@ -10,7 +10,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, llm
 from .config import PRICE_INPUT, PRICE_OUTPUT, Config, load_config
 
 
@@ -144,7 +144,7 @@ def generate(conn, cfg: Config, sp) -> bool:
               "Their rules and definitions (authoritative):\n" + _rules_doc()
               + "\n\nAbout this person (their own words):\n" + (cfg.about_me.strip() or "(none)")),
               "cache_control": {"type": "ephemeral"}}]
-    resp = client.beta.messages.parse(
+    resp = llm.parse(client, site="summary", 
         model=cfg.claude_model, max_tokens=500, output_config={"effort": "medium"},
         system=system,
         messages=[{"role": "user", "content": content}],
@@ -154,7 +154,7 @@ def generate(conn, cfg: Config, sp) -> bool:
     from . import efforts as _eff
 
     def _scall(eff):
-        return client.beta.messages.parse(
+        return llm.parse(client, site="summary_shadow", 
             model=cfg.claude_model, max_tokens=500, output_config={"effort": eff},
             system=system, messages=[{"role": "user", "content": content}],
             output_format=SpanSummaryJudgement)
