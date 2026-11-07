@@ -7,3 +7,4 @@ pydantic
 rumps
 pyobjc-framework-WebKit
 pyobjc-framework-Quartz
+claude-agent-sdk
