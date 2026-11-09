@@ -256,6 +256,9 @@ CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finish
 );
 CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
 
+CREATE INDEX IF NOT EXISTS seg_evals_antecedent ON seg_evals(antecedent_id);     -- thread walks (questions.thread_mass_s)
+CREATE INDEX IF NOT EXISTS seg_reviews_antecedent ON seg_reviews(antecedent_id);
+
 CREATE TABLE IF NOT EXISTS llm_calls (        -- every structured-output model call (llm.py): which
     id INTEGER PRIMARY KEY,                   -- backend served it, what it cost at API prices
     ts REAL NOT NULL,

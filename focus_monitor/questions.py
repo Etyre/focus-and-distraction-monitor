@@ -83,6 +83,11 @@ switch_label='interruption'.
 Content questions are equally welcome when content is the doubt: "was drafting that Signal \
 message routine correspondence ('correspondence') or writing you were absorbed in ('creative')?" - each \
 option sets a content label.
+A thread question presupposes a thread: it only makes sense when there has been enough \
+sustained attention for there to be one. A few short segments of poking around (a minute here, \
+two minutes there, inside a bigger stretch of something else) are not a thread to be "the same \
+as" or "different from" - do not ask whether such a segment continues or starts one; ask about \
+its content if that is in doubt, otherwise omit the DOUBT.
 In form 2, the "something different" option must say what the DIFFERENT undertaking on \
 return would be ("back on the page only to grab a quote for the message you were writing"), \
 never that the diversion "had become the real focus" or "was a new beginning": how long the \
@@ -247,6 +252,29 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
                                    f"(top attachment only {ante_top(ap):.0%} confident)"),
                         "ts": r["start"]})
     out = [t for t in out if not (t["segment_id"] in seen or seen.add(t["segment_id"]))]
+    # No thread question without a thread (user rule 2026-11-08): asking whether a segment is
+    # part of a thread presupposes enough sustained attention for there to be one. When the
+    # thread the segment belongs to runs under the break threshold, it is a contained event
+    # inside whatever surrounds it - no answer could move a span - so the doubt is dropped and
+    # its needs-review flag cleared. Doubts about WHAT was being done are not thread questions.
+    from .config import load_config as _lc
+    floor_s = 60.0 * _lc().break_min
+    kept = []
+    for t in out:
+        if t["source"] in ("coherence", "audit") or _content_doubt(conn, t["segment_id"]):
+            kept.append(t)
+            continue
+        mass = thread_mass_s(conn, t["segment_id"], stop_at=floor_s)
+        if mass >= floor_s:
+            kept.append(t)
+            continue
+        log.info("no thread question for segment %d (%s): its thread is %.0fs, under %.0fs",
+                 t["segment_id"], t["source"], mass, floor_s)
+        conn.execute("UPDATE seg_evals SET uncertain=0, rationale=COALESCE(rationale,'') || ? WHERE segment_id=? AND uncertain=1",
+                     (f" | no thread question: the thread is {mass:.0f}s, under the {floor_s:.0f}s floor", t["segment_id"]))
+    if len(kept) != len(out):
+        conn.commit()
+    out = kept
     out.sort(key=lambda x: ({"coherence": 0, "propagation": 1, "audit": 2, "ensemble": 3}.get(x["source"], 4), -x["ts"]))
     return out
 
@@ -256,6 +284,52 @@ def ante_top(ap: dict) -> float:
     to sum to 1 (rows stored before 2026-11-05 may carry a lone candidate at 0.2)."""
     tot = sum(ap.values())
     return max(ap.values()) / tot if tot > 0 else 0.0
+
+
+def thread_mass_s(conn, segment_id: int, max_hops: int = 400, stop_at: float | None = None) -> float:
+    """Seconds of attention in the thread a segment belongs to under the current judgment:
+    the segment, the chain of antecedents behind it, and everything chained forward from it.
+    A person's review of a segment overrides the evaluator's link. With stop_at, the walk ends
+    as soon as the total reaches it (callers only ask whether a floor is cleared)."""
+    def link(sid):
+        r = conn.execute("""SELECT COALESCE(rv.antecedent_id, e.antecedent_id) AS a,
+                                     COALESCE(rv.switch_label, e.switch_label) AS sw
+                              FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+                              LEFT JOIN seg_reviews rv ON rv.segment_id = g.id WHERE g.id = ?""", (sid,)).fetchone()
+        return (r["a"] if r and r["sw"] in ("continuation", "return") else None)
+    dur = lambda sid: float(conn.execute("SELECT COALESCE(end, start) - start FROM segments WHERE id=?",
+                                         (sid,)).fetchone()[0] or 0.0)
+    seen = {segment_id}
+    total = dur(segment_id)
+    cur, hops = link(segment_id), 0
+    while cur is not None and cur not in seen and hops < max_hops:
+        seen.add(cur); total += dur(cur); cur = link(cur); hops += 1
+        if stop_at is not None and total >= stop_at:
+            return total
+    frontier = [segment_id]
+    while frontier and hops < max_hops and (stop_at is None or total < stop_at):
+        nxt = []
+        for sid in frontier:
+            # Candidates from both indexed columns, then confirmed through link() so a review
+            # that re-pointed (or cut) a link wins over the evaluator's.
+            cands = {r[0] for r in conn.execute("SELECT segment_id FROM seg_evals WHERE antecedent_id=?", (sid,))}
+            cands |= {r[0] for r in conn.execute("SELECT segment_id FROM seg_reviews WHERE antecedent_id=?", (sid,))}
+            for cid in sorted(cands):
+                if cid not in seen and link(cid) == sid:
+                    seen.add(cid); total += dur(cid); nxt.append(cid); hops += 1
+        frontier = nxt
+    return total
+
+
+def _content_doubt(conn, segment_id: int) -> bool:
+    """The evaluator's doubt is about WHAT the person was doing (content head under 50%),
+    which does not presuppose a thread."""
+    r = conn.execute("SELECT probs FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    try:
+        pr = json.loads(r["probs"]) if r and r["probs"] else {}
+        return bool(pr.get("content")) and max(pr["content"].values()) < 0.5
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 PASSTHROUGH_LABEL = "Neither - just a window I passed through or had open, not actually looked at"
@@ -377,6 +451,39 @@ def stakes_text(detail_json: str | None) -> str:
     return ("could move " + ", ".join(t for _, t in parts[:2])) if parts else "no effect on the day's metrics"
 
 
+_last_sweep = 0.0
+SWEEP_EVERY_S = 1800.0
+
+
+def retire_threadless_questions(conn, force: bool = False) -> int:
+    """Apply the no-thread-without-a-thread rule to questions already in the queue: an OPEN
+    thread question whose thread runs under the break threshold is dismissed (its flag cleared),
+    with the reason on the question so the record says why it went."""
+    global _last_sweep
+    if not force and time.time() - _last_sweep < SWEEP_EVERY_S:
+        return 0
+    _last_sweep = time.time()
+    from .config import load_config as _lc
+    floor_s = 60.0 * _lc().break_min
+    n = 0
+    rows = conn.execute("""SELECT id, segment_id, source FROM review_questions
+                           WHERE status = 'open' AND source IN ('self_uncertain', 'propagation', 'thread_link', 'ensemble')""").fetchall()
+    for r in rows:
+        if _content_doubt(conn, r["segment_id"]):
+            continue
+        mass = thread_mass_s(conn, r["segment_id"], stop_at=floor_s)
+        if mass >= floor_s:
+            continue
+        with db.tx(conn):
+            conn.execute("UPDATE review_questions SET status='dismissed', answered_at=?, note=? WHERE id=?",
+                         (time.time(), f"(retired: no thread question without a thread - this one is {mass:.0f}s)", r["id"]))
+            conn.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (r["segment_id"],))
+        n += 1
+    if n:
+        log.info("retired %d open thread question(s) on threads under %.0fs", n, floor_s)
+    return n
+
+
 def generate_pending(conn, cfg: Config | None = None) -> int:
     """One LLM call turning up to MAX_TRIGGERS_PER_CALL doubts into questions."""
     from . import stats, summaries
@@ -384,6 +491,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
     cfg = cfg or load_config()
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
+    retire_threadless_questions(conn)
     trigs = _triggers(conn)[:MAX_TRIGGERS_PER_CALL]
     if not trigs:
         return 0
