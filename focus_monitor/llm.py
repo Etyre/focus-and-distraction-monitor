@@ -271,7 +271,11 @@ def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=Non
     opts = ClaudeAgentOptions(
         system_prompt=_system_text(system), model=model, effort=effort,
         output_format={"type": "json_schema", "schema": output_format.model_json_schema()},
-        tools=[], allowed_tools=[], setting_sources=[], max_turns=1, permission_mode="dontAsk",
+        # The structured answer arrives as a StructuredOutput tool call; when the model writes a
+        # sentence first, that call is a second turn, and max_turns=1 failed ~5% of calls
+        # ('Reached maximum number of turns (1)', 2026-11-06..08). With no tools there is
+        # nothing else a turn can be, so a small allowance is safe.
+        tools=[], allowed_tools=[], setting_sources=[], max_turns=4, permission_mode="dontAsk",
         cwd=str(DATA_DIR),
         # The app's process carries ANTHROPIC_API_KEY for the api backend; the Claude Code
         # binary would prefer it over the login, so the child gets it blanked.
