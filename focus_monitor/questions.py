@@ -111,8 +111,11 @@ about the moment the SECOND object would begin - the split point named or implie
 doubt's reason - and you MUST include an option asserting the separate thread: \
 switch_label='interruption' on the segment where it begins (its id is visible in the log). \
 "Was <activity> at <time> a separate piece of work, or still part of <thread A>?" is the shape.
-- Options must be mutually exclusive and cover the plausible readings. Do not editorialize; \
-the person decides.
+- Options must be mutually exclusive IN THE EDIT THEY MAKE and cover the plausible readings. \
+Two options that set the same fields to the same values are one option, however differently \
+worded: never split "a separate thread" by what came after it ("a one-off question" vs "the \
+start of a run of lookups") - what the following segments continue is judged on those \
+segments. Do not editorialize; the person decides.
 - NEVER write a "just passing through" / transition option yourself: the app appends a neutral \
 one ("a window I passed through, not actually looked at") to EVERY question. Your options are \
 the substantive readings only - what the moment was if the person DID engage with it. In \
@@ -485,6 +488,21 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                              "switch_label": o.switch_label, "antecedent_id": ante,
                              "interruption_kind": None, "content": o.content,
                              "hybrid": o.hybrid})
+            # Options must differ in the EDIT they make, not just in their wording. The model
+            # likes to split one reading by what came after it ("a one-off question" vs "the
+            # start of a run of lookups") - both write the same new thread on this segment, and
+            # what the next segments continue is their own judgment. Keep the first label.
+            seen_edits: set = set()
+            distinct = []
+            for o in opts:
+                key = (o["segment_id"], o["switch_label"], o["antecedent_id"], o["content"], o["hybrid"])
+                if key in seen_edits:
+                    log.warning("dropping duplicate option %r (same edit as an earlier one) on segment %d",
+                                o["label"][:60], q.trigger_segment_id)
+                    continue
+                seen_edits.add(key)
+                distinct.append(o)
+            opts = distinct
             if len(opts) < 1:  # at least one substantive reading + the pass-through below
                 continue
             if t["source"] == "coherence" and not any(o.get("switch_label") == "interruption" for o in opts):
