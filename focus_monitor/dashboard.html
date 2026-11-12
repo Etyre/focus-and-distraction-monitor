@@ -127,6 +127,10 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 </section>
 
 <section id="view-accuracy" class="hidden">
+  <div class="card"><b>Agreement with your judgments</b> <span class="muted small">— of the judgments you have ruled on, how many the app already had right (agreed) vs. how many you corrected. A segment verdict agrees when every field you set matches what the app had judged before you ruled: content, switch relation, and thread. A span agrees when you confirmed it.</span>
+    <div class="tiles" id="agreeTiles" style="margin-top:8px"></div>
+    <div id="c-agree"></div>
+    <table id="agreeTable" style="margin-top:8px"></table></div>
   <div class="tiles" id="modelTiles"></div>
   <div class="card"><b>Accuracy vs. your reviews, by review day</b>
     <div class="legend" style="margin:6px 0"><span><i class="sw" style="background:var(--m-claude)"></i>claude</span><span><i class="sw" style="background:var(--m-heuristic)"></i>heuristic</span><span><i class="sw" style="background:var(--m-learned)"></i>learned</span><span><i class="sw" style="background:var(--m-ensemble)"></i>ensemble</span></div>
@@ -1009,7 +1013,28 @@ async function loadEfficiency(){
   h+='<div style="margin-top:10px"><b>Component spend, last 7 days</b><table>'+Object.entries(eff.component_spend_7d).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${k}</td><td>$${v.toFixed(2)}</td></tr>`).join('')+'</table></div>';
   host.innerHTML=h;
 }
+async function loadAgreement(){
+  const a=await api('/api/agreement?days=60'),sg=a.segments,sp=a.spans,pct=r=>r==null?'–':Math.round(100*r)+'%';
+  const tiles=[[`${pct(sg.ratio)}`,'segment judgments agreed',`${sg.total.agree} agreed · ${sg.total.n-sg.total.agree} corrected (n=${sg.total.n}) · last 30 days ${pct(sg.ratio_recent)} (n=${sg.recent.n})`],
+    [`${pct(sp.ratio)}`,'spans confirmed',`${sp.total.agree} confirmed · ${sp.total.n-sp.total.agree} rejected (n=${sp.total.n}) · last 30 days ${pct(sp.ratio_recent)} (n=${sp.recent.n})`],
+    [`${sg.total.by_head.content} / ${sg.total.by_head.switch} / ${sg.total.by_head.thread}`,'corrections by field: content / switch / thread','a verdict can correct more than one field'+(sg.judged_after_ruling?` · ${sg.judged_after_ruling} verdict(s) not scored: the app judged them after you ruled`:'')]];
+  $('#agreeTiles').innerHTML=tiles.map(([v,l,sub])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div><div class="l muted">${sub}</div></div>`).join('');
+  const days=sg.daily.map(d=>d.day);
+  if(!days.length){$('#c-agree').innerHTML='<div class="muted">No scored verdicts in this window yet.</div>';$('#agreeTable').innerHTML='';return;}
+  const W=1200,H=180,L=40,B=26,T=10;const x=i=>L+(days.length>1?i/(days.length-1):0.5)*(W-L-16);const y=v=>T+(H-T-B)*(1-v);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block" aria-label="share of your verdicts the app had right, by day">`;
+  [0,0.5,1].forEach(f=>{s+=`<line x1="${L}" x2="${W-8}" y1="${y(f)}" y2="${y(f)}" stroke="var(--grid)"/><text x="${L-6}" y="${y(f)+4}" text-anchor="end">${f*100}%</text>`;});
+  days.forEach((d,i)=>{if(days.length<=20||i%5===0)s+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle">${d.slice(5)}</text>`;});
+  const pts=sg.daily.map((d,i)=>[x(i),y(d.ratio),d]);
+  s+=`<polyline fill="none" stroke="var(--focus)" stroke-width="2" points="${pts.map(p=>p[0]+','+p[1]).join(' ')}"/>`;
+  pts.forEach(p=>s+=`<circle cx="${p[0]}" cy="${p[1]}" r="${Math.min(4+Math.sqrt(p[2].n),9)}" fill="var(--focus)" stroke="var(--surface)" stroke-width="2"><title>${p[2].day}: ${Math.round(p[2].ratio*100)}% agreed — ${p[2].agree} of ${p[2].n} (corrected: content ${p[2].content}, switch ${p[2].switch}, thread ${p[2].thread})</title></circle>`);
+  s+='</svg>';$('#c-agree').innerHTML=s+'<div class="muted small">dot size = number of verdicts that day; hover for the counts</div>';
+  const last=sg.daily.slice(-14).reverse();
+  $('#agreeTable').innerHTML='<tr><th>day</th><th>verdicts</th><th>agreed</th><th>corrected</th><th>content</th><th>switch</th><th>thread</th><th>spans confirmed</th></tr>'+last.map(d=>{const sd=sp.daily.find(e=>e.day===d.day);return `<tr><td>${d.day}</td><td>${d.n}</td><td>${d.agree} (${Math.round(100*d.ratio)}%)</td><td>${d.n-d.agree}</td><td>${d.content}</td><td>${d.switch}</td><td>${d.thread}</td><td>${sd?`${sd.agree}/${sd.n}`:'–'}</td></tr>`;}).join('');
+}
+
 async function loadAccuracy(){
+  loadAgreement();
   loadEfficiency();
   const a=await api('/api/accuracy?days=60');
   const tiles=[['Reviews so far',a.reviews],['Claude spend today',`$${a.spend_today.toFixed(2)} <span class="muted small">/ $${a.budget}</span>`]];

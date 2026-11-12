@@ -191,6 +191,12 @@ def api_metrics(days: int = 30):
     return {"count_events": cfg.count_events, "days": stats.metrics_range(conn(), days)}
 
 
+@app.get("/api/agreement")
+def api_agreement(days: int = 60):
+    """The app's judgments vs the person's: agreements and corrections, overall and by day."""
+    return stats.agreement_report(conn(), days)
+
+
 @app.get("/api/accuracy")
 def api_accuracy(days: int = 60):
     c = conn()

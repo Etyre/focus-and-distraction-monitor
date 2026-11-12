@@ -12,6 +12,7 @@ A human review overrides the ensemble label. Unclassified switches count as cont
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 
 from . import db
@@ -836,3 +837,116 @@ def day_stamp(conn, t0: float, t1: float) -> str:
     )
     raw = "|".join(",".join(str(v) for v in conn.execute(sql, args).fetchone()) for sql, args in qs)
     return hashlib.md5(raw.encode()).hexdigest()[:16]
+
+
+def _same_thread(conn, a: int | None, b: int | None, max_hops: int = 60) -> bool:
+    """Two thread pointers agree when they name the same segment or one is an ancestor of the
+    other along the antecedent chain (the person's links outrank the evaluator's)."""
+    if a is None or b is None:
+        return a == b
+    if a == b:
+        return True
+
+    def chain(sid):
+        seen = []
+        cur = sid
+        while cur is not None and cur not in seen and len(seen) < max_hops:
+            seen.append(cur)
+            r = conn.execute("""SELECT COALESCE(rv.antecedent_id, e.antecedent_id) AS a
+                                FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+                                LEFT JOIN seg_reviews rv ON rv.segment_id = g.id WHERE g.id = ?""", (cur,)).fetchone()
+            cur = r["a"] if r else None
+        return seen
+    return b in chain(a) or a in chain(b)
+
+
+def agreement_report(conn, days: int = 60) -> dict:
+    """How often the app's judgment matched the person's. Each of the person's segment
+    verdicts (seg_reviews) is compared with the judgment the app had made BEFORE they ruled
+    (seg_evals created earlier); a verdict agrees when every field it set matches: content,
+    switch relation, and the thread pointer (same thread, not necessarily the same link).
+    Span verdicts count a confirmed span as agreement and a rejected one as a correction."""
+    t0, _ = day_bounds(logical_today() - dt.timedelta(days=days - 1))
+    raw = conn.execute("""
+        SELECT r.segment_id, r.created, r.content AS rc, r.switch_label AS rsw, r.antecedent_id AS ra,
+               e.content AS ec, e.switch_label AS esw, e.antecedent_id AS ea, e.created AS ec_at, g.start
+        FROM seg_reviews r JOIN seg_evals e ON e.segment_id = r.segment_id
+        JOIN segments g ON g.id = r.segment_id ORDER BY r.created""").fetchall()
+    rows = []
+    unscored = 0
+    for r in raw:
+        if r["ec_at"] < r["created"]:
+            rows.append(dict(r))
+            continue
+        # The app re-judged this segment after the person ruled (re-evaluation, propagation),
+        # so the live row is not what they corrected. The judgment they saw is in the
+        # transcript of the earliest evaluation run that covered the segment.
+        found = None
+        for run in conn.execute("""SELECT response FROM eval_runs WHERE t0 <= ? AND t1 >= ? AND created < ?
+                                   AND response IS NOT NULL ORDER BY created LIMIT 4""",
+                                (r["start"], r["start"], r["created"])):
+            try:
+                js = json.loads(run["response"])
+                segs = js.get("segments", js) if isinstance(js, dict) else js
+                found = next((x for x in segs if x.get("segment_id") == r["segment_id"]), None)
+            except (ValueError, AttributeError, TypeError):
+                found = None
+            if found:
+                break
+        if not found:
+            unscored += 1
+            continue
+        ante = (found.get("antecedents") or [{}])[0].get("segment_id") if found.get("switch") in ("continuation", "return") else None
+        rows.append(dict(r, ec=found.get("content"), esw=found.get("switch"), ea=ante))
+    per_day: dict[str, dict] = {}
+    tot = {"n": 0, "agree": 0, "by_head": {"content": 0, "switch": 0, "thread": 0}}
+    recent = {"n": 0, "agree": 0}
+    for r in rows:
+        heads = []
+        if r["rc"]:
+            heads.append(("content", r["rc"] == r["ec"]))
+        if r["rsw"]:
+            heads.append(("switch", r["rsw"] == r["esw"]))
+            if r["rsw"] in ("continuation", "return") and r["rsw"] == r["esw"] and r["ra"] is not None:
+                heads.append(("thread", _same_thread(conn, r["ra"], r["ea"])))
+        if not heads:
+            continue
+        agree = all(ok for _, ok in heads)
+        tot["n"] += 1
+        tot["agree"] += int(agree)
+        for h, ok in heads:
+            if not ok:
+                tot["by_head"][h] += 1
+        if r["created"] >= t0:
+            day = logical_date(r["created"]).isoformat()
+            d = per_day.setdefault(day, {"day": day, "n": 0, "agree": 0, "content": 0, "switch": 0, "thread": 0})
+            d["n"] += 1
+            d["agree"] += int(agree)
+            for h, ok in heads:
+                if not ok:
+                    d[h] += 1
+        if r["created"] >= time.time() - 30 * 86400:
+            recent["n"] += 1
+            recent["agree"] += int(agree)
+    spans = conn.execute("SELECT created, verdict FROM span_reviews ORDER BY created").fetchall()
+    sp_tot = {"n": 0, "agree": 0}
+    sp_recent = {"n": 0, "agree": 0}
+    sp_day: dict[str, dict] = {}
+    for s in spans:
+        ok = int(s["verdict"] == "focus")
+        sp_tot["n"] += 1
+        sp_tot["agree"] += ok
+        if s["created"] >= time.time() - 30 * 86400:
+            sp_recent["n"] += 1
+            sp_recent["agree"] += ok
+        if s["created"] >= t0:
+            day = logical_date(s["created"]).isoformat()
+            d = sp_day.setdefault(day, {"day": day, "n": 0, "agree": 0})
+            d["n"] += 1
+            d["agree"] += ok
+    ratio = lambda x: (x["agree"] / x["n"]) if x["n"] else None
+    return {"segments": {"total": tot, "ratio": ratio(tot), "recent": recent, "ratio_recent": ratio(recent),
+                         "daily": [dict(d, ratio=d["agree"] / d["n"]) for d in sorted(per_day.values(), key=lambda d: d["day"])],
+                         "judged_after_ruling": unscored},
+            "spans": {"total": sp_tot, "ratio": ratio(sp_tot), "recent": sp_recent, "ratio_recent": ratio(sp_recent),
+                      "daily": [dict(d, ratio=d["agree"] / d["n"]) for d in sorted(sp_day.values(), key=lambda d: d["day"])]}}

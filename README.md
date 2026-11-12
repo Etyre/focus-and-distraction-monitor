@@ -52,6 +52,12 @@ first commit 2026-08-29, in continuous development since.
   can be flagged, at most `max_reviews_per_day` (8) per day, highest-stakes first (longer preceding
   focus = higher stakes). Everything else is auto-accepted. Model accuracy is likewise weighted toward
   focus-leaving switches.
+* **Agreement with your judgments** (top of the Models tab, `/api/agreement`): of the verdicts you
+  have given, how many the app already had right vs. how many you corrected, overall, over the last
+  30 days, and by day. A segment verdict agrees when every field you set matches what the app had
+  judged *before* you ruled (content, switch relation, thread); when the app re-judged a segment after
+  your ruling, the judgment you saw is recovered from the evaluation transcript (`eval_runs`). Span
+  verdicts count a confirmed span as agreement and a rejected one as a correction.
 * **Neutral windows** (`neutral_patterns` in `config.toml`, e.g. a presence-check form) are recorded
   but never produce a switch or event, and are transparent to focus spans - a 30-second check in the
   middle of an hour of writing leaves a single one-hour span.
