@@ -222,14 +222,18 @@ def active_display_index(app_name: str) -> int:
 
 
 def cleanup_screenshots(cfg: Config) -> int:
-    """Delete full-size captures (and any PNG left behind by a crash mid-conversion) older than
-    the retention period, plus the archive copies of private captures. Other archive copies are
-    permanent."""
-    cutoff = time.time() - cfg.screenshot_retention_days * 86400
+    """Delete private captures from both tiers after private_retention_days, and, when
+    screenshot_retention_days is non-zero, full-size captures (and any PNG left behind by a crash
+    mid-conversion) older than that. Other archive copies are permanent."""
+    now = time.time()
+    jobs = [(f"*{PRIVATE_MARK}.jpg", d, now - cfg.private_retention_days * 86400) for d in (SCREENSHOT_DIR, ARCHIVE_DIR)]
+    if cfg.screenshot_retention_days > 0:
+        cutoff = now - cfg.screenshot_retention_days * 86400
+        jobs += [("*.jpg", SCREENSHOT_DIR, cutoff), ("*.png", SCREENSHOT_DIR, cutoff)]
     n = 0
-    for pattern, d in (("*.jpg", SCREENSHOT_DIR), ("*.png", SCREENSHOT_DIR), (f"*{PRIVATE_MARK}.jpg", ARCHIVE_DIR)):
+    for pattern, d, cutoff in jobs:
         for p in d.glob(pattern):
-            if p.stat().st_mtime < cutoff:
+            if p.exists() and p.stat().st_mtime < cutoff:
                 p.unlink()
                 n += 1
     return n
@@ -374,7 +378,7 @@ class Collector:
                 if time.time() - last_cleanup > 3600:
                     n = cleanup_screenshots(self.cfg)
                     # Archived captures stay referenced; private ones are forgotten with their files.
-                    cutoff = time.time() - self.cfg.screenshot_retention_days * 86400
+                    cutoff = time.time() - self.cfg.private_retention_days * 86400
                     like = f"%{PRIVATE_MARK}.jpg"
                     with db.tx(self.conn):
                         self.conn.execute("DELETE FROM segment_shots WHERE ts < ? AND path LIKE ?", (cutoff, like))

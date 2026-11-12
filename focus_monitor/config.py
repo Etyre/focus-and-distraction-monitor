@@ -41,13 +41,18 @@ class Config:
     refresh_screenshot_seconds: float = 60.0
     screenshot_max_width: int = 1280
     screenshot_quality: int = 60
-    screenshot_retention_days: int = 14
+    # Full-size captures are deleted after this many days; 0 keeps them for good. Kept for good since
+    # 2026-11-11: every capture is raw data for re-running the evaluator over the past once it
+    # predicts Eli's judgments well; after that rerun the full-size tier can go and the archive stays.
+    screenshot_retention_days: int = 0
     # A smaller copy of every capture is kept for good (see ARCHIVE_DIR) - except captures that
-    # show a window of one of these apps, which are deleted from both tiers after the retention
-    # period. Signal chats with disappearing messages must not outlive the conversation itself.
+    # show a window of one of these apps, which are deleted from both tiers after
+    # private_retention_days whatever the setting above. Signal chats with disappearing messages
+    # must not outlive the conversation itself.
     archive_max_width: int = 640
     archive_quality: int = 60
     private_apps: list[str] = field(default_factory=lambda: ["Signal"])
+    private_retention_days: int = 14
 
     # classification
     lookahead_seconds: float = 120.0
@@ -212,7 +217,7 @@ def load_api_key() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-SCREENSHOT_DIR = DATA_DIR / "screenshots"        # full size, pruned after screenshot_retention_days
+SCREENSHOT_DIR = DATA_DIR / "screenshots"        # full size, pruned after screenshot_retention_days (0 = never)
 ARCHIVE_DIR = SCREENSHOT_DIR / "archive"         # archive_max_width copies, kept for good
 PRIVATE_MARK = "_priv"                           # filename suffix: shows a private app; never archived past retention
 

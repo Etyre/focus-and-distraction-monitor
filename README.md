@@ -168,10 +168,11 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
   fallback `~/Library/Application Support/FocusMonitor/env` (`ANTHROPIC_API_KEY=sk-ant-...`). A shell
   `ANTHROPIC_API_KEY` wins when present.
 * Data: `~/Library/Application Support/FocusMonitor/` (`FOCUS_MONITOR_DATA` overrides): `focus.db`,
-  `screenshots/` (full size, pruned after 14 days), `screenshots/archive/` (a 640px copy of every
-  capture for good - except captures that show a `private_apps` window such as Signal, marked `_priv`
-  in the filename, which are deleted from both tiers after 14 days so disappearing messages never
-  outlive the chat), `heartbeat`, `icons/`, `reopen_dashboard.json`.
+  `screenshots/` (full size; pruned after `screenshot_retention_days`, or kept for good when that is
+  0, the setting since 2026-11-11), `screenshots/archive/` (a 640px copy of every capture for good -
+  except captures that show a `private_apps` window such as Signal, marked `_priv` in the filename,
+  which are deleted from both tiers after `private_retention_days` (14) so disappearing messages
+  never outlive the chat), `heartbeat`, `icons/`, `reopen_dashboard.json`.
 * Logs: `~/Library/Logs/focus-and-distraction-monitor.log` (app log, timestamped, rotated at 5 MB x 3;
   `FOCUS_MONITOR_LOG` overrides; before 2026-11-07 it was `Application Support/FocusMonitor/app.log`),
   `~/Library/Application Support/FocusMonitor/launcher.log` (crash/freeze restarts by the native launcher),
@@ -276,8 +277,12 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   are simply "no answer" at every call site; the next cycle may look at the same segment again, but the
   same request is never retried in place.
 * Meetings never count as fully absorbed focus; they are their own tier/metric, not "total focus".
-* Screenshots of `private_apps` (Signal) are deleted from both tiers after retention so disappearing
-  messages never outlive the chat.
+* Screenshots of `private_apps` (Signal) are deleted from both tiers after `private_retention_days`
+  so disappearing messages never outlive the chat. Nothing else is ever deleted: since 2026-11-11
+  the full-size captures are kept too (`screenshot_retention_days = 0`, about 5 GB a month), because
+  the plan is to get the evaluator to predict Eli's judgments well and then re-run it over all the
+  past data. After that rerun, set a retention again and let the full-size tier go; the 640px
+  archive stays.
 * Before 2026-11-07 the launchd label was `com.focusmonitor` and the plist wrote to `/tmp`; the file
   is now `launchd/com.elityre.focus-and-distraction-monitor.plist`. Nothing was installed under the old
   label (the app runs as a Login Item), so no `bootout` was needed.

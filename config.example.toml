@@ -9,11 +9,12 @@ short_inactivity_seconds = 60  # pauses between 1 and 8 min are logged as short 
 refresh_screenshot_seconds = 30  # denser evidence for the evaluator
 screenshot_max_width = 1280
 screenshot_quality = 60
-screenshot_retention_days = 14   # full-size captures are deleted after this
+screenshot_retention_days = 0    # full-size captures are deleted after this; 0 = kept for good (since 2026-11-11,
+                                 # raw data for re-running the evaluator over the past; ~5 GB/month)
 archive_max_width = 640          # a copy this wide is kept for good (~1 GB/month) ...
 archive_quality = 60
 private_apps = ["Signal"]        # ... except captures showing these apps, which are deleted from
-                                 # both tiers after screenshot_retention_days (disappearing messages)
+private_retention_days = 14      # both tiers after this many days (disappearing messages)
 
 [classifier]
 lookahead_seconds = 120        # wait so the model can see what you did AFTER the switch
