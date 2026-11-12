@@ -40,6 +40,10 @@ first commit 2026-08-29, in continuous development since.
   5+ min, being away, a recording gap, or a deliberate focus start ends it. A span must contain ≥ 15 min
   of focus. "Length" is wall-clock; "focused" excludes contained detours.
 * **Toggl as intent**: set your Toggl Track API token from the menu (or Keychain account `toggl`).
+  The synced table is also served read-only at `GET /api/toggl/current` and `GET /api/toggl/entries?days=N`
+  (added 2026-11-11) so the executive assistant reads Toggl from here instead of polling Toggl itself; its
+  calls were exhausting the hourly API quota the two apps share. "Current" lags Toggl by up to the 5-minute
+  sync interval; each row carries `synced`.
   Entries sync every 2 min; the running entry at each switch - and whether you *started* an entry at
   the switch - is given to every model as your declared intention, and shown as a row on the timeline.
 * **Transitions**: a chain of windows each held < 20 s (`transit_seconds`) - scrolling desktops,

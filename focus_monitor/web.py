@@ -187,6 +187,34 @@ def api_toggl_resync(days: float = 7):
     return r
 
 
+def _toggl_row(r: dict, now: float) -> dict:
+    """One toggl_entries row as the executive assistant expects it (same shape as Toggl's own API gave it)."""
+    running = r["stop"] is None
+    secs = (now if running else r["stop"]) - r["start"]
+    iso = lambda t: dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds") if t else None
+    return {"id": r["id"], "description": r["description"], "project": r["project"] or None,
+            "tags": [t for t in r["tags"].split(",") if t], "start": iso(r["start"]), "stop": iso(r["stop"]),
+            "minutes": round(max(0.0, secs) / 60), "running": running, "synced": iso(r["synced"])}
+
+
+@app.get("/api/toggl/current")
+def api_toggl_current():
+    """The entry running at the last sync (NULL stop), or null. The local table is refreshed every 5 minutes,
+    so this can lag Toggl by that much; `synced` says when. For the executive assistant (2026-11-11), so that
+    it stops polling Toggl itself and sharing this app's hourly API quota."""
+    c = conn()
+    r = c.execute("SELECT * FROM toggl_entries WHERE stop IS NULL ORDER BY start DESC LIMIT 1").fetchone()
+    return _toggl_row(dict(r), time.time()) if r else None
+
+
+@app.get("/api/toggl/entries")
+def api_toggl_entries(days: float = 7):
+    """Entries that overlap the last `days` days (max 92), oldest first, from the local table."""
+    now = time.time()
+    t0 = now - max(1.0, min(days, 92)) * 86400
+    return [_toggl_row(r, now) for r in toggl.entries_between(conn(), t0, now + 86400)]
+
+
 @app.get("/api/metrics")
 def api_metrics(days: int = 30):
     return {"count_events": cfg.count_events, "days": stats.metrics_range(conn(), days)}
