@@ -361,7 +361,7 @@ function el_render(el,s,d,segs,flags){
     c.addEventListener('mouseleave',hideTT);
     c.addEventListener('click',()=>{hideTT();openSwitch(id);});});
   el.querySelectorAll('rect[data-spb]').forEach(b=>b.addEventListener('click',()=>{hideTT();openSpanReview(+b.dataset.spb);}));
-  el.querySelectorAll('rect[data-p]').forEach(r=>{const e=d.phone.segments[+r.dataset.p];r.addEventListener('mousemove',ev=>showTT(ev,`<b>📱 ${esc(e.app)}</b><br>${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?'<br>opened from '+e.how:''}${e.open?'<br>still open at last sync':''}`));r.addEventListener('mouseleave',hideTT);});
+  el.querySelectorAll('rect[data-p]').forEach(r=>{const e=d.phone.segments[+r.dataset.p];r.addEventListener('mousemove',ev=>showTT(ev,`<b>📱 ${esc(e.app)}</b><br>${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?'<br>opened from '+e.how:''}${e.open?'<br>still open at last sync':''}${e.put_down?'<br>'+putDownNote(d.phone):''}`));r.addEventListener('mouseleave',hideTT);});
   el.querySelectorAll('rect[data-t]').forEach(r=>{const e=d.toggl[+r.dataset.t];r.addEventListener('mousemove',ev=>showTT(ev,`<b>Toggl:</b> ${esc(e.description)||'(untitled)'}<br>${fmtT(e.start)}–${fmtT(e.end)}${e.project?'<br>project: '+esc(e.project):''}${e.tags?'<br>tags: '+esc(e.tags):''}`));r.addEventListener('mouseleave',hideTT);});
 }
 
@@ -484,16 +484,21 @@ function togglTrack(entries,x,t0,t1,L,yText,yBar,emptyMsg){
 function phoneEmpty(ph,t0,t1){if(!ph||!ph.available)return 'no phone log';
   if(ph.through!=null&&ph.through<t1)return `phone data ends ${fmtT(ph.through)}${(new Date(ph.through*1000)).toDateString()!==(new Date(t1*1000)).toDateString()?' ('+new Date(ph.through*1000).toLocaleDateString(undefined,{month:'short',day:'numeric'})+')':''} — the phone syncs on its own schedule`;
   return 'no phone use in this window';}
+function putDownNote(ph){const m=ph&&ph.autolock_s?(ph.autolock_s>=60?Math.round(ph.autolock_s/60)+' min':ph.autolock_s+' s'):'the Auto-Lock interval';
+  return `put down: the screen locked itself after ${m} untouched, so this was barely used`;}
 function phoneTrack(ph,x,t0,t1,L,yText,yBar,attr){
   // Phone lane under a timeline: which app was on the iPhone's screen (orange), with a tick for each
-  // unlock. Same idiom as togglTrack; `attr` names a data attribute for custom tooltips, else <title>.
+  // unlock. A segment the phone ended by locking itself (`put_down`) is drawn hollow: the app was
+  // left open on an idle phone. Same idiom as togglTrack; `attr` names a data attribute for custom
+  // tooltips, else <title>.
   let s=`<text x="${L}" y="${yText}" font-size="10" fill="var(--muted)">Phone</text>`;
   const segs=(ph&&ph.segments)||[];
   segs.forEach((e,i)=>{if(e.end<=t0||e.start>=t1)return;
     const x0=x(Math.max(e.start,t0)),w=Math.max(2,x(Math.min(e.end,t1))-x0-1);
-    const tip=`📱 ${esc(e.app)} — ${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?' · opened from '+e.how:''}${e.open?' · still open at last sync':''}`;
-    s+=`<rect ${attr?attr+'="'+i+'"':''} x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" fill="var(--m-heuristic)" opacity="0.75">${attr?'':'<title>'+tip+'</title>'}</rect>`;
-    if(w>60)s+=`<text x="${x0+4}" y="${yBar+9}" font-size="9" fill="#fff" pointer-events="none">${esc(e.app.slice(0,Math.floor(w/6)))}</text>`;});
+    const tip=`📱 ${esc(e.app)} — ${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?' · opened from '+e.how:''}${e.open?' · still open at last sync':''}${e.put_down?' · '+putDownNote(ph):''}`;
+    const look=e.put_down?'fill="var(--m-heuristic)" fill-opacity="0.18" stroke="var(--m-heuristic)" stroke-width="1" stroke-dasharray="3,2"':'fill="var(--m-heuristic)" opacity="0.75"';
+    s+=`<rect ${attr?attr+'="'+i+'"':''} x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" ${look}>${attr?'':'<title>'+tip+'</title>'}</rect>`;
+    if(w>60)s+=`<text x="${x0+4}" y="${yBar+9}" font-size="9" fill="${e.put_down?'var(--m-heuristic)':'#fff'}" pointer-events="none">${esc(e.app.slice(0,Math.floor(w/6)))}</text>`;});
   ((ph&&ph.unlocks)||[]).forEach(u=>{if(u.ts<t0||u.ts>=t1)return;const xu=x(u.ts);
     s+=`<path d="M${xu-3},${yBar-2} L${xu+3},${yBar-2} L${xu},${yBar+3} Z" fill="var(--ink)" opacity="0.8"><title>unlock → ${esc(u.app)} at ${fmtT(u.ts)} after ${u.gap_min} min locked${u.notification!=='unknown'?' · notification: '+u.notification:''}</title></path>`;});
   if(!segs.length)s+=`<text x="${L+44}" y="${yBar+10}" font-size="10" fill="var(--muted)">${phoneEmpty(ph,t0,t1)}</text>`;

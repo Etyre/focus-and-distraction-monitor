@@ -6,6 +6,14 @@ phone pushes the stream on its own schedule, so the data usually runs hours behi
 lane; `through()` says how far it reaches, and every payload carries it so the dashboard can
 say "phone data ends 12:12" instead of showing an empty lane.
 
+The stream says which app was on screen, not whether anyone was touching it. The one proxy is
+iOS Auto-Lock: an untouched (and, with attention awareness, unwatched) phone locks itself after
+the Auto-Lock interval, which ends the segment. So a segment that ends in a lock at almost exactly
+that interval was put down with the app open and barely used (`put_down`), one that locks earlier
+was in use to the end, and a longer one is ambiguous. The interval is read off the data
+(`autolock_s`: the sharp spike in lock-ended durations at one of iOS's Auto-Lock options), so a
+change in Settings (5 min until 2026-11-11, 2 min after) is picked up on its own.
+
 The monitor only displays this for now (a lane under each timeline). Feeding it to the
 evaluator is a separate step.
 """
@@ -48,6 +56,48 @@ NAMES = {
 }
 
 
+# iOS Settings > Display & Brightness > Auto-Lock offers these, in seconds.
+AUTOLOCK_OPTIONS = (30, 60, 120, 180, 240, 300)
+LOCK_GAP_S = 60.0          # no app on screen for this long after a segment = the phone was locked
+AUTOLOCK_HALF_WINDOW_S = 2 * 86400
+
+
+def _lock_ended_durations(c, t0: float, t1: float) -> list[float]:
+    """Durations of segments in [t0, t1) that ended by the phone locking (nothing on screen afterwards)."""
+    marks = ",".join("?" * len(NOT_USE))
+    rows = c.execute(f"""SELECT s.duration_s,
+                           (SELECT MIN(n.start_ts) FROM segments n
+                             WHERE n.start_ts >= s.end_ts AND n.bundle_id NOT IN ({marks})) - s.end_ts AS gap
+                         FROM segments s
+                         WHERE s.end_kind = 'explicit' AND s.end_ts IS NOT NULL AND s.duration_s IS NOT NULL
+                           AND s.start_ts >= ? AND s.start_ts < ? AND s.bundle_id NOT IN ({marks})""",
+                     (*NOT_USE, t0, t1, *NOT_USE)).fetchall()
+    return [r[0] for r in rows if r[1] is None or r[1] >= LOCK_GAP_S]
+
+
+def autolock_s(c, t: float) -> int | None:
+    """The Auto-Lock interval in force around time t, inferred from the data.
+
+    Self-locks pile up in a 15-second band just above the interval (300.0-310 s for a 5-minute
+    setting), while deliberate locks spread out. The option whose band holds the most lock-ended
+    segments wins, if it has at least 3 and stands clear of the surrounding durations. Two days
+    either side of t, so a setting change shows up within a couple of days of self-locks."""
+    durs = _lock_ended_durations(c, t - AUTOLOCK_HALF_WINDOW_S, t + AUTOLOCK_HALF_WINDOW_S)
+    if len(durs) < 3:
+        return None
+    best, best_n = None, 0
+    for L in AUTOLOCK_OPTIONS:
+        n = sum(1 for d in durs if L - 5 <= d < L + 15)
+        around = sum(1 for d in durs if (L - 45 <= d < L - 5) or (L + 15 <= d < L + 55)) / 4.0  # per 20 s
+        if n >= 3 and n > 2 * around and n > best_n:
+            best, best_n = L, n
+    return best
+
+
+def is_put_down(duration_s: float, locked: bool, L: int | None) -> bool:
+    return bool(L) and locked and L - 5 <= duration_s < L + 15
+
+
 def app_name(bundle: str) -> str:
     if bundle in NAMES:
         return NAMES[bundle]
@@ -85,16 +135,23 @@ def through(cfg=None) -> float | None:
 
 
 def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
-    """Phone segments and unlocks overlapping [t0, t1): {segments, unlocks, through}."""
+    """Phone segments and unlocks overlapping [t0, t1): {segments, unlocks, through, autolock_s}.
+
+    A segment carries `put_down` when the phone locked itself at the Auto-Lock interval: the app
+    was left open on an untouched phone, so the real use was the first seconds at most."""
     c = _connect(cfg)
     if c is None:
-        return {"segments": [], "unlocks": [], "through": None, "available": False}
+        return {"segments": [], "unlocks": [], "through": None, "available": False, "autolock_s": None}
     try:
         now = time.time()
+        L = autolock_s(c, (t0 + t1) / 2)
+        marks = ",".join("?" * len(NOT_USE))
         segs = []
-        for r in c.execute("""SELECT start_ts, end_ts, duration_s, bundle_id, transition_reason, end_kind
-                              FROM segments WHERE start_ts < ? AND COALESCE(end_ts, start_ts + ?) > ?
-                              ORDER BY start_ts""", (t1, open_cap_s, t0)):
+        for r in c.execute(f"""SELECT start_ts, end_ts, duration_s, bundle_id, transition_reason, end_kind,
+                                 (SELECT MIN(n.start_ts) FROM segments n
+                                   WHERE n.start_ts >= s.end_ts AND n.bundle_id NOT IN ({marks})) AS next_start
+                               FROM segments s WHERE start_ts < ? AND COALESCE(end_ts, start_ts + ?) > ?
+                               ORDER BY start_ts""", (*NOT_USE, t1, open_cap_s, t0)):
             if r["bundle_id"] in NOT_USE:
                 continue
             end = r["end_ts"] if r["end_ts"] is not None else min(r["start_ts"] + open_cap_s, now)
@@ -103,16 +160,20 @@ def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
             reason = (r["transition_reason"] or "")
             how = ("notification" if "notification" in reason else "home screen" if "homescreen" in reason
                    else "app switcher" if "appswitcher" in reason else "another app" if "externalrequest" in reason else "")
+            locked = (r["end_kind"] == "explicit" and r["end_ts"] is not None
+                      and (r["next_start"] is None or r["next_start"] - r["end_ts"] >= LOCK_GAP_S))
             segs.append({"start": max(r["start_ts"], t0), "end": min(end, t1), "bundle": r["bundle_id"],
-                         "app": app_name(r["bundle_id"]), "how": how, "open": r["end_kind"] == "open"})
+                         "app": app_name(r["bundle_id"]), "how": how, "open": r["end_kind"] == "open",
+                         "put_down": is_put_down(end - r["start_ts"], locked, L)})
         unlocks = [{"ts": r["ts"], "app": app_name(r["first_bundle_id"]), "notification": r["notification"],
                     "gap_min": round((r["gap_s"] or 0) / 60, 1)}
                    for r in c.execute("""SELECT ts, first_bundle_id, gap_s, notification FROM unlocks
                                          WHERE ts >= ? AND ts < ? AND excluded_reason IS NULL ORDER BY ts""", (t0, t1))]
         thr = c.execute("SELECT MAX(COALESCE(end_ts, start_ts)) FROM segments").fetchone()[0]
-        return {"segments": segs, "unlocks": unlocks, "through": float(thr) if thr else None, "available": True}
+        return {"segments": segs, "unlocks": unlocks, "through": float(thr) if thr else None, "available": True,
+                "autolock_s": L}
     except sqlite3.Error as e:
         log.warning("phone db: %s", e)
-        return {"segments": [], "unlocks": [], "through": None, "available": False}
+        return {"segments": [], "unlocks": [], "through": None, "available": False, "autolock_s": None}
     finally:
         c.close()

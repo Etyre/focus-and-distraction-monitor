@@ -73,7 +73,14 @@ first commit 2026-08-29, in continuous development since.
   [phone-unlock-logger](../phone-unlock-logger)'s database (`phone.py`, read-only; path in
   `phone_db`). The phone pushes its log to the Mac on its own schedule, so the lane usually runs
   hours behind the Mac lane; when it ends before the window does, the lane says so ("phone data
-  ends 12:12"). Display only for now: the evaluator does not see the phone yet.
+  ends 12:12"). The stream only says which app was on screen, not whether the phone was being
+  touched; the proxy is iOS Auto-Lock. A segment the phone ended by locking itself, i.e. one that
+  ends in a lock at almost exactly the Auto-Lock interval, means the app was left open on an idle
+  phone and barely used: it is flagged `put_down` and drawn hollow (dashed) in the lane. The
+  interval is inferred from the data (`phone.autolock_s`: lock-ended durations spike in a
+  15-second band above one of iOS's Auto-Lock options), so changing the setting needs no code
+  change; it takes a couple of days of self-locks to show up. Display only for now: the evaluator
+  does not see the phone yet.
 
 ### The app, the launcher and restarts
 
@@ -227,6 +234,10 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 * **Phone lane**: needs the phone-unlock-logger installed and running (its launchd agent reads the
   Biome stream every 2 hours) and, on the iPhone, Screen Time → Share Across Devices on.
+* **iPhone Auto-Lock** (Settings → Display & Brightness → Auto-Lock): 2 minutes, set 2026-11-11
+  (it was 5 minutes before). Shorter is better for the phone lane: a phone left open on the desk
+  shows as use for at most this long before it locks itself and the segment is flagged `put_down`.
+  Attention Aware Features on means looking at the phone also counts as use, which is right.
 
 * System Settings → Privacy & Security: **Screen Recording**, **Accessibility**, **Automation**
   (System Events, Google Chrome) for "Focus Monitor" (and for your terminal app when running from a shell).
@@ -273,3 +284,8 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * The phone lane lags: the iPhone syncs its foreground log to the Mac on its own schedule (often
   hours, sometimes a day), and the logger only collects every 2 hours. An empty phone lane for
   this afternoon means "not synced yet", not "no phone use" - the lane prints where its data ends.
+* Nothing in the phone data records touches, scrolling or the backlight; only which app was in
+  the foreground. The Auto-Lock interval is the one tell: in 30 days of 5-minute data, 40 of
+  1,349 lock-ended segments fell in 300-310 s (self-locks) against single digits in the
+  neighbouring 15-second bands. Under 5 min = active until locked by hand; at the interval = put
+  down; longer = ambiguous (either active to the end or idle for the final interval).
