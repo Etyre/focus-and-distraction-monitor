@@ -82,7 +82,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="card hidden" id="dayChatCard">
     <div class="row" style="justify-content:space-between"><b>Ask Claude about <span id="dayChatDay"></span></b><span><span class="muted small">one conversation per day, kept</span> <button class="small" onclick="toggleDayChat()">close</button></span></div>
     <div id="daychatlog" class="chatlog" style="max-height:380px"></div>
-    <div class="chatrow"><input id="daychatinput" placeholder="e.g. How did today go against what I intended? Where did my attention break down, and what would you change?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendDayChat();}"><button class="primary" onclick="sendDayChat()">Send</button></div>
+    <div class="chatrow"><input id="daychatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. How did today go against what I intended? Where did my attention break down, and what would you change?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendDayChat();}"><button class="primary" onclick="sendDayChat()">Send</button></div>
   </div>
   <div class="card"><div class="row" style="margin-bottom:6px;justify-content:space-between">
     <span class="muted small">Timeline — pinch or +/− to zoom · scroll to pan · double-click or 0 to reset · click a box for detail, a ● to resolve</span>
@@ -543,7 +543,7 @@ function renderQuestion(){
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
       <b>Talk to the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context; ask it something or tell it what was really going on</span>
       <div id="qchatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="qchatinput" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
+      <div class="chatrow"><input id="qchatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
     </div>`;
   qTLBind(q);
   scrubBind();
@@ -618,7 +618,7 @@ async function answerCardQuestion(id,idx){
 let qNoteSaved=null;
 function qNoteVal(id){const el=$('#qNote'+id);return (el&&el.value.trim())||null;}
 function qNoteField(q,saveFn){const done=qSettled(q),just=qNoteSaved===q.id;if(just)qNoteSaved=null;
-  return `<div class="row" style="gap:6px;align-items:flex-end;margin-top:6px;flex-wrap:nowrap"><textarea id="qNote${q.id}" rows="2" style="flex:1" placeholder="optional note about your answer — context the model should know (used as a precedent)" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();${done?`${saveFn}(${q.id})`:''}}">${esc(q.note||'')}</textarea>${done?`<button class="primary" style="flex:none" title="⌘⏎" onclick="${saveFn}(${q.id})">Save note</button>`:''}</div><div class="muted small" style="margin-top:2px">${done?(just?'✓ note saved':'edit the note and press Save note (⌘⏎)'):'saved along with the option you click'}</div>`;}
+  return `<div class="row" style="gap:6px;align-items:flex-end;margin-top:6px;flex-wrap:nowrap"><textarea id="qNote${q.id}" spellcheck="true" rows="2" style="flex:1" placeholder="optional note about your answer — context the model should know (used as a precedent)" onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();${done?`${saveFn}(${q.id})`:''}}">${esc(q.note||'')}</textarea>${done?`<button class="primary" style="flex:none" title="⌘⏎" onclick="${saveFn}(${q.id})">Save note</button>`:''}</div><div class="muted small" style="margin-top:2px">${done?(just?'✓ note saved':'edit the note and press Save note (⌘⏎)'):'saved along with the option you click'}</div>`;}
 async function saveNote(id,idx){
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:qNoteVal(id)})});draftClear($('#qNote'+id),false);
   qNoteSaved=id;}
@@ -706,11 +706,11 @@ function renderSpanCard(sp,oneOff){
         <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
         ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
       </div>
-      <textarea id="spanNote" rows="2" placeholder="optional note (what was really going on?)"></textarea></div>
+      <textarea id="spanNote" spellcheck="true" rows="2" placeholder="optional note (what was really going on?)"></textarea></div>
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
       <b>Talk to Claude about this span</b> <span class="muted small">— it sees the whole day's activity log, all spans, all Toggl entries, and sampled screenshots</span>
       <div id="spanchatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="spanchatinput" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Send</button></div>
+      <div class="chatrow"><input id="spanchatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Send</button></div>
     </div>`;
   spanTLBind(sp);
   renderSpanChat();
@@ -922,7 +922,7 @@ async function renderSwitch(id){
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalSel.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalSel.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalSel.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalSel.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
     ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">kind:</span> ${evalBtns(segEvalSel.interruption_kind,['self_distraction','focus_start','detour'],{self_distraction:'self-distraction',focus_start:'new focus start'},'interruption_kind')}</div>`:''}
-    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
+    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
@@ -933,7 +933,7 @@ async function renderSwitch(id){
   const chatBlock=`<div style="margin:10px 0 12px;border-top:1px solid var(--grid);padding-top:10px">
       <b>Talk to the evaluator that judged this segment</b> <span class="muted small">— the same conversation it made the decision in: same instructions, same context, same screenshots, its own answer; ask it something or tell it what was really going on</span>
       <div id="chatlog" class="chatlog"></div>
-      <div class="chatrow"><input id="chatinput" placeholder="e.g. Why did you label this passive? — or: that was a call with Dave, not solo reading" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Send</button></div>
+      <div class="chatrow"><input id="chatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. Why did you label this passive? — or: that was a call with Dave, not solo reading" onkeydown="if(event.key==='Enter'){event.preventDefault();sendChat();}"><button class="primary" onclick="sendChat()">Send</button></div>
     </div>`;
   $(detailTarget).innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Capture #${id}</b> · ${new Date(f.switch.ts*1000).toLocaleString()}</div><div>${nav}</div></div>
@@ -951,7 +951,7 @@ async function renderSwitch(id){
     ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
-      <textarea id="note" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
+      <textarea id="note" spellcheck="true" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
     ${f.question?'':chatBlock}`;
   switchTLBind(f);
   scrubBind();
