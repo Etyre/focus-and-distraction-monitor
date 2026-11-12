@@ -64,6 +64,13 @@ first commit 2026-08-29, in continuous development since.
 * Labels live on switches; your review always overrides the model. See `docs/measurement-scheme.md`
   for the full measurement & rating scheme.
 
+* **Phone lane.** Under every timeline (Day, span, question and capture views) a second lane shows
+  which app was on the iPhone's screen, with a tick per unlock, read from the
+  [phone-unlock-logger](../phone-unlock-logger)'s database (`phone.py`, read-only; path in
+  `phone_db`). The phone pushes its log to the Mac on its own schedule, so the lane usually runs
+  hours behind the Mac lane; when it ends before the window does, the lane says so ("phone data
+  ends 12:12"). Display only for now: the evaluator does not see the phone yet.
+
 ### The app, the launcher and restarts
 
 An eye appears in the menu bar while the monitor is running (👁 ⏸ when paused, 👁 ⚠︎ if the
@@ -113,6 +120,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 |---|---|
 | `focus_monitor/__main__.py` | Entry point: `collect`, `classify`, `web`, `app`, `run`, `stats`, `check`, `restart`. Sets up logging. |
 | `focus_monitor/config.py` | `Config` dataclass, `config.toml` loader, paths (data dir, log, Keychain lookup), pricing constants. |
+| `focus_monitor/phone.py` | Read-only view of the phone-unlock-logger's database: per-app phone segments and unlocks for a window, app-name map, and how far the phone data reaches. |
 | `focus_monitor/collector.py` | Active-window polling, screenshots, idle detection, segments and switches. |
 | `focus_monitor/classify.py` | Classifier service loop: waits the lookahead, runs the ensemble, flags uncertain switches. |
 | `focus_monitor/classifiers/` | `claude_vision.py` (Claude + screenshots), `heuristic.py` (rules), `learned.py` (logistic model), `base.py` (switch context). |
@@ -213,6 +221,9 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Settings that matter
 
+* **Phone lane**: needs the phone-unlock-logger installed and running (its launchd agent reads the
+  Biome stream every 2 hours) and, on the iPhone, Screen Time → Share Across Devices on.
+
 * System Settings → Privacy & Security: **Screen Recording**, **Accessibility**, **Automation**
   (System Events, Google Chrome) for "Focus Monitor" (and for your terminal app when running from a shell).
 * System Settings → General → **Login Items**: "Focus Monitor" (added by `install.sh`).
@@ -255,3 +266,6 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Before 2026-11-07 the launchd label was `com.focusmonitor` and the plist wrote to `/tmp`; the file
   is now `launchd/com.elityre.focus-and-distraction-monitor.plist`. Nothing was installed under the old
   label (the app runs as a Login Item), so no `bootout` was needed.
+* The phone lane lags: the iPhone syncs its foreground log to the Mac on its own schedule (often
+  hours, sometimes a day), and the logger only collects every 2 hours. An empty phone lane for
+  this afternoon means "not synced yet", not "no phone use" - the lane prints where its data ends.

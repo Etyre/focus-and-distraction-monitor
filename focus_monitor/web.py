@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import LABEL_HELP, LABEL_NAMES, LABELS, db, edits, ensemble, stats, toggl
+from . import phone, LABEL_HELP, LABEL_NAMES, LABELS, db, edits, ensemble, stats, toggl
 from .config import CONFIG_PATH, DATA_DIR, load_config, logical_date, screenshot_file
 
 app = FastAPI(title="Focus Monitor")
@@ -145,6 +145,7 @@ def api_day(day: str | None = None):
             "to_review": len(selected), "reviewed": reviewed,  # open questions + unresolved flags today
             "metric_slack": slack, "priority_open": n_prio,
             "short_breaks": stats.short_breaks(c, t0, t1),
+            "phone": phone.window(cfg, t0, t1),
             "toggl": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1), "description": e["description"],
                        "project": e["project"], "tags": e["tags"]} for e in toggl.entries_between(c, t0, t1)],
             "count_events": cfg.count_events, "min_focus_span_min": cfg.min_focus_span_min,
@@ -262,6 +263,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "coherence_issue": coherence_issue,
             "apps": _apps_by_time(sp["segments"]),
             "toggl": _toggl_with_coverage(c, sp["start"], sp["end"]),
+            "phone": phone.window(cfg, w0, w1),
             "toggl_entries": [{"start": max(e["start"], w0), "end": min(e["stop"] or time.time(), w1),
                                "description": e["description"], "project": e["project"]}
                               for e in toggl.entries_between(c, w0, w1)],
@@ -450,6 +452,7 @@ def api_switch(switch_id: int):
     te = next((e for e in toggl.entries_between(c, ts - 1, ts + 1)
                if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts)), None)
     full["toggl"] = {"description": te["description"], "project": te["project"], "tags": te["tags"]} if te else None
+    full["phone"] = phone.window(cfg, ts - 900, ts + 900)
     full["toggl_entries"] = [{"start": max(e["start"], ts - 900), "end": min(e["stop"] or time.time(), ts + 900),
                               "description": e["description"], "project": e["project"]}
                              for e in toggl.entries_between(c, ts - 900, ts + 900)]
@@ -632,6 +635,7 @@ def api_questions_queue(limit: int = 30):
         segs = stats.labelled_segments(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
         d["timeline"] = [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0]
         d["timeline_shots"] = _shots_for(c, d["timeline"])
+        d["phone"] = phone.window(cfg, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
         d["toggl_entries"] = [{"start": max(e["start"], d["seg_start"] - QCTX_S),
                                "end": min(e["stop"] or time.time(), d["seg_end"] + QCTX_S),
                                "description": e["description"], "project": e["project"]}
@@ -657,6 +661,7 @@ def api_questions_queue(limit: int = 30):
                     "SELECT id FROM switches WHERE to_segment=? LIMIT 1", (t["segment_id"],)).fetchone()),
                 "timeline": [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0],
                 "timeline_shots": _shots_for(c, [s for s in segs if s["duration"] > 0]),
+                "phone": phone.window(cfg, seg_start - QCTX_S, seg_end + QCTX_S),
                 "toggl_entries": [{"start": max(e["start"], seg_start - QCTX_S),
                                    "end": min(e["stop"] or time.time(), seg_end + QCTX_S),
                                    "description": e["description"], "project": e["project"]}

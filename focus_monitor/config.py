@@ -90,6 +90,8 @@ class Config:
     few_shot_reviews: int = 40
 
     about_me: str = ""
+    phone_db: str = ""     # the phone-unlock-logger's database; empty = its default location
+                           # (~/Library/Application Support/PhoneUnlockLogger/phone.db)
     distraction_domains: list[str] = field(default_factory=list)
     blocked_page_patterns: list[str] = field(default_factory=list)
     work_apps: list[str] = field(default_factory=list)
