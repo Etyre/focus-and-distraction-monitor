@@ -288,7 +288,7 @@ function zoomView(f,tc){zoomTo(f,tc);}
 function resetZoom(){if(!TL.d)return;[TL.tv0,TL.tv1]=[TL.def0,TL.def1];animateZoom();}
 function renderTimeline(){
   const d=TL.d; if(!d)return;
-  const W=1200,H=148,L=8,R=8,segs=d.segments, first=TL.view0,last=TL.view1;
+  const W=1200,H=152,L=8,R=8,segs=d.segments, first=TL.view0,last=TL.view1;
   const x=t=>L+(t-first)/(last-first)*(W-L-R), xc=t=>Math.max(L,Math.min(W-R,x(t)));
   const vis=(a,b)=>b>first&&a<last;
   let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">`;
@@ -299,7 +299,7 @@ function renderTimeline(){
   s+=`<line x1="${L}" x2="${W-R}" y1="62" y2="62" stroke="var(--axis)"/>`;
   s+=`<text x="${L}" y="94">Toggl</text>`;
   (d.toggl||[]).forEach((e,i)=>{if(!vis(e.start,e.end))return;const x0=xc(e.start),w=Math.max(1,xc(e.end)-x0-1);s+=`<rect data-t="${i}" x="${x0}" y="86" width="${w}" height="10" rx="2" fill="var(--m-ensemble)" opacity="0.7"/>`;});
-  s+=phoneTrack(d.phone,xc,first,last,L,120,110,'data-p');
+  s+=phoneTrack(d.phone,xc,first,last,L,140,131,'data-p');
   const spanOf=t=>d.focus_spans.find(sp=>t>=sp.start-1&&t<sp.end+1), inSpan=g=>!!spanOf(g.clip_start);
   const disqOf=t=>(d.disqualified||[]).find(q=>t>=q.start-1&&t<q.end+1);
   s+=`<defs><pattern id="hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1.5" height="4" fill="var(--ink)" opacity="0.55"/></pattern></defs>`;
