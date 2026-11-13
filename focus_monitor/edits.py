@@ -106,7 +106,7 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
     """Put a review question in the person's queue. Options are validated the way the generator's
     are (each maps to a concrete judgment of a segment) and the neutral pass-through reading is
     appended, so the card behaves exactly like a generated question."""
-    from .questions import passthrough_option
+    from .questions import passthrough_applies, passthrough_option
     if not c.execute("SELECT 1 FROM segments WHERE id=?", (segment_id,)).fetchone():
         raise BadEdit(f"no segment #{segment_id}")
     dup = c.execute("SELECT id, question FROM review_questions WHERE segment_id=? AND status='open'", (segment_id,)).fetchone()
@@ -128,7 +128,8 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
                      "interruption_kind": None, "content": ct, "hybrid": o.get("hybrid")})
     if not opts:
         raise BadEdit("no valid option (each needs a label and known content/switch labels)")
-    opts.append(passthrough_option(segment_id, opts))
+    if passthrough_applies(c, segment_id):
+        opts.append(passthrough_option(segment_id, opts))
     with db.tx(c):
         cur = c.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd,"
                         " created, chat_message_id) VALUES (?,?,?,?,?,?,?,?)",

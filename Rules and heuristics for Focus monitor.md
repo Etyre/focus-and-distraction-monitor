@@ -6,37 +6,39 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 
 * A **segment** is a period of time during which a particular window and tab is active on my computer.
 * A **switch** is the transition between seguments.
-* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea.  
+* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea.
   * Focus spans are always independent work, not interactive. Chatting in Signal never counts toward a focus span (though drafting a long message that I then send can - that is creative work).
-  * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.  
-  * A focus span ends when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).   
-  * Attention interruptions that are less than 5 minutes long do not break the focus span.   
-* An **attention-interruption event**  or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.  
-* A **self-distraction event** is a sub-case of an attention-interruption event in which I seek out stimulation or distraction without a clear intent.  
-  * For instance:  
-    * absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.  
-    * Opening a new tab to go to a blocked website.  
-    * Absentmindedly opening bumble  
-    * When I open Amazon without any particular objective and browse .
+  * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.
+  * A focus span ends...
+    * when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or
+    * if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).
+  * Attention interruptions that are less than 5 minutes long do not break the focus span.
+* An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
+* A **self-distraction event** is a sub-case of an attention-interruption event in which I seek out stimulation or distraction without a clear intent.
+  * For instance:
+    * absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.
+    * Opening a new tab to go to a blocked website.
+    * Absentmindedly opening bumble.
+    * When I open Amazon without any particular objective and browse.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
 * A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.
-  * Correspondence is work, and is tracked in its own right, but it is interactive rather than independent, so it never counts toward a focus span on its own.
-  * The one exception: email correspondence processed inside a focused task block (under a running toggl entry) is part of that focused task span.
+  * Correspondence is work, and is tracked in its own right, but it is interactive rather than independent, so it never counts toward a focus span on its own, unless I'm deliberately drafting a long message instead of engaged in a back and forth, which can count as a focused span.
+  * Correspondence processed inside a focused task block (under a running toggl entry) is part of that focused task span.
   * A live voice or video call is a meeting, not correspondence.
 * Focus span subtypes:
-  * A **focused task span** is a special kind of focus span, in which my attention is focused on executing on a series of taks without interuption.  
-    * Focused task spans are the *only* exception to the rule that a focus span entails having my attention on only one task / project / object / intention. In a focused task span, I'm switching between different tasks. But I'm overall focussed on efficiently executing on tasks, without interuption or distraction. 
-    * Discerning the difference between focused tasks processing or just doing tasks in a more lackadaisical and less focused way (tagged as "unfocused") requires judgement.  
-    * If executing on a focused task block, I’ll usually be operating from a todo list, referring back to that list between tasks. Alternatively, I might be going back to my daily page for explicit metacognition about which task to do next.   
-    * Computer activity can only count as Focused Task processing if there's a toggl entry running. 
+  * A **focused task span** is a special kind of focus span, in which my attention is focused on executing on a series of taks without interuption.
+    * Focused task spans are the main exception to the rule that a focus span entails having my attention on only one task / project / object / intention. In a focused task span, I'm switching between different tasks, but I'm maintaining an overall intention of executing on tasks without interuption or distraction.
+    * Discerning the difference between focused tasks processing or just doing tasks in a more lackadaisical and less focused way (tagged as "unfocused") requires judgement.
+    * If executing on a focused task block, I’ll usually be operating from a todo list, or my project tracker feed, referring back to that list or feed between tasks. Alternatively, I might be going back to my daily page for explicit metacognition about which task to do next.
+    * Computer activity can only count as Focused Task processing if there's a toggl entry running.
       * It doesn't have to be the *same* continuous toggl entry. It could be that there's one there's one for processing email, followed by another for doing taxes, followed by another for returning amazon packages. Or maybe there's a single toggl entry labled "task processing". But if there's there's not a running toggl entry, it can't be focused task work.
       * That does not imply the converse: just because a toggl entry is running does not make task segments focused. Judgement is required to evalate if a series of task segments are focused, unfocused, or distracted. 
       * Note that the absensece of a toggl entry disquailifes a span from being a *Focused* task span. But individual segments can and should still be tagged in the "task" category, regardless of whether there's a toggl running. Toggl is required as evidence of deliberate focus, not as evidence of task-nature.
     * Focused task spans will often include email correspondence. Correspondence that happens inside a task block (under a running toggl entry) is part of the focused task span, not a separate correspondence span; the segments are still tagged "correspondence".
-  * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video, some software. etc.  
-    * Creative work spans and focused task spans are mutually exclusive.  
-  * A **reading span** is a sub-type of focus span in which I'm reading  posts, papers, or books, and taking notes.
+  * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video. etc.
+    * Creative work spans and focused task spans are mutually exclusive.
+  * A **reading span** is a sub-type of focus span in which I'm reading  posts, papers, or books. This counts as a focus span only if I am actively reading: either making comments or taking notes. Most often, when reading I will take notes in parellel in Roam or LogSeq.
     * A reading span can lead directly into a creative span, if the notes I'm writing develop into a writing an essay. In this case, the whole block should be counted as one uninterrupeted focus span, even if part of that focus span is reading and the other part is creative. This is an exception to the general rule that task switching implies the end of a focus span, because I'm *not* switching intentions or changing the focus of my attention. Those are stable, even as the kind of work that I'm doing changes.
       * (However, correctly tagging writing work vs reading work, is unimportant compared to correctly capturing the length of a focus span)
   * A **planning / reflecting span** is a sub-type of focus span in which I'm doing metacognition rather than execution: reviewing my goals, journaling, prioritizing, deciding what to work on, or reflecting on how things are going. Typically this happens on my daily page or in a planning document.
@@ -64,10 +66,10 @@ The model can evaluate these lazily with a 15 minute delay, if that improves per
 
 ### The app tracks:
 
-1. The total focus time per day (the sum of the lengths of all the focus spans that day).  
-2. The length of the longest focus span of the day.  
-3. The number of attention-interruption events during focus spans.  
-4. The number of self-distraction events during focus spans.  
+1. The total focus time per day (the sum of the lengths of all the focus spans that day).
+2. The length of the longest focus span of the day.
+3. The number of attention-interruption events during focus spans.
+4. The number of self-distraction events during focus spans.
 5. The length of the longest fully absorbed focus span.
 
 ### Some rules and heuristics for evaluating which app transitions are attention-interruption events:
@@ -75,16 +77,19 @@ The model can evaluate these lazily with a 15 minute delay, if that improves per
 It's the app's job to review the data and make intelligent judgements about  whether the focus of the user's attention has remained stable or has shifted. 
 
 * Toggl should be taken as a highly-weighted clue about the focus the user's intention. If a toggl entry labled with a task is likely to cover a focus span in which the users attention was focused on that task. But toggl data is not definitive. A toggl entry could be runnning, and the user might have gotten destracted or shifted focus to something else without having chanaged the time-tracking. Or it might be that the user is continually getting briefly distracted by interruptions, and the minimum amount of interupted time has not been reached. It's the app's job to review the data and make intelligent judgements about what is actually a span of time in which the user's attention is focused on a single object / project / task / intention / goal.
-* Flipping to my daily page in roam / logseq, is never an attention-interruption event. I often want to take metacognitive notes on my daily page, and when I have a stray thought while focusing on something else, my protocol is to jot it down on my daily page.  
+* Flipping to my daily page in roam / logseq, is never an attention-interruption event. I often want to take metacognitive notes on my daily page, and when I have a stray thought while focusing on something else, my protocol is to jot it down on my daily page.
 * Briefly filling out my presesnce check form is not an inturpution or a self-distraction event.
-* When I’m reading, I’ll typically go back and forth between the window with the text and the window with my notes. 
+* When I’m reading, I’ll typically go back and forth between the window with the text and the window with my notes.
 * Taking notes is an indactor of focused work in general. If I'm reading, but not taking notes, that's leans stongly in favor of unfocused time.
 * Watching youtube is unfocused time, unless I'm watching a specific youtube video as part of answering a specific question or completing a specific task.
-* When switching between apps and windows, I may activate unrelated windows or tabs on the way to the ones that I'm looking for. If I'm writing something on desktop 3, and I need information from a webpage that I know is open in a tab in desktop 7, I may step through desktops 4, 5, 6, and 7, and then in desktop 7, rotate through several windows to find the one that I want, and then click through several open tabs in that window until I find the relevant webpage. If I'm looking for some peice of information that I know is somewhere on one of my desktops, I'll flip through even more windows. This should not be considered an attention-inturpution event. However, some judgement is required to distinguish this case from one in which I have in fact gotten briefly (or not so briefly) distracted and my focus shifted to a different task or object.
-* If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).  
+* When switching between apps and windows, I may activate unrelated windows or tabs on the way to the ones that I'm looking for. If I'm writing something on desktop 3, and I need information from a webpage that I know is open in a tab in desktop 7, I may step through desktops 4, 5, 6, and 7, and then in desktop 7, rotate through several windows to find the one that I want, and then click through several open tabs in that window until I find the relevant webpage. If I'm looking for some peice of information that I know is somewhere on one of my desktops, I'll flip through even more windows. This should not be considered an attention-inturpution event.
+  * However, some judgement is required to distinguish this case from one in which I have in fact gotten briefly (or not so briefly) distracted and my focus shifted to a different task or object.
+  * I should never spend more than 10 seconds on a page if I'm just passing through.
+* If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
-* If my computer is inactive, I can't be doing a task. 
 * My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.
+* Agent coding should usually count as a task, and be evaluated by the standards of task spans. Deep, contiuous  engagement with an agent, where the user is carefully reading, thinking about, and responding to a coding agent, or writing up up a detailed spec for a peice of software are both creative work.
+
 
 ### Lessons from reviews
 * During a meeting, judge each on-screen activity on its content: if it serves the meeting, count it as meeting time; if not, treat it as a distraction during the meeting rather than meeting work. (added 2026-10-08 from a review of segment 18151)

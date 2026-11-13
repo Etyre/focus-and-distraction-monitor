@@ -335,6 +335,29 @@ def _content_doubt(conn, segment_id: int) -> bool:
 PASSTHROUGH_LABEL = "Neither - just a window I passed through or had open, not actually looked at"
 
 
+PASSTHROUGH_MIN_P = 0.1   # the evaluator's p(content=transition) below which a long segment was plainly used
+
+
+def passthrough_applies(conn, segment_id: int) -> bool:
+    """Whether the pass-through reading is even possible for a segment. A window held longer
+    than the transit threshold (the measurement scheme's definition of a transition) that the
+    evaluator gave essentially no chance of being a transition was in use: offering "just
+    passed through" there contradicts what the model can see (user, 2026-11-12). Short
+    segments, and ones with no evaluation yet, keep the option."""
+    cfg = load_config()
+    g = conn.execute("SELECT COALESCE(end, start) - start AS secs FROM segments WHERE id=?", (segment_id,)).fetchone()
+    if g is None or g["secs"] <= cfg.transit_seconds:
+        return True
+    row = conn.execute("SELECT probs FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    if row is None or not row["probs"]:
+        return True
+    try:
+        p = (json.loads(row["probs"]).get("content") or {}).get("transition")
+    except ValueError:
+        return True
+    return p is None or p >= PASSTHROUGH_MIN_P
+
+
 def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
     """The neutral 'transition' answer every question offers: content=transition, continuation
     of whatever thread preceded (antecedent borrowed from a same-thread option when one exists)."""
@@ -616,10 +639,12 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             if t["source"] == "coherence" and not any(o.get("switch_label") == "interruption" for o in opts):
                 log.warning("rejecting coherence question without a split option (segment %d)", q.trigger_segment_id)
                 continue
-            # Always offer the pass-through reading - the person may know they were only
-            # travelling to another window (or it was simply sitting open on that desktop).
-            # It continues whatever thread came before, so it attaches to that antecedent.
-            opts.append(passthrough_option(q.trigger_segment_id, opts))
+            # Offer the pass-through reading - the person may know they were only travelling
+            # to another window (or it was simply sitting open on that desktop) - unless the
+            # segment was plainly in use. It continues whatever thread came before, so it
+            # attaches to that antecedent.
+            if passthrough_applies(conn, q.trigger_segment_id):
+                opts.append(passthrough_option(q.trigger_segment_id, opts))
             conn.execute(
                 "INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
                 " VALUES (?,?,?,?,?,?,?)",
