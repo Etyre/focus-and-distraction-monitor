@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS review_questions ( -- model-generated review question
     context TEXT NOT NULL,        -- 1-2 sentence narrative setting up the question
     question TEXT NOT NULL,
     options TEXT NOT NULL,        -- JSON [{label, segment_id, switch_label?, interruption_kind?, content?}]
-    status TEXT NOT NULL DEFAULT 'open',  -- open | answered | dismissed
+    status TEXT NOT NULL DEFAULT 'open',  -- open | answered | unsure | none | dismissed | declined (looked at, no question asked)
     answer TEXT,                  -- the chosen option's label
     note TEXT,                    -- the user's free-text context, fed to model precedents
     cost_usd REAL NOT NULL DEFAULT 0,

@@ -281,8 +281,8 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
             continue
         log.info("no thread question for segment %d (%s): its thread is %.0fs, under %.0fs",
                  t["segment_id"], t["source"], mass, floor_s)
-        conn.execute("UPDATE seg_evals SET uncertain=0, rationale=COALESCE(rationale,'') || ? WHERE segment_id=? AND uncertain=1",
-                     (f" | no thread question: the thread is {mass:.0f}s, under the {floor_s:.0f}s floor", t["segment_id"]))
+        decline(conn, t["segment_id"], t["source"], t["reason"],
+                f"the thread is {mass:.0f}s, under the {floor_s:.0f}s floor")
     if len(kept) != len(out):
         conn.commit()
     out = kept
@@ -367,6 +367,22 @@ def passthrough_applies(conn, segment_id: int) -> bool:
     except ValueError:
         return True
     return p is None or p >= PASSTHROUGH_MIN_P
+
+
+DECLINED_TEXT = "(no question: nothing the person could answer would resolve this doubt)"
+
+
+def decline(conn, segment_id: int, source: str, reason: str, why: str) -> None:
+    """Record that a doubt was looked at and no question was asked, so it is not gathered and
+    sent to the model again on the next pass (it used to be, every ~18 s, all night). A
+    'declined' row counts as handled wherever a question row does; the queue never shows it,
+    and re-evaluating the segment deletes it so the doubt can be raised afresh. The
+    needs-review flag goes with it: a doubt nobody can be asked about is not reviewable."""
+    conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created, status)"
+                 " VALUES (?,?,?,?,'[]',0,?,'declined')",
+                 (segment_id, source, reason[:300], DECLINED_TEXT, time.time()))
+    conn.execute("UPDATE seg_evals SET uncertain=0, rationale=COALESCE(rationale,'') || ? WHERE segment_id=? AND uncertain=1",
+                 (f" | no question: {why}", segment_id))
 
 
 def _resolved_edit(conn, o: dict) -> tuple:
@@ -624,6 +640,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
     by_id = {t["segment_id"]: t for t in trigs}
     n = 0
+    asked: set = set()
     per_q = cost / max(len(resp.parsed_output.questions), 1)
     with db.tx(conn):
         for q in resp.parsed_output.questions:
@@ -682,5 +699,12 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                 " VALUES (?,?,?,?,?,?,?)",
                 (q.trigger_segment_id, t["source"], q.context, q.question, json.dumps(opts), per_q, time.time()))
             n += 1
-    log.info("generated %d review question(s) ($%.3f)", n, cost)
+            asked.add(q.trigger_segment_id)
+        # Every doubt the model saw and passed over (or whose question failed validation) is
+        # written down as declined; otherwise the same doubt is gathered and sent again on the
+        # next pass, and the next, for as long as the model keeps passing.
+        declined = [t for t in trigs if t["segment_id"] not in asked]
+        for t in declined:
+            decline(conn, t["segment_id"], t["source"], t["reason"], "the model found none the person could answer")
+    log.info("generated %d review question(s), declined %d ($%.3f)", n, len(declined), cost)
     return n

@@ -286,6 +286,13 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Before 2026-11-07 the launchd label was `com.focusmonitor` and the plist wrote to `/tmp`; the file
   is now `launchd/com.elityre.focus-and-distraction-monitor.plist`. Nothing was installed under the old
   label (the app runs as a Login Item), so no `bootout` was needed.
+* A doubt the question generator looks at and passes over must be written down, or it comes back.
+  Until 2026-11-12 the only thing that marked a doubt as handled was a question row, so every
+  doubt the model declined (or whose thread question the thread-mass gate dropped) was gathered
+  and sent again on the next pass, about every 18 s, all night: 669 generator calls between
+  midnight and 4 AM for one question. Now a `declined` row in `review_questions` records the
+  pass-over (the queue never shows it; re-evaluating the segment deletes it) and the
+  needs-review flag is cleared with it.
 * The phone lane lags: the iPhone syncs its foreground log to the Mac on its own schedule (often
   hours, sometimes a day), and the logger only collects every 2 hours. An empty phone lane for
   this afternoon means "not synced yet", not "no phone use" - the lane prints where its data ends.

@@ -754,7 +754,7 @@ def _invalidate_derived(conn, t0: float, t1: float, questions: bool, summaries: 
     without one, and the coherence check re-runs on the new summary)."""
     nq = ns = 0
     if questions:
-        nq = conn.execute("""DELETE FROM review_questions WHERE status='open' AND segment_id IN
+        nq = conn.execute("""DELETE FROM review_questions WHERE status IN ('open', 'declined') AND segment_id IN
                              (SELECT id FROM segments WHERE start >= ? AND start < ?)""", (t0, t1)).rowcount
     if summaries:
         ns = conn.execute("DELETE FROM span_summaries WHERE start < ? AND end > ?", (t1, t0)).rowcount
