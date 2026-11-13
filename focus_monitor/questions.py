@@ -83,6 +83,17 @@ switch_label='interruption'.
 Content questions are equally welcome when content is the doubt: "was drafting that Signal \
 message routine correspondence ('correspondence') or writing you were absorbed in ('creative')?" - each \
 option sets a content label.
+ONE THING PER QUESTION (the person's rule, 2026-11-12): a question resolves exactly one dimension \
+- the thread relation (same thread, and which, or a separate one), OR the content, OR whether it \
+was done inside a live discussion (hybrid). Its options differ along that one dimension and \
+nothing else. When a DOUBT is uncertain along two dimensions, write two questions for the same \
+trigger_segment_id - "was the Amazon stretch part of the checklist work, or its own thing?" and \
+"were you deliberately getting an errand done there, or perusing without intent?" - never one \
+question whose options mix them. "Drifting", "browsing without intent", "perusing", "getting \
+pulled in" is content='passive' and belongs to a content question; on a thread question such \
+wording is just flavour, and two thread options that differ only in words about intent or mood \
+are ONE option (the app merges them). Whether a separate thread then counts as a self-distraction \
+is derived from the content and what followed; it is never asked.
 A thread question presupposes a thread: it only makes sense when there has been enough \
 sustained attention for there to be one. A few short segments of poking around (a minute here, \
 two minutes there, inside a bigger stretch of something else) are not a thread to be "the same \
@@ -358,6 +369,23 @@ def passthrough_applies(conn, segment_id: int) -> bool:
     return p is None or p >= PASSTHROUGH_MIN_P
 
 
+def _resolved_edit(conn, o: dict) -> tuple:
+    """The judgment an option would leave on its segment, blank fields filled from the current
+    evaluation (or review), so options are compared by effect."""
+    cur = conn.execute("""SELECT COALESCE(r.switch_label, e.switch_label) AS sw,
+                                 COALESCE(r.antecedent_id, e.antecedent_id) AS ante,
+                                 COALESCE(r.content, e.content) AS content, COALESCE(r.hybrid, e.hybrid) AS hybrid
+                          FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+                          LEFT JOIN seg_reviews r ON r.segment_id = g.id WHERE g.id=?""", (o["segment_id"],)).fetchone()
+    sw = o["switch_label"] if o["switch_label"] is not None else (cur["sw"] if cur else None)
+    ante = (o["antecedent_id"] if o["switch_label"] is not None else (cur["ante"] if cur else None))
+    if sw == "interruption":
+        ante = None
+    content = o["content"] if o["content"] is not None else (cur["content"] if cur else None)
+    hybrid = o["hybrid"] if o["hybrid"] is not None else (bool(cur["hybrid"]) if cur and cur["hybrid"] is not None else None)
+    return (o["segment_id"], sw, ante, content, hybrid)
+
+
 def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
     """The neutral 'transition' answer every question offers: content=transition, continuation
     of whatever thread preceded (antecedent borrowed from a same-thread option when one exists)."""
@@ -577,7 +605,8 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             "DOUBT below is of the same shape, include the kind of reading they named.\n"
             + "\n".join(mlines)})
     content_blocks.append({"type": "text", "text": "\n\n".join(parts)
-              + "\n\nWrite one question per DOUBT (trigger_segment_id = the doubted segment's id). "
+              + "\n\nWrite one question per dimension in doubt - usually one per DOUBT, two when both the "
+              "thread and the content are in doubt (trigger_segment_id = the doubted segment's id on each). "
               "A DOUBT may be omitted when no question the person could answer would resolve it."})
     system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
     resp = llm.parse(_client(), site="questions", 
@@ -623,10 +652,13 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             # likes to split one reading by what came after it ("a one-off question" vs "the
             # start of a run of lookups") - both write the same new thread on this segment, and
             # what the next segments continue is their own judgment. Keep the first label.
+            # A blank field means "leave the current judgment", so an option that says nothing
+            # about the switch and one that sets it to what the model already thinks are the
+            # same ruling: compare the edits as they would land, not as written.
             seen_edits: set = set()
             distinct = []
             for o in opts:
-                key = (o["segment_id"], o["switch_label"], o["antecedent_id"], o["content"], o["hybrid"])
+                key = _resolved_edit(conn, o)
                 if key in seen_edits:
                     log.warning("dropping duplicate option %r (same edit as an earlier one) on segment %d",
                                 o["label"][:60], q.trigger_segment_id)
