@@ -77,6 +77,24 @@ class DashboardWindow:
         main.setSubmenu_forItem_(edit, edit_item)
         NSApp.setMainMenu_(main)
 
+    def _fresh_webview(self):
+        # A web view kept across opens can go permanently blank: on 2026-11-14 WebKit killed its
+        # hung GPU process and the old web content process never painted again, so every later
+        # open showed an empty window until the app was restarted. Each open from closed therefore
+        # gets a new view and a new web content process. Drafts live in localStorage, which is
+        # shared through the default data store, so nothing typed is lost.
+        old = self.webview
+        frame = self.window.contentView().frame()
+        self.webview = WKWebView.alloc().initWithFrame_configuration_(frame, WKWebViewConfiguration.alloc().init())
+        self.webview.setAutoresizingMask_(18)  # width + height sizable
+        self.window.setContentView_(self.webview)
+        if old is not None:
+            # Otherwise WebKit may park the old process in its cache and hand it to the new view.
+            try:
+                old._killWebContentProcessAndResetState()
+            except Exception:
+                log.warning("could not retire the old dashboard web process", exc_info=True)
+
     def show(self, fragment: str = "day"):
         if self.window is None:
             self._install_edit_menu()
@@ -90,9 +108,8 @@ class DashboardWindow:
             # to wherever the window last lived (NSWindowCollectionBehaviorMoveToActiveSpace).
             self.window.setCollectionBehavior_(1 << 1)
             self.window.center()
-            self.webview = WKWebView.alloc().initWithFrame_configuration_(rect, WKWebViewConfiguration.alloc().init())
-            self.webview.setAutoresizingMask_(18)  # width + height sizable
-            self.window.setContentView_(self.webview)
+        if not self.window.isVisible():
+            self._fresh_webview()
         url = NSURL.URLWithString_(f"{self.base_url}/#{fragment}")
         self.webview.loadRequest_(NSURLRequest.requestWithURL_(url))
         NSApp.activateIgnoringOtherApps_(True)

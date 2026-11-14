@@ -261,6 +261,13 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   Accessibility / Automation to "Focus Monitor", not to Python; a bare script is denied silently.
 * macOS once froze the process solid for three days without killing it; the launcher now restarts on a
   stalled heartbeat (3 min while awake), and the app opts out of App Nap.
+* A blank dashboard window with a healthy server (`curl http://127.0.0.1:8790/` returns the page) is
+  the web view, not the app. On 2026-11-14 WebKit killed its hung GPU process and the window's
+  long-lived web content process never painted again (`FailedToAcquireBufferSpan` every 15 s in
+  `/usr/bin/log show --predicate 'processID == <app pid> AND subsystem == "com.apple.WebKit"'`), so
+  every open showed an empty window. Since then each open from closed builds a new web view and
+  retires the old process: close the window and open it again. Note `log` alone is a zsh builtin
+  and prints nothing useful; call `/usr/bin/log`.
 * The dashboard HTML is read once at startup: after editing it, `restart`. A restart wipes in-app state
   mid-review, which is why the automatic Stop hook was disabled.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.
