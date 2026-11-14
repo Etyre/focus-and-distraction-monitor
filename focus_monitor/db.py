@@ -256,8 +256,6 @@ CREATE TABLE IF NOT EXISTS span_summaries (   -- Claude's summary of each finish
 );
 CREATE INDEX IF NOT EXISTS span_summaries_start ON span_summaries(start);
 
-CREATE INDEX IF NOT EXISTS seg_evals_antecedent ON seg_evals(antecedent_id);     -- thread walks (questions.thread_mass_s)
-CREATE INDEX IF NOT EXISTS seg_reviews_antecedent ON seg_reviews(antecedent_id);
 
 CREATE TABLE IF NOT EXISTS llm_calls (        -- every structured-output model call (llm.py): which
     id INTEGER PRIMARY KEY,                   -- backend served it, what it cost at API prices
@@ -328,6 +326,10 @@ def connect() -> sqlite3.Connection:
     rvcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
     if rvcols and "antecedent_id" not in rvcols:
         conn.execute("ALTER TABLE seg_reviews ADD COLUMN antecedent_id INTEGER")
+    # Created here, not in SCHEMA: antecedent_id is added by the migrations just above, so on a
+    # brand-new database an index in SCHEMA ran before the column existed and connect() failed.
+    conn.execute("CREATE INDEX IF NOT EXISTS seg_evals_antecedent ON seg_evals(antecedent_id)")  # thread walks (questions.thread_mass_s)
+    conn.execute("CREATE INDEX IF NOT EXISTS seg_reviews_antecedent ON seg_reviews(antecedent_id)")
     if vcols and "hybrid" not in vcols:
         conn.execute("ALTER TABLE seg_evals ADD COLUMN hybrid INTEGER NOT NULL DEFAULT 0")
     if rvcols and "hybrid" not in rvcols:
