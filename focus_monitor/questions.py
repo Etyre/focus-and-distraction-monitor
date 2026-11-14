@@ -520,6 +520,37 @@ def stakes_text(detail_json: str | None) -> str:
 
 _last_sweep = 0.0
 SWEEP_EVERY_S = 1800.0
+_last_archive = 0.0
+ARCHIVED_MARK = " | review question archived unanswered"
+
+
+def archive_stale_questions(conn, cfg: Config | None = None, force: bool = False) -> int:
+    """Archive open questions nobody answered within cfg.question_archive_days of being asked
+    (user ruling 2026-11-14: past three days they will not be got to, and ~1,500 of them were
+    making the queue and its scoring slow). Nothing is deleted: the row keeps everything and
+    gets status 'archived' + archived_at. The segment's needs-review flag is cleared, as it is
+    for a dismissed question, so the timeline stops showing a dot with nothing behind it; the
+    marker appended to the rationale says which flags went this way. The model's judgment on
+    the segment stands. To bring one back: status='open', archived_at=NULL, seg_evals.uncertain=1
+    - and a `created` inside the window, or the next pass archives it again."""
+    global _last_archive
+    if not force and time.time() - _last_archive < SWEEP_EVERY_S:
+        return 0
+    _last_archive = time.time()
+    days = (cfg or load_config()).question_archive_days
+    if not days or days <= 0:
+        return 0
+    now = time.time()
+    with db.tx(conn):
+        rows = conn.execute("SELECT id, segment_id FROM review_questions WHERE status='open' AND created < ?",
+                            (now - days * 86400,)).fetchall()
+        for r in rows:
+            conn.execute("UPDATE review_questions SET status='archived', archived_at=? WHERE id=?", (now, r["id"]))
+            conn.execute("UPDATE seg_evals SET uncertain=0, rationale=COALESCE(rationale,'') || ? WHERE segment_id=? AND uncertain=1",
+                         (ARCHIVED_MARK, r["segment_id"]))
+    if rows:
+        log.info("archived %d review question(s) left unanswered for %.3g days", len(rows), days)
+    return len(rows)
 
 
 def retire_threadless_questions(conn, force: bool = False) -> int:

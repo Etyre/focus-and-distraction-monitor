@@ -349,6 +349,8 @@ def connect() -> sqlite3.Connection:
     if "answer_index" not in qcols:
         conn.execute("ALTER TABLE review_questions ADD COLUMN answer_index INTEGER")
         conn.execute("ALTER TABLE review_questions ADD COLUMN undo TEXT")
+    if qcols and "archived_at" not in qcols:
+        conn.execute("ALTER TABLE review_questions ADD COLUMN archived_at REAL")  # see questions.archive_stale_questions
     if qcols and "priority" not in qcols:
         # Review priority = stakes (how far the day's headline metrics could move depending on
         # the answer, in minute-equivalents) x the model's uncertainty. Recomputed when the day

@@ -245,7 +245,8 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * System Settings → General → **Login Items**: "Focus Monitor" (added by `install.sh`).
 * `config.toml` `[classifier]`: `llm_backend` (`subscription` needs a Claude Code login, `api` needs the
   key), `claude_model`, `claude_effort`, `daily_budget_usd` / `total_budget_usd`, `defer_*`,
-  `max_reviews_per_day`. `[profile]`: `about_me`, `distraction_domains`, `blocked_page_patterns`,
+  `max_reviews_per_day`, `question_archive_days` (3; an open review question older than this is
+  archived, 0 = never). `[profile]`: `about_me`, `distraction_domains`, `blocked_page_patterns`,
   `private_apps`, `neutral_patterns`, `ignore_apps`. `[day] day_start_hour` (a day runs 4am-4am).
 * Toggl Track API token: from the eye menu, or Keychain `FocusMonitor` / `toggl`.
 * LLM inbox notifications: `~/Library/Application Support/LLMInbox/config.env` (see `shared/README.md`).
@@ -268,6 +269,13 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   every open showed an empty window. Since then each open from closed builds a new web view and
   retires the old process: close the window and open it again. Note `log` alone is a zsh builtin
   and prints nothing useful; call `/usr/bin/log`.
+* Review questions left open for `question_archive_days` (3) are archived, not deleted
+  (`questions.archive_stale_questions`, every 30 min in the classifier loop; first run 2026-11-14
+  archived 1,472 of 1,529). The row keeps everything and gets `status='archived'` + `archived_at`;
+  the segment's needs-review flag is cleared (its rationale gets "review question archived
+  unanswered" appended) and the model's judgment stands. Age counts from `created`, so reopening an
+  answer on a question older than that sends it to the archive at the next pass. To see them:
+  `sqlite3 focus.db "SELECT id, question FROM review_questions WHERE status='archived'"`.
 * The review-question queue (`/api/questions/queue`) returns every priority question, so anything
   computed per question there is multiplied by the backlog. With ~460 priority questions open
   (2026-11-14) the per-question timelines made it take 25 s and 10 MB, and the Review tab sat on an

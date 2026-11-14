@@ -87,6 +87,8 @@ class Config:
                                               # the span as an event; this long or longer breaks the span
     min_focus_span_min: float = 10.0           # attention must be on a task this long to count as a span,
                                               # and only leaving such a span counts as an interruption/distraction
+    question_archive_days: float = 3.0        # an open review question this old is archived (kept, out of the
+                                              # queue): past ~3 days it will not get answered. 0 = never
     max_reviews_per_day: int = 8              # per day, review the top-N by rank (uncertainty x stakes)
     working_pair_window_min: float = 30.0     # A<->B bounced >= 3 times in this window => trivial pair
     uncertain_threshold: float = 0.65

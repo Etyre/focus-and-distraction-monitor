@@ -258,6 +258,7 @@ class ClassifierService:
         try:
             # Review priority (stakes x uncertainty) for new/stale questions - no model calls.
             from . import questions
+            questions.archive_stale_questions(self.conn, self.cfg)  # before scoring: no point scoring those
             questions.score_questions(self.conn, limit=80)
         except Exception:
             log.exception("question scoring failed")
