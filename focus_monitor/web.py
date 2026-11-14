@@ -660,14 +660,9 @@ def api_questions_queue(limit: int = 30):
         d["options"] = _json.loads(d["options"])
         d["stakes_text"] = _q.stakes_text(d.get("stakes_detail"))
         d["queue_counts"] = counts
-        segs = stats.labelled_segments(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
-        d["timeline"] = [{k: s.get(k) for k in keys} for s in segs if s["duration"] > 0]
-        d["timeline_shots"] = _shots_for(c, d["timeline"])
-        d["phone"] = phone.window(cfg, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)
-        d["toggl_entries"] = [{"start": max(e["start"], d["seg_start"] - QCTX_S),
-                               "end": min(e["stop"] or time.time(), d["seg_end"] + QCTX_S),
-                               "description": e["description"], "project": e["project"]}
-                              for e in toggl.entries_between(c, d["seg_start"] - QCTX_S, d["seg_end"] + QCTX_S)]
+        # No timeline here: building one per question made this endpoint take 25 s and 10 MB
+        # once ~460 priority questions were open (2026-11-14). The card fetches its own from
+        # /api/questions/{id}/context when it is shown.
         out.append(d)
     # Flagged segments whose question hasn't been composed yet: show them as pending cards
     # (the person opened the queue - the question must exist NOW) and start generating.
@@ -726,6 +721,25 @@ def _undo_question_answer(c, undo_json: str | None) -> dict:
         _restore_rows(c, "reviews", "switch_id", u["switch_id"], u.get("review"))
         c.execute("UPDATE switches SET status=? WHERE id=?", (u.get("switch_status"), u["switch_id"]))
     return u
+
+
+@app.get("/api/questions/{qid}/context")
+def api_question_context(qid: int):
+    """The timeline around one question's segment, fetched when its card is shown."""
+    c = conn()
+    g = c.execute("""SELECT g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end
+                     FROM review_questions q JOIN segments g ON g.id = q.segment_id WHERE q.id=?""", (qid,)).fetchone()
+    if not g:
+        raise HTTPException(404)
+    t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+            "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
+    timeline = [{k: s.get(k) for k in keys} for s in stats.labelled_segments(c, t0, t1) if s["duration"] > 0]
+    return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
+            "phone": phone.window(cfg, t0, t1),
+            "toggl_entries": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1),
+                               "description": e["description"], "project": e["project"]}
+                              for e in toggl.entries_between(c, t0, t1)]}
 
 
 @app.post("/api/questions/{qid}/answer")

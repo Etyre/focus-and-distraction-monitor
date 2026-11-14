@@ -268,6 +268,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   every open showed an empty window. Since then each open from closed builds a new web view and
   retires the old process: close the window and open it again. Note `log` alone is a zsh builtin
   and prints nothing useful; call `/usr/bin/log`.
+* The review-question queue (`/api/questions/queue`) returns every priority question, so anything
+  computed per question there is multiplied by the backlog. With ~460 priority questions open
+  (2026-11-14) the per-question timelines made it take 25 s and 10 MB, and the Review tab sat on an
+  empty card that whole time. The queue now carries no timelines; each card fetches its own from
+  `/api/questions/{id}/context` when shown (and warms the next one).
+* A segment can be flagged for review with no switch into it (the first segment after a wake from
+  sleep, e.g. 34062). Its "needs review" dot has only a question to open; treating the missing
+  switch id as a switch drew an empty card.
 * The dashboard HTML is read once at startup: after editing it, `restart`. A restart wipes in-app state
   mid-review, which is why the automatic Stop hook was disabled.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.
