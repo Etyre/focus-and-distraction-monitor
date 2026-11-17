@@ -480,6 +480,8 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             segs = segs[:last_v + 1]
     runs = _runs3(segs)
     break_s = break_min * 60
+    from .config import load_config as _lc0
+    title_apps = set(_lc0().title_apps)
     ante_of = {s["id"]: (s.get("antecedent_id"), s.get("antecedent_p", 0.85)) for s in segs}
 
     def _same_task(sp, r, away=()):
@@ -492,7 +494,13 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         last_run = focus_runs[-1]
         last = last_run["segments"][-1]
         if (first["app"], first["domain"]) == (last["app"], last["domain"]):
-            return True
+            # Same window/site = same task - except in an app whose window title names the
+            # project (config title_apps, e.g. Agent Coding): there two projects share one app
+            # and no site, and the Rules doc counts each project separately. A different title
+            # falls through to the stated thread pointer and the evaluator's own judgment.
+            ta, tb = (first.get("title") or ""), (last.get("title") or "")
+            if not (first["app"] in title_apps and ta and tb and ta != tb):
+                return True
         # Stated thread pointer first: where the evaluator (or the user) named an antecedent,
         # following the chain answers the membership question directly - no guessing. Link
         # confidences MULTIPLY along the path (the chain only holds if every link does); a
@@ -653,6 +661,15 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             elif r_["cat"] == "detour":
                 cur = 0.0
         sp["absorbed_max_min"] = best / 60
+        # A span needs at least one unbroken stay of `break_min` on its own object (user rule
+        # 2026-11-17, Rules doc on alternating between projects). The break threshold alone
+        # lets A 4 min / B 3 min / A 4 min ... run on as one long span on A with B as contained
+        # interruptions, since no single absence reaches 5 minutes; a stretch built only of
+        # shorter visits is not a span. Decided here, not by the evaluator: the honest switch
+        # labels (left A, returned to A) are exactly what assembles that span.
+        if best < break_s and sp["subtype"] not in (None, "meeting"):  # a meeting is a meeting
+            sp["subtype"] = None
+            sp["disq_reason"] = f"never stayed on it for {break_min:g} unbroken minutes"
         # Reading flowing into creative work is one span (Rules doc) but the timeline colors
         # each part by its own activity when both sides are substantial.
         fs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]

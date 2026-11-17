@@ -255,6 +255,22 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+* **A span needs one unbroken stay of 5 minutes (rule from Eli, 2026-11-17).** The break rule
+  alone (an absence under `break_min` does not end a span) turns project A 4 min / B 3 min /
+  A 4 min ... into one long span on A with B as contained interruptions, which the Rules doc
+  says is not a focus span. `stats.spans_and_events` now disqualifies a span whose longest
+  stretch with no contained interruption is under `break_min` ("never stayed on it for 5
+  unbroken minutes"); meetings are exempt, and a span review still overrides it. This lives in
+  the span logic because the evaluator cannot express it: the true labels (left A, returned to
+  A) are what assemble the span. On the 21 days before the change it disqualified nothing (the
+  shortest unbroken stay in any span was 6.4 min), because project switches inside Agent
+  Coding were not yet recorded as segments.
+* **Two Agent Coding projects were always "the same task".** `_same_task` returned true for the
+  same app and site before looking at anything else, and Agent Coding has no site. For apps in
+  `title_apps` a different window title now skips that shortcut, so the thread pointer and the
+  evaluator's judgment decide. Segments recorded before 2026-11-17 have no title and behave as
+  before.
+
 * **Non-browser window titles were never recorded (found 2026-11-17).** The collector asks
   System Events for `name of front window`, inside a `try` that swallows the failure, and it has
   returned nothing for every non-browser app since the first day: every such segment has an
