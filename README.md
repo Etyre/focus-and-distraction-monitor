@@ -287,6 +287,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   the neighbouring question on the same day. Before that the priority tier came first, and "next"
   jumped between days. A needs-review dot on the Day timeline opens its question inside that queue
   (the switch card only when the flag has no open question), so the arrows carry on from there.
+  Opening the Review tab always starts at the first open question of the day the Day tab is on
+  (none that day: the next later one).
+* A needs-review dot with no question behind it means a flag was raised after the segment's
+  question had already been declined, dismissed or archived: the generator counted that old row as
+  "asked" and never looked again (segment 34836, 2026-11-16, flagged by a propagating correction).
+  Those rows no longer count, so the next pass either writes a question or declines again and
+  clears the dot. Note `questions._triggers()` is not read-only: it declines short-thread doubts
+  as it gathers, so calling it by hand changes the live database.
 * The review-question queue (`/api/questions/queue`) returns every open question, so anything
   computed per question there is multiplied by the backlog. With ~460 priority questions open
   (2026-11-14) the per-question timelines made it take 25 s and 10 MB, and the Review tab sat on an

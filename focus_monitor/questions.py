@@ -169,11 +169,17 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     out = []
     # No time cutoff on uncertainty flags: every flag lights a needs-review dot on the
     # timeline, and every dot must have a question waiting - however old the segment.
+    # A declined, dismissed or archived row does not count as that question: each of those
+    # clears the flag when it is written, so a flag that is up now was raised AFTER it (a
+    # correction propagating, the daily audit) and is a new doubt. Counting them left dots with
+    # no question behind them (segment 34836, 2026-11-16: declined as a thread doubt at 17:40,
+    # then flagged by propagation, and never asked about).
     rows = conn.execute("""
         SELECT e.segment_id, e.uncertain, e.rationale, g.start
         FROM seg_evals e JOIN segments g ON g.id = e.segment_id
         LEFT JOIN seg_reviews r ON r.segment_id = e.segment_id
         LEFT JOIN review_questions q ON q.segment_id = e.segment_id
+                                    AND q.status NOT IN ('declined', 'dismissed', 'archived')
         WHERE e.uncertain = 1 AND r.segment_id IS NULL AND q.id IS NULL
         ORDER BY g.start DESC""").fetchall()
     for r in rows:

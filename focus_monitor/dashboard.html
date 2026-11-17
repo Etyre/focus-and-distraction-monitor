@@ -431,6 +431,9 @@ async function loadQueue(){
   qQueue=await api('/api/questions/queue');qqi=0; // chronological, oldest first
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
+  else{ // otherwise always the first question of the day the Day tab is on (user ruling 2026-11-16); none that day: the next later one
+    const day=$('#daypick').value||new Date(Date.now()-DAY_START_HOUR*3600*1000).toLocaleDateString('en-CA');
+    let i=qQueue.findIndex(q=>q.day===day);if(i<0)i=qQueue.findIndex(q=>q.day>day);if(i>=0)qqi=i;}
   pendingAfter=null;
   if(qQueue.length){renderQuestion();return;}
   await reviewEnsure('span');

@@ -676,6 +676,7 @@ def api_questions_queue(limit: int = 1000):
             segs = stats.labelled_segments(c, seg_start - QCTX_S, seg_end + QCTX_S)
             out.append({
                 "id": None, "pending": True, "segment_id": t["segment_id"], "source": t["source"],
+                "day": logical_date(seg_start).isoformat(),
                 "context": t["reason"], "question": None, "options": [], "tier": None,
                 "seg_start": seg_start, "seg_end": seg_end,
                 "app": g["app"], "title": g["title"], "domain": g["domain"],
