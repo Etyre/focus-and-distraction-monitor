@@ -122,8 +122,8 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                          + f"  [current: {c2['e_content']}/{c2['e_switch']}/{c2['e_kind']}]"
                          + (f"  // {c2['e_rationale'][:70]}" if c2["e_rationale"] else ""))
         content_blocks: list = []
-        sh = conn.execute("SELECT path FROM segment_shots WHERE segment_id=? ORDER BY ts LIMIT 1",
-                          (seg["id"],)).fetchone()
+        from . import shots as _shots
+        sh = next(iter(_shots.pick(conn, [seg["id"]], 1)), None)
         if sh:
             b = _b64(sh["path"])
             if b:

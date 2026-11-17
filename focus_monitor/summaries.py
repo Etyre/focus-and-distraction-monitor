@@ -126,11 +126,8 @@ def generate(conn, cfg: Config, sp) -> bool:
     content: list = []
     if ids:
         from .classifiers.claude_vision import _b64
-        qs = ",".join("?" * len(ids))
-        shots = [dict(r2) for r2 in conn.execute(
-            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", ids)]
-        step = max(1, len(shots) // 4)
-        for sh in shots[::step][:4]:
+        from . import shots as _shots
+        for sh in _shots.pick(conn, ids, 4):
             b = _b64(sh["path"])
             if b:
                 where = " - EXTERNAL display" if sh.get("display") else ""

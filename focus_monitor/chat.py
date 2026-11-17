@@ -219,14 +219,12 @@ class SpanChat:
         sp_ids = [s["id"] for r in sp["runs"] for s in r["segments"]]
         shot_rows = []
         if sp_ids:
-            qs = ",".join("?" * len(sp_ids))
-            shot_rows = [dict(r2) for r2 in conn.execute(
-                f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", sp_ids)]
+            from . import shots as _shots
+            shot_rows = _shots.pick(conn, sp_ids, 4)
         if not shot_rows:
             shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
                          for r in sp["runs"] for s in r["segments"] if s.get("first_screenshot")]
-        step = max(1, len(shot_rows) // 4)
-        for sh in shot_rows[::step][:4]:
+        for sh in shot_rows[:4]:
             b = _b64(sh["path"])
             if b:
                 blocks.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')}{' - EXTERNAL display' if sh.get('display') else ''}:"})

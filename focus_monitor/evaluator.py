@@ -278,17 +278,14 @@ class ChunkEvaluator:
                           f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
                           f"{e['description'] or '(unnamed)'}" for e in tg) or "  (none)"
         content: list[dict] = []
-        qs = ",".join("?" * len(target_ids))
-        shot_rows = [dict(r) for r in conn.execute(
-            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts",
-            list(target_ids)).fetchall()]
+        from . import shots as _shots
+        shot_rows = _shots.pick(conn, list(target_ids), MAX_SHOTS)  # the active display at each moment
         if not shot_rows:  # segments recorded before per-shot history existed
             shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
                          for s in target if s.get("first_screenshot")]
         app_of = {s["id"]: s["app"] for s in target}
-        step = max(1, len(shot_rows) // MAX_SHOTS)
         shot_meta: list[dict] = []
-        for r2 in shot_rows[::step][:MAX_SHOTS]:
+        for r2 in shot_rows[:MAX_SHOTS]:
             b = _b64(r2["path"])
             if b:
                 where = f" - EXTERNAL display {r2['display']}" if r2.get("display") else ""
@@ -684,11 +681,8 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
     content: list = []
     if ids:
         from .classifiers.claude_vision import _b64
-        qsr = ",".join("?" * len(ids))
-        shots = [dict(r2) for r2 in conn.execute(
-            f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qsr}) ORDER BY ts", ids)]
-        step = max(1, len(shots) // 8)
-        for sh in shots[::step][:8]:
+        from . import shots as _shots
+        for sh in _shots.pick(conn, ids, 8):
             b = _b64(sh["path"])
             if b:
                 content.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')} (segment id={sh['segment_id']}){' - EXTERNAL display' if sh.get('display') else ''}:"})

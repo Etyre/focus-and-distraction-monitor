@@ -140,6 +140,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/llm.py` | The one door for structured model calls: api vs. subscription backend, limit handling, cost log, shared preamble + `contact_eli` + inbox check. |
 | `focus_monitor/usage_log.py` | Appends every call to `~/.claude/app-usage/Focus-monitor.jsonl` for the Claude usage dashboard. |
 | `focus_monitor/chat.py` | Interactive chats about one switch, one span, or a whole day (the day chat edits records through tools). |
+| `focus_monitor/shots.py` | Picks which captures of a stretch a model is shown: one per capture moment, the display that held the active window, spread evenly. Used by the evaluator, audit, question generator, propagation, summaries and chat. |
 | `focus_monitor/questions.py` | Writes review questions for doubted segments; ranks the queue. Each question is about one dimension (thread, content, or hybrid); a doubt uncertain along two gets two questions on the same segment, and options that would land the same judgment (blank fields count as "as the model has it") are merged. Every question's options are the model's readings plus the app's own pass-through option ("just a window I passed through"), which is left out when the segment was plainly in use: held longer than `transit_seconds` and given under 10% chance of being a transition by the evaluator. |
 | `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge). |
 | `focus_monitor/resolver.py` | Attention-thread resolver: which thread a switch continues. |
@@ -303,6 +304,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * A segment can be flagged for review with no switch into it (the first segment after a wake from
   sleep, e.g. 34062). Its "needs review" dot has only a question to open; treating the missing
   switch id as a switch drew an empty card.
+* With an external monitor every capture moment stores one file per display, and the models
+  were shown every k-th ROW of `segment_shots`. The rows alternate laptop, external, so an even k
+  meant laptop only: on 2026-11-16 three minutes of commenting on a bill draft (external) were
+  judged as "the Sleep Bandit page sitting still" (laptop) and a question asked about a data
+  conflict that did not exist. 195 of the 1,114 evaluation runs that involved a second display saw
+  only the laptop (an upper bound on the damage: sometimes the laptop was the active one).
+  `shots.pick()` now samples moments and takes the active window's display. `eval_runs.shots`
+  records what a run was shown, which is how to check a suspicious judgment.
 * The dashboard HTML is read once at startup: after editing it, `restart`. A restart wipes in-app state
   mid-review, which is why the automatic Stop hook was disabled.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.

@@ -603,8 +603,8 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
     content_blocks: list = []
     parts = []
     for i, t in enumerate(trigs):
-        sh = conn.execute("SELECT path, display FROM segment_shots WHERE segment_id=? ORDER BY ts LIMIT 1",
-                          (t["segment_id"],)).fetchone()
+        from . import shots as _shots
+        sh = next(iter(_shots.pick(conn, [t["segment_id"]], 1)), None)
         if sh:
             b = _b64(sh["path"])
             if b:
