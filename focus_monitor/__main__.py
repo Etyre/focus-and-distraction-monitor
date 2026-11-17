@@ -94,7 +94,7 @@ def main():
         print("queued", evaluator.queue_wrong_display_rejudge(db.connect()), "stretch(es); the running app works through them")
     elif args.cmd == "check":
         from .collector import current_window, idle_seconds, take_screenshot
-        w = current_window()
+        w = current_window(cfg.title_apps)
         print("active window:", w or "FAILED - grant Accessibility/Automation permission to your terminal")
         print("idle seconds:", idle_seconds())
         shot = take_screenshot(cfg, "check")

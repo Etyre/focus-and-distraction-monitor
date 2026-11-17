@@ -103,6 +103,9 @@ class Config:
     blocked_page_patterns: list[str] = field(default_factory=list)
     work_apps: list[str] = field(default_factory=list)
     notes_apps: list[str] = field(default_factory=list)
+    # Non-browser apps whose window title is recorded, so a change of title (a different project
+    # in Agent Coding) starts a new segment. Other apps keep an empty title.
+    title_apps: list[str] = field(default_factory=lambda: ["Agent Coding"])
     # Quick-capture: adding a spare thought to your daily notes is never an interruption/distraction.
     daily_notes_apps: list[str] = field(default_factory=lambda: ["Roam Research", "Logseq"])
     daily_notes_domains: list[str] = field(default_factory=lambda: ["roamresearch.com", "logseq.com"])

@@ -226,7 +226,7 @@ launchctl bootout gui/$(id -u)/com.elityre.focus-and-distraction-monitor   # sto
 
 macOS will prompt for permissions the first time; grant your terminal app (for dev runs) or
 "Focus Monitor" (the bundle):
-* **Screen Recording** (screenshots and window titles)
+* **Screen Recording** (screenshots, and window titles for the apps in `title_apps`)
 * **Accessibility** and **Automation → System Events / Google Chrome** (AppleScript)
 
 Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
@@ -254,6 +254,19 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+* **Non-browser window titles were never recorded (found 2026-11-17).** The collector asks
+  System Events for `name of front window`, inside a `try` that swallows the failure, and it has
+  returned nothing for every non-browser app since the first day: every such segment has an
+  empty title (browser titles come from the browser's own AppleScript). So a change of project
+  inside Agent Coding, which does put the project in its window title, never started a new
+  segment, and the evaluator could tell projects apart only from screenshots. Apps listed in
+  `title_apps` (default `["Agent Coding"]`) now get their title from the window list
+  (`CGWindowListCopyWindowInfo`), which needs only Screen Recording. It is a list, not every
+  app, on purpose: a new title starts a new segment, so an app whose title ticks (a timer)
+  would shred the timeline, and Signal's title names the conversation. Titles in the window
+  list come back empty for a process without Screen Recording, so `focus_monitor check` run
+  from a terminal that lacks it shows no title even when the app records one.
 
 * Models moved on 2026-11-16: Opus 5 to Opus 5.5 (`claude_model`) and, for the thread resolver, Haiku 4.5
   to Haiku 5.5. Every Opus call already set its effort, so only the model name and the price constants in

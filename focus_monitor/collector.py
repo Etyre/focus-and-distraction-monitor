@@ -99,11 +99,34 @@ class WindowState:
         return host[4:] if host.startswith("www.") else host
 
 
-def current_window() -> WindowState | None:
+def _window_list_title(app: str) -> str:
+    """Title of the app's frontmost normal window, from the window list (needs only Screen
+    Recording, which the app already holds for screenshots). The list is front to back."""
+    try:
+        import Quartz
+        for w in Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+                Quartz.kCGNullWindowID):
+            if w.get("kCGWindowOwnerName") == app and w.get("kCGWindowLayer") == 0 and w.get("kCGWindowName"):
+                return str(w["kCGWindowName"])
+    except Exception:
+        log.exception("window-list title lookup failed")
+    return ""
+
+
+def current_window(title_apps=()) -> WindowState | None:
     out = osascript(FRONTMOST_SCRIPT)
     if not out:
         return None
     app, _, title = out.partition("\n")
+    app = app.strip()
+    # System Events has never returned a window name here (every non-browser segment up to
+    # 2026-11-17 has an empty title), so for apps where the title carries what the person is
+    # working on - Agent Coding puts the active project in it - read it from the window list.
+    # Limited to `title_apps`: a new title starts a new segment, and an app whose title ticks
+    # (a running timer) would shred the timeline.
+    if not title.strip() and app in title_apps:
+        title = _window_list_title(app)
     url = ""
     if app in CHROMIUM_APPS:
         r = osascript(CHROMIUM_URL_SCRIPT.format(app=app))
@@ -344,7 +367,7 @@ class Collector:
                               (self.short_idle_start, now - idle_for))
             log.info("short break: %.0fs", now - idle_for - self.short_idle_start)
             self.short_idle_start = None
-        state = current_window()
+        state = current_window(self.cfg.title_apps)
         if state is None or state.app in self.cfg.ignore_apps:
             return
         if self.current_idle or self.current_state is None:

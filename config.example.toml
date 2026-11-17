@@ -74,6 +74,9 @@ distraction_domains = ["lesswrong.com", "amazon.com", "bumble.com", "twitter.com
 blocked_page_patterns = ["blocked", "Freedom", "Cold Turkey", "StayFocusd", "chrome-extension://"]
 work_apps = ["Obsidian", "Code", "Cursor", "Terminal", "iTerm2", "Pages", "Google Docs", "Kindle", "Preview"]
 notes_apps = ["Obsidian", "Notes", "Roam Research", "Logseq", "Bear"]
+# Non-browser apps whose window title is recorded: a change of title (a different project in
+# Agent Coding) then starts a new segment. Leave out apps whose title ticks, such as a timer.
+title_apps = ["Agent Coding"]
 # Quick-capture: adding a spare thought to your daily notes is never an interruption or distraction -
 # it is part of staying focused. Matches a Roam/Logseq daily-notes / journal page.
 daily_notes_apps = ["Roam Research", "Logseq"]
