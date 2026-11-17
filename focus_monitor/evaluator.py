@@ -123,7 +123,8 @@ one block - judge each shift on its own.
    For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
 EARLIER segment (visible in the log) belonging to the SAME thread - the thing this segment \
 continues. For a continuation that is normally the immediately preceding non-transition segment; \
-for a return, the segment they left when the interruption began. Thread identity follows the \
+for a return, the last segment of what they were on BEFORE the interruption - the thing they \
+are coming back to - and never a segment of the interruption itself. Thread identity follows the \
 chain of antecedents, so the nearest member is enough - never reach further back than needed. \
 Probabilities are CONDITIONAL on the segment continuing an existing thread (whether it does at \
 all is your switch judgment) and sum to ~1 across candidates. Usually one candidate carries \
@@ -369,6 +370,13 @@ class ChunkEvaluator:
                     tot = sum(p for _, p in cands)
                     if tot > 0:
                         cands = [(i, p / tot) for i, p in cands]
+                    elif cands:
+                        # Every candidate at 0.0 is a malformed answer, not doubt: stored as is,
+                        # the lone survivor read as "0% sure which thread" and raised a thread
+                        # question about an obvious return to a meeting (segment 34907,
+                        # 2026-11-16). Share the mass evenly: one candidate becomes certain,
+                        # several stay a real tie.
+                        cands = [(i, 1.0 / len(cands)) for i, _ in cands]
                     ante = cands[0][0] if cands else None
                     if cands:
                         comb["antecedent"] = {str(i): p for i, p in cands}
@@ -755,6 +763,46 @@ def _invalidate_derived(conn, t0: float, t1: float, questions: bool, summaries: 
     return nq, ns
 
 
+WRONG_DISPLAY_REASON = "screenshots shown were of the wrong display"
+
+
+def queue_wrong_display_rejudge(conn) -> int:
+    """Queue for re-judgment every stretch whose current judgment came from a run that showed
+    the evaluator a segment only on a display that did NOT hold its active window (the
+    row-sampling bug fixed 2026-11-16, see shots.py). eval_runs.shots records what each run
+    saw. Safe to rerun: a re-judged segment belongs to a new run that saw the right display,
+    and a stretch already waiting in the queue is not added twice."""
+    import json as _json
+    from .shots import _display_of
+    seg_of = {r["path"]: r["segment_id"] for r in conn.execute("SELECT segment_id, path FROM segment_shots")}
+    active = {r["id"]: {d for d in (_display_of(r["first_screenshot"]), _display_of(r["last_screenshot"])) if d is not None}
+              for r in conn.execute("SELECT id, first_screenshot, last_screenshot FROM segments")}
+    owner = {r["segment_id"]: r["run_id"] for r in conn.execute("SELECT segment_id, run_id FROM seg_evals")}
+    bad = []
+    for r in conn.execute("SELECT id, t0, t1, shots FROM eval_runs WHERE shots IS NOT NULL ORDER BY t0"):
+        shown: dict[int, set] = {}
+        for s in _json.loads(r["shots"] or "[]"):
+            if s["path"] in seg_of:
+                shown.setdefault(seg_of[s["path"]], set()).add(_display_of(s["path"]))
+        if any(active.get(seg) and not (ds & active[seg]) and owner.get(seg) == r["id"] for seg, ds in shown.items()):
+            bad.append((r["t0"], r["t1"]))
+    windows: list[list[float]] = []
+    for t0, t1 in bad:
+        if windows and t0 - windows[-1][1] < 60:
+            windows[-1][1] = max(windows[-1][1], t1)
+        else:
+            windows.append([t0, t1])
+    n = 0
+    for t0, t1 in windows:
+        if conn.execute("SELECT 1 FROM reeval_queue WHERE done_at IS NULL AND t0 <= ? AND t1 >= ?", (t0, t1)).fetchone():
+            continue
+        conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)",
+                     (t0, t1, WRONG_DISPLAY_REASON, time.time()))
+        n += 1
+    log.info("queued %d stretch(es) for re-judgment: %s", n, WRONG_DISPLAY_REASON)
+    return n
+
+
 def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> int:
     """Re-judge stretches whose upstream data changed after they were evaluated (reeval_queue -
     e.g. a Toggl entry the person corrected later). Same evaluator, same context, plus a note
@@ -766,7 +814,8 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
         return 0
     done = 0
     for _ in range(max_chunks):
-        q = conn.execute("SELECT * FROM reeval_queue WHERE done_at IS NULL ORDER BY t0 LIMIT 1").fetchone()
+        # Newest first: recent days are the ones still under review.
+        q = conn.execute("SELECT * FROM reeval_queue WHERE done_at IS NULL ORDER BY t0 DESC LIMIT 1").fetchone()
         if not q:
             break
         horizon = time.time() - LAZY_S
@@ -777,12 +826,20 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
             continue
         c1 = end if end - start <= CHUNK_S * 1.5 else start + CHUNK_S
-        extra = (f"the {q['reason']} for this window AFTER your earlier judgment of it - the Toggl "
-                 f"entries listed above are the corrected ones and are AUTHORITATIVE: if a screenshot "
-                 f"shows a Toggl timer with a different name or still running, that is the uncorrected "
-                 f"state and must be ignored. Re-judge every segment against the listed entries; where "
-                 f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
-                 f"entries, change it.")
+        if q["reason"] == WRONG_DISPLAY_REASON:
+            extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
+                     "display: the person had two monitors and you were shown the one they were not "
+                     "working on. The screenshots above are of the display that held the active "
+                     "window. Re-judge every segment from them; where your earlier judgment "
+                     "(including the 'prior judgment' notes) rested on what the other screen showed, "
+                     "change it.")
+        else:
+            extra = (f"the {q['reason']} for this window AFTER your earlier judgment of it - the Toggl "
+                     f"entries listed above are the corrected ones and are AUTHORITATIVE: if a screenshot "
+                     f"shows a Toggl timer with a different name or still running, that is the uncorrected "
+                     f"state and must be ignored. Re-judge every segment against the listed entries; where "
+                     f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
+                     f"entries, change it.")
         try:
             n = _get().evaluate_chunk(conn, start, c1, extra=extra)
         except Exception:

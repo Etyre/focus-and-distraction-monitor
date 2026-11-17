@@ -106,7 +106,7 @@ Code Stop hook in `.claude/settings.json` used to run exactly that after every t
 refused rather than restarted into.
 
 Headless alternative: `run` (same three services, no icon). Pieces can also run separately:
-`collect`, `classify [--once] [--no-claude]`, `web`, `stats --days 14`.
+`collect`, `classify [--once] [--no-claude]`, `web`, `stats --days 14`, `rejudge-wrong-display` (see Gotchas).
 
 ### Model calls: two backends and the LLM inbox
 
@@ -312,6 +312,18 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   only the laptop (an upper bound on the damage: sometimes the laptop was the active one).
   `shots.pick()` now samples moments and takes the active window's display. `eval_runs.shots`
   records what a run was shown, which is how to check a suspicious judgment.
+* To re-judge what the wrong-display bug touched: `.venv/bin/python -m focus_monitor
+  rejudge-wrong-display` queues every stretch whose current judgment came from a run that showed a
+  segment only on the non-active display (81 stretches, ~16.5 h of activity, when first run). The
+  running app works through `reeval_queue` one chunk per classifier cycle, newest first, inside the
+  daily budget; each re-judged chunk retires the open questions written from the old judgment.
+* A thread question saying the model is "0% sure which thread this continues" came from a
+  malformed evaluator answer: every candidate antecedent at probability 0.0 (one of them the
+  segment itself). All-zero candidates now share the mass evenly instead of reading as doubt.
+* About a quarter of "return" judgments linked the segment to the detour it came back from, not
+  to the thing returned to (the prompt said "the segment they left when the interruption began").
+  The evaluator prompt now says: the last segment of what they were on before the interruption,
+  never a segment of the interruption itself. Earlier links were not rewritten.
 * The dashboard HTML is read once at startup: after editing it, `restart`. A restart wipes in-app state
   mid-review, which is why the automatic Stop hook was disabled.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.

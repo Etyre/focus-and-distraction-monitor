@@ -38,6 +38,8 @@ def main():
     s = sub.add_parser("stats", help="print daily metrics")
     s.add_argument("--days", type=int, default=7)
     sub.add_parser("check", help="check permissions / API access")
+    sub.add_parser("rejudge-wrong-display", help="queue stretches judged from the wrong monitor's screenshots; "
+                                                 "the running app re-judges them in the background")
     rs = sub.add_parser("restart", help="ask the running menu bar app to relaunch itself (picks up source edits)")
     rs.add_argument("--if-stale", action="store_true", help="only when a source file is newer than the running process")
     rs.add_argument("--hook", action="store_true", help="print Claude Code hook JSON (silent when nothing happened)")
@@ -87,6 +89,9 @@ def main():
         for m in stats.metrics_range(conn, args.days):
             print(f"{m['day']:10} {m['longest_focus_min']:8.0f} {m['total_focus_min']:8.0f} {m['interruption_count']:5d} "
                   f"{m['distraction_count']:5d} {m['distracted_min']:6.0f} {m['active_min']:7.0f} {m['spend_usd']:6.2f}")
+    elif args.cmd == "rejudge-wrong-display":
+        from . import db, evaluator
+        print("queued", evaluator.queue_wrong_display_rejudge(db.connect()), "stretch(es); the running app works through them")
     elif args.cmd == "check":
         from .collector import current_window, idle_seconds, take_screenshot
         w = current_window()
