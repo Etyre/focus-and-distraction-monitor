@@ -47,7 +47,8 @@ frugal_min_reviews = 40
 audit_sample_rate = 0.10       # fraction still sent to Claude for calibration once frugal
 count_events = false           # phase 1: measure focus spans only. Set true later to surface event counts.
 break_min = 5                  # detours shorter than this are events INSIDE a span; 5+ min breaks the span
-min_focus_span_min = 15        # a span must contain >= 15 min of focus; leaving one is what counts as an event
+min_unbroken_min = 10          # a span needs one continuous block this long, uninterrupted, or it is not a span
+min_focus_span_min = 10        # a span must contain >= 10 min of focus; leaving one is what counts as an event
 question_archive_days = 3      # an open review question older than this is archived: kept in the database,
                                # out of the queue and off the timeline. 0 = never archive
 max_reviews_per_day = 8        # per day, the review queue shows the top-N most uncertain x highest-stakes

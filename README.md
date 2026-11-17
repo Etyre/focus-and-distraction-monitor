@@ -37,8 +37,9 @@ first commit 2026-08-29, in continuous development since.
   span with what ended it (interrupted / distracted / away / new task) and the Toggl entries inside it.
 * **Nested spans** (`break_min`, `min_focus_span_min`): a focus span is a container. Detours
   (interrupted/distracted) shorter than 5 min are events *inside* the span and don't end it; a detour of
-  5+ min, being away, a recording gap, or a deliberate focus start ends it. A span must contain ≥ 15 min
-  of focus. "Length" is wall-clock; "focused" excludes contained detours.
+  5+ min, being away, a recording gap, or a deliberate focus start ends it. A span must contain ≥ 10 min
+  of focus (`min_focus_span_min`; it was 15 until 2026-11-17, against the Rules doc's 10), including one
+  continuous block of 10 min with no contained detour (`min_unbroken_min`). "Length" is wall-clock; "focused" excludes contained detours.
 * **Toggl as intent**: set your Toggl Track API token from the menu (or Keychain account `toggl`).
   The synced table is also served read-only at `GET /api/toggl/current` and `GET /api/toggl/entries?days=N`
   (added 2026-11-11) so the executive assistant reads Toggl from here instead of polling Toggl itself; its
@@ -255,16 +256,18 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
-* **A span needs one unbroken stay of 5 minutes (rule from Eli, 2026-11-17).** The break rule
+* **A span needs one continuous 10-minute block (rule from Eli, 2026-11-17).** The break rule
   alone (an absence under `break_min` does not end a span) turns project A 4 min / B 3 min /
   A 4 min ... into one long span on A with B as contained interruptions, which the Rules doc
   says is not a focus span. `stats.spans_and_events` now disqualifies a span whose longest
-  stretch with no contained interruption is under `break_min` ("never stayed on it for 5
-  unbroken minutes"); meetings are exempt, and a span review still overrides it. This lives in
-  the span logic because the evaluator cannot express it: the true labels (left A, returned to
-  A) are what assemble the span. On the 21 days before the change it disqualified nothing (the
-  shortest unbroken stay in any span was 6.4 min), because project switches inside Agent
-  Coding were not yet recorded as segments.
+  stretch with no contained interruption is under `min_unbroken_min` (10; "no continuous block
+  of 10 minutes"); meetings are exempt, and a span review still overrides it. This lives in the
+  span logic because the evaluator cannot express it: the true labels (left A, returned to A)
+  are what assemble the span. Measured on the 21 days before the change: 12 of 83 non-meeting
+  spans (242 of about 3,250 focus minutes) fall under the bar; they spend 22% of their length
+  on diversions against 5% for the rest. A bar of 5 minutes would have removed none.
+  Together with lowering `min_focus_span_min` from 15 to 10 the same day, the 21 days go from
+  103 spans to 130 (about 3,250 to 3,490 focus minutes).
 * **Two Agent Coding projects were always "the same task".** `_same_task` returned true for the
   same app and site before looking at anything else, and Agent Coding has no site. For apps in
   `title_apps` a different window title now skips that shortcut, so the thread pointer and the

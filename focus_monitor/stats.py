@@ -481,7 +481,10 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     runs = _runs3(segs)
     break_s = break_min * 60
     from .config import load_config as _lc0
-    title_apps = set(_lc0().title_apps)
+    _cfg0 = _lc0()
+    title_apps = set(_cfg0.title_apps)
+    # min_focus_min=0 is a caller asking for every hypothesized span (focus_context): no gate.
+    unbroken_s = _cfg0.min_unbroken_min * 60 if min_focus_min > 0 else 0
     ante_of = {s["id"]: (s.get("antecedent_id"), s.get("antecedent_p", 0.85)) for s in segs}
 
     def _same_task(sp, r, away=()):
@@ -661,22 +664,15 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             elif r_["cat"] == "detour":
                 cur = 0.0
         sp["absorbed_max_min"] = best / 60
-        # A span needs at least one unbroken stay of `break_min` on its own object (user rule
-        # 2026-11-17, Rules doc on alternating between projects). The break threshold alone
-        # lets A 4 min / B 3 min / A 4 min ... run on as one long span on A with B as contained
-        # interruptions, since no single absence reaches 5 minutes; a stretch built only of
-        # shorter visits is not a span. Decided here, not by the evaluator: the honest switch
-        # labels (left A, returned to A) are exactly what assembles that span.
-        if best < break_s and sp["subtype"] not in (None, "meeting"):  # a meeting is a meeting
+        # A span needs one unbroken block of `min_unbroken_min` (10) on its own object (user
+        # rule 2026-11-17). The break threshold alone lets A 4 min / B 3 min / A 4 min ... run
+        # on as one long span on A with B as contained interruptions, since no single absence
+        # reaches 5 minutes; a stretch with no 10-minute continuous block is not a focus span.
+        # Decided here, not by the evaluator: the honest switch labels (left A, returned to A)
+        # are exactly what assembles that span.
+        if best < unbroken_s and sp["subtype"] not in (None, "meeting"):  # a meeting is a meeting
             sp["subtype"] = None
-            sp["disq_reason"] = f"never stayed on it for {break_min:g} unbroken minutes"
-        # Reading flowing into creative work is one span (Rules doc) but the timeline colors
-        # each part by its own activity when both sides are substantial.
-        fs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
-        ft = sum(s["duration"] for s in fs) or 1.0
-        rd = sum(s["duration"] for s in fs if s.get("activity") == "reading") / ft
-        cr = sum(s["duration"] for s in fs if s.get("activity") in ("writing", "coding")) / ft
-        sp["mixed_read_create"] = rd >= 0.2 and cr >= 0.2
+            sp["disq_reason"] = f"no continuous block of {_cfg0.min_unbroken_min:g} minutes"
     # Spans disqualified by the Toggl gate (task churn, no entry) are unfocused time, not spans.
     disqualified = [sp for sp in qualifying if sp["subtype"] is None]
     qualifying = [sp for sp in qualifying if sp["subtype"] is not None]

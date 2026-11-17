@@ -85,6 +85,8 @@ class Config:
                                               # the goal is accurate focus spans (stable vs. broken).
     break_min: float = 5.0                    # a detour (interrupted/distracted) shorter than this stays INSIDE
                                               # the span as an event; this long or longer breaks the span
+    min_unbroken_min: float = 10.0             # a span needs one continuous block this long with no
+                                               # contained interruption, or it is not a focus span
     min_focus_span_min: float = 10.0           # attention must be on a task this long to count as a span,
                                               # and only leaving such a span counts as an interruption/distraction
     question_archive_days: float = 3.0        # an open review question this old is archived (kept, out of the
