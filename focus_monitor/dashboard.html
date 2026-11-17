@@ -359,7 +359,7 @@ function el_render(el,s,d,segs,flags){
   el.querySelectorAll('circle[data-flag]').forEach(c=>{const id=+c.dataset.flag,seg=+c.dataset.seg;
     c.addEventListener('mousemove',e=>showTT(e,'<b>Needs review</b><br>uncertain — click to resolve'));
     c.addEventListener('mouseleave',hideTT);
-    c.addEventListener('click',()=>{hideTT();if(id)openSwitch(id);else openQuestionFor(seg);});});
+    c.addEventListener('click',()=>{hideTT();openQuestionFor(seg,id);});});
   el.querySelectorAll('rect[data-spb]').forEach(b=>b.addEventListener('click',()=>{hideTT();openSpanReview(+b.dataset.spb);}));
   el.querySelectorAll('rect[data-p]').forEach(r=>{const e=d.phone.segments[+r.dataset.p];r.addEventListener('mousemove',ev=>showTT(ev,`<b>📱 ${esc(e.app)}</b><br>${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?'<br>opened from '+e.how:''}${e.open?'<br>still open at last sync':''}${e.put_down?'<br>'+putDownNote(d.phone):''}`));r.addEventListener('mouseleave',hideTT);});
   el.querySelectorAll('rect[data-t]').forEach(r=>{const e=d.toggl[+r.dataset.t];r.addEventListener('mousemove',ev=>showTT(ev,`<b>Toggl:</b> ${esc(e.description)||'(untitled)'}<br>${fmtT(e.start)}–${fmtT(e.end)}${e.project?'<br>project: '+esc(e.project):''}${e.tags?'<br>tags: '+esc(e.tags):''}`));r.addEventListener('mouseleave',hideTT);});
@@ -408,7 +408,7 @@ async function reviewStep(dir){
   if(rvBusy)return;rvBusy=true;
   try{
     let m=reviewMode;
-    if(m==='oneoff'){m=returnMode;if(!m)return await loadQueue();if(dir<0)return reviewShow(m);} // back = the item you came from
+    if(m==='oneoff'){m=returnMode;if(!m){if(dir>0&&current&&current.switch)pendingAfter=current.switch.ts;return await loadQueue();}if(dir<0)return reviewShow(m);} // back = the item you came from
     if(!m)return await loadQueue();
     let i=rvIdx(m)+dir;
     for(;;){
@@ -420,13 +420,18 @@ async function reviewStep(dir){
 async function loadQueue(){
   detailTarget='#reviewCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
+  if(pendingQSeg!=null&&pendingQSw){const seg=pendingQSeg,sw=pendingQSw;pendingQSw=null;
+    let has=false;try{has=(await api('/api/questions/queue')).some(q=>q.segment_id===seg);}catch(e){}
+    if(!has){pendingQSeg=null;pendingSwitch=sw;}}
   if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;enterOneOff();$('#queueCount').textContent='viewing selected switch — ⌘→ continues the review queue';renderSwitch(id).catch(e=>{$('#reviewCard').innerHTML='<div class="muted">That switch could not be loaded ('+esc(String(e.message||e).slice(0,120))+').</div>';});return;}
   if(pendingSpan!=null){const ts=pendingSpan;pendingSpan=null;
     try{const sp=await api('/api/span/at?ts='+ts);enterOneOff();$('#queueCount').textContent='viewing selected span — ⌘→ continues the review queue';renderSpanCard(sp,true);return;}
     catch(e){/* no span there any more — fall through to the queue */}}
   RV.span=RV.switch=false;spanQueue=[];queue=[];sqi=0;qi=0;reviewMode=null;returnMode=null;
-  qQueue=await api('/api/questions/queue'+(pendingQSeg!=null?'?limit=100000':''));qqi=0;
+  qQueue=await api('/api/questions/queue');qqi=0; // chronological, oldest first
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
+  else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
+  pendingAfter=null;
   if(qQueue.length){renderQuestion();return;}
   await reviewEnsure('span');
   if(spanQueue.length){renderSpanReview();return;}
@@ -825,9 +830,11 @@ async function spanReview(verdict,subtype){
 }
 let pendingSpan=null;
 function openSpanReview(ts){pendingSpan=ts; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
-let pendingSwitch=null,pendingQSeg=null,detailTarget='#reviewCard';
+let pendingSwitch=null,pendingQSeg=null,pendingQSw=null,pendingAfter=null,detailTarget='#reviewCard';
 // A flagged segment with no switch into it (the first one after a wake from sleep) has only its question to show.
-function openQuestionFor(seg){pendingQSeg=seg; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
+// A needs-review dot opens its question IN the queue, so next/prev walk that day's questions in
+// time order; `sw` is the fallback switch card for a flag that has no open question.
+function openQuestionFor(seg,sw){pendingQSeg=seg;pendingQSw=sw||null; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
 function openSwitch(id){pendingSwitch=id; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
 function openSegment(id){pendingSwitch=id; if((location.hash||'#day')==='#segments')loadSegments(); else location.hash='segments';}
 async function loadSegments(){detailTarget='#segCard';

@@ -626,10 +626,11 @@ def _shots_for(c, timeline: list[dict]) -> list[dict]:
 
 
 @app.get("/api/questions/queue")
-def api_questions_queue(limit: int = 30):
-    """Open review questions in review order: the priority tier first (an answer could move
-    the day's headline metrics, weighted by the model's uncertainty), then the rest; each tier
-    in chronological order."""
+def api_questions_queue(limit: int = 1000):
+    """Open review questions in chronological order, oldest first (user ruling 2026-11-16: "next"
+    must be the next question on that day; the earlier priority-tier-first order jumped between
+    days). The tier still rides on each question for the card to show. Nothing older than
+    question_archive_days is open, so the whole list is short enough to return."""
     from . import questions as _q
     from .config import logical_date
     c = conn()
@@ -650,11 +651,9 @@ def api_questions_queue(limit: int = 30):
         d["tier"] = ("priority" if (d.get("priority") or 0) >= _q.PRIORITY_CUT else
                      "routine" if d.get("priority") is not None else "unscored")
         d["day"] = logical_date(d["seg_start"]).isoformat()
-    rows.sort(key=lambda d: ({"priority": 0, "routine": 1, "unscored": 2}[d["tier"]], d["seg_start"]))
+    rows.sort(key=lambda d: d["seg_start"])
     counts = {"priority": sum(1 for d in rows if d["tier"] == "priority"), "total": len(rows)}
-    # Every priority question is offered - as many as it takes to pin down the day's metrics -
-    # and the limit only trims the routine tail.
-    shown = [d for d in rows if d["tier"] == "priority"] + [d for d in rows if d["tier"] != "priority"][:limit]
+    shown = rows[:limit]
     for d in shown:
         d.pop("undo", None)
         d["options"] = _json.loads(d["options"])
@@ -693,6 +692,7 @@ def api_questions_queue(limit: int = 30):
             _kick_question_generation()
     except Exception:
         log.exception("pending-question placeholders failed")
+    out.sort(key=lambda d: d["seg_start"])  # placeholders for questions still being written take their place in time
     return out
 
 

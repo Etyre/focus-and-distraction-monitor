@@ -283,7 +283,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   unanswered" appended) and the model's judgment stands. Age counts from `created`, so reopening an
   answer on a question older than that sends it to the archive at the next pass. To see them:
   `sqlite3 focus.db "SELECT id, question FROM review_questions WHERE status='archived'"`.
-* The review-question queue (`/api/questions/queue`) returns every priority question, so anything
+* Review questions are shown in time order, oldest first (since 2026-11-16), so next/prev move to
+  the neighbouring question on the same day. Before that the priority tier came first, and "next"
+  jumped between days. A needs-review dot on the Day timeline opens its question inside that queue
+  (the switch card only when the flag has no open question), so the arrows carry on from there.
+* The review-question queue (`/api/questions/queue`) returns every open question, so anything
   computed per question there is multiplied by the backlog. With ~460 priority questions open
   (2026-11-14) the per-question timelines made it take 25 s and 10 MB, and the Review tab sat on an
   empty card that whole time. The queue now carries no timelines; each card fetches its own from
