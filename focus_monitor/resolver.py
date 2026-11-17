@@ -21,9 +21,9 @@ from .config import Config, load_config
 
 log = logging.getLogger("resolver")
 
-MODEL = "claude-haiku-4-5"
-PRICE_IN, PRICE_OUT = 1.0 / 1e6, 5.0 / 1e6
-PRICE_CW, PRICE_CR = 1.25 / 1e6, 0.1 / 1e6
+MODEL = "claude-haiku-5-5"
+PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6
+PRICE_CW, PRICE_CR = 0.125 / 1e6, 0.01 / 1e6
 
 SYSTEM = """You are the attention-thread resolver for a personal focus monitor. You answer ONE \
 question: the person just switched windows, the switch was classified "continuation" (nothing new \
@@ -92,7 +92,8 @@ class ThreadResolver:
                   + f"TO {sw['app']} {sw['domain'] or ''} | {(sw['title'] or '')[:80]}\n"
                   + "What is being continued?")
         resp = llm.parse(self.client, site="resolver", 
-            model=MODEL, max_tokens=300,
+            # Haiku 5.5 thinks by default and thinking shares max_tokens: 300 (the Haiku 4.5 value) truncated.
+            model=MODEL, max_tokens=2000, output_config={"effort": "low"},
             system=[{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": prompt}],
             output_format=ThreadJudgement)

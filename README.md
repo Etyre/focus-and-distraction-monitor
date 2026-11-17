@@ -1,7 +1,7 @@
 # Focus & Distraction Monitor
 
 Watches the active window on your Mac, screenshots on every window switch, and uses an
-ensemble of models (Claude Opus 5 vision + a rules model + a logistic-regression model that
+ensemble of models (Claude Opus 5.5 vision + a rules model + a logistic-regression model that
 learns from your reviews) to judge whether each switch was a **continuation of focus**, an
 **attention interruption**, a **self-distraction**, or a deliberate **task change**. A local
 dashboard shows full-absorption spans on a timeline, daily metrics, a review queue for
@@ -253,6 +253,13 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+* Models moved on 2026-11-16: Opus 5 to Opus 5.5 (`claude_model`) and, for the thread resolver, Haiku 4.5
+  to Haiku 5.5. Every Opus call already set its effort, so only the model name and the price constants in
+  `config.py` changed (costs logged before that date used Opus 5 prices). Haiku 5.5 thinks by default and
+  thinking shares `max_tokens`, so the resolver went from 300 to 2000 with `effort: low`. Checked with one
+  real call per model through both backends. `config.toml` is untracked, so a fresh checkout needs its
+  `claude_model` set too; the running app keeps the old models until `restart`.
 
 * A Finder-launched app has no shell environment: the API key must be in the Keychain or the `env`
   file, not just `~/.zshrc`.

@@ -26,10 +26,10 @@ CHROMIUM_APPS = {"Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Chr
 SAFARI_APPS = {"Safari"}
 
 # Claude Opus 5 first-party pricing, USD per token
-PRICE_INPUT = 5.0 / 1e6
-PRICE_OUTPUT = 25.0 / 1e6
-PRICE_CACHE_WRITE = 6.25 / 1e6
-PRICE_CACHE_READ = 0.5 / 1e6
+PRICE_INPUT = 4.0 / 1e6      # Claude Opus 5.5 (Opus 5, used until 2026-11-16, was 5 / 25 / 6.25 / 0.5)
+PRICE_OUTPUT = 20.0 / 1e6
+PRICE_CACHE_WRITE = 5.0 / 1e6
+PRICE_CACHE_READ = 0.2 / 1e6
 
 
 @dataclass
@@ -58,7 +58,7 @@ class Config:
     lookahead_seconds: float = 120.0
     transit_seconds: float = 20.0   # windows held shorter than this while moving are 'transit'; the whole
                                     # hunt (desktops -> window -> tab) is judged once as one transition  # wait this long after a switch so we can see what followed
-    claude_model: str = "claude-opus-5"
+    claude_model: str = "claude-opus-5-5"
     claude_effort: str = "medium"
     daily_budget_usd: float = 40.0     # generous; per-switch Opus is gated against it,
     total_budget_usd: float = 500.0    # cumulative ceiling: flag the user when crossed
