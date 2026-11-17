@@ -466,6 +466,7 @@ def api_switch(switch_id: int):
         # Flagged but no question composed yet: start composing now so a reload has it.
         flagged = c.execute("""SELECT 1 FROM seg_evals e LEFT JOIN seg_reviews r ON r.segment_id=e.segment_id
                                LEFT JOIN review_questions q ON q.segment_id=e.segment_id
+                                    AND q.status NOT IN ('declined', 'dismissed', 'archived')  -- as in questions._triggers
                                WHERE e.segment_id=? AND e.uncertain=1 AND r.segment_id IS NULL
                                AND q.id IS NULL""", (to_id,)).fetchone()
         if flagged:
