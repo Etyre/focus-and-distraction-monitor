@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from . import db, llm
 from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config,
                      load_config)
-from .seg_models import CONTENTS, KINDS, SWITCHES
+from .seg_models import CONTENTS, KINDS, SWITCHES, stored_switch
 
 log = logging.getLogger("questions")
 
@@ -686,6 +686,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                 continue
             opts = []
             for o in q.options:
+                o.switch_label = stored_switch(o.switch_label)  # tolerate the shown name 'shift'
                 if o.switch_label is not None and o.switch_label not in SWITCHES:
                     continue
                 if o.content is not None and o.content not in CONTENTS:

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import db, llm
 from .config import Config, load_config
-from .seg_models import CONTENTS, KINDS, SWITCHES
+from .seg_models import CONTENTS, KINDS, SWITCHES, stored_switch
 
 log = logging.getLogger("propagation")
 
@@ -165,6 +165,7 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                     sets, args = [], []
                     if v.content in CONTENTS:
                         sets.append("content=?"); args.append(v.content)
+                    v.switch_label = stored_switch(v.switch_label)  # tolerate the shown name 'shift'
                     if v.switch_label in SWITCHES:
                         sets.append("switch_label=?"); args.append(v.switch_label)
                         sets.append("interruption_kind=?")

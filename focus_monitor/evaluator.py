@@ -8,9 +8,10 @@ judges:
      ("task" describes the activity's nature regardless of Toggl - Toggl is span-level
      evidence of deliberate focus, not evidence of task-nature.)
   2. SWITCH - what the switch INTO the segment was, attention-wise:
-     continuation (no shift of the object of attention) | interruption (a shift) |
-     return (coming back to the pre-interruption object)
-  3. For interruptions, the KIND - a retrospective judgment of what the shift BECAME:
+     continuation (no shift of the object of attention) | shift (attention moved to
+     something new; stored as 'interruption', see seg_models.shown_switch) |
+     return (coming back to the object attention was on before a shift)
+  3. For shifts, the KIND - a retrospective judgment of what the shift BECAME:
      self_distraction (it became stimulation-seeking/consumption) |
      focus_start (it became a sustained new object of focused attention) |
      detour (it didn't become either - brief, or never cohered into one focused thing)
@@ -32,7 +33,8 @@ from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUT
 
 log = logging.getLogger("evaluator")
 
-from .seg_models import CONTENTS, HEADS, KINDS, SWITCHES  # single source for the label space
+from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # single source for the label space
+                         shown_switch, stored_switch)
 
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
@@ -48,9 +50,9 @@ class AnteCand(BaseModel):
 class SegJudgement(BaseModel):
     segment_id: int
     content: str = Field(description="One of: creative, task, correspondence, reading, planning, other, passive, meeting, idle, transition.")
-    switch: str = Field(description="The switch INTO this segment: continuation, interruption, or return.")
-    antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is interruption (a new thread).")
-    interruption_kind: str | None = Field(default=None, description="Only when switch is 'interruption': self_distraction, focus_start, or detour.")
+    switch: str = Field(description="The switch INTO this segment: continuation, shift, or return.")
+    antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is shift (a new thread).")
+    shift_kind: str | None = Field(default=None, description="Only when switch is 'shift': self_distraction, focus_start, or detour.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
     hybrid: bool = Field(default=False, description="True when the activity (reading, task, creative, planning...) was being done INSIDE a live discussion with someone - e.g. reading a bill together on a call while taking notes. Keep content = the activity; hybrid marks the live-discussion dimension. False for solo work and for plain meetings (content='meeting').")
     note: str = Field(description="One short sentence of reasoning.")
@@ -107,7 +109,7 @@ person settles. Transitions are never attention shifts in themselves; their swit
 already sitting open on a desktop and got cycled past - a segment of roughly 15 seconds or less \
 with no screenshot and no scroll/typing evidence, flanked by segments of the same thread, is a \
 pass-through regardless of what the window contains (a Substack post, a feed, a comic). Ten \
-seconds is not consumption; do not label it passive or an interruption on the strength of the \
+seconds is not consumption; do not label it passive or a shift on the strength of the \
 window's name alone.
 2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
@@ -118,20 +120,24 @@ running AND the pattern looks like focused task processing - operating from a to
 returning to it between tasks, efficient execution. A running Toggl entry alone is NOT \
 sufficient (people forget timers); and without a running entry, task-to-task hopping is never \
 one block - judge each shift on its own.
-   - interruption: the object of attention changed.
-   - return: coming back to the object they were on before an interruption.
+   - shift: the object of attention changed to something new. This is a judgment about this \
+one switch only, and applies at any time of day, whether or not a focus span is running. (The \
+person's rules use "attention-interruption event" for something narrower: a shift that happens \
+during a focus span. The app works out which shifts are those; you only say whether attention \
+moved.)
+   - return: attention moved back to an object they were on before an earlier shift.
    For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
 EARLIER segment (visible in the log) belonging to the SAME thread - the thing this segment \
 continues. For a continuation that is normally the immediately preceding non-transition segment; \
-for a return, the last segment of what they were on BEFORE the interruption - the thing they \
-are coming back to - and never a segment of the interruption itself. Thread identity follows the \
+for a return, the last segment of what they were on BEFORE the shift away - the thing they \
+are coming back to - and never a segment of the time away itself. Thread identity follows the \
 chain of antecedents, so the nearest member is enough - never reach further back than needed. \
 Probabilities are CONDITIONAL on the segment continuing an existing thread (whether it does at \
 all is your switch judgment) and sum to ~1 across candidates. Usually one candidate carries \
 essentially all the mass; when you are genuinely torn between two attachments, say so with a \
 runner-up (and rarely a third). This pointer is the primary statement of thread structure; \
 make it consistent with your switch judgment.
-3. interruption_kind - ONLY for switch='interruption'. These are RETROSPECTIVE judgments: you \
+3. shift_kind - ONLY for switch='shift'. These are RETROSPECTIVE judgments: you \
 see what came after, so name what the shift BECAME, not what it looked like in the moment.
    - self_distraction: the time away became stimulation-seeking/consumption (passive content, \
 feeds, a blocked site, absent-minded shopping/dating apps) - regardless of how long it lasted.
@@ -190,7 +196,7 @@ class ChunkEvaluator:
         lines = ["The person has corrected past judgments - follow these precedents:"]
         for r in rows:
             what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
-            verdict = " / ".join(v for v in (r["content"], r["switch_label"], r["interruption_kind"]) if v)
+            verdict = " / ".join(v for v in (r["content"], shown_switch(r["switch_label"]), r["interruption_kind"]) if v)
             if r["hybrid"]:
                 verdict += " + hybrid (inside a live discussion)"
             elif r["hybrid"] == 0:
@@ -325,8 +331,8 @@ class ChunkEvaluator:
                     if j.segment_id not in target_ids:
                         continue
                     c = j.content.strip().lower()
-                    sw = j.switch.strip().lower()
-                    k = (j.interruption_kind or "").strip().lower() or None
+                    sw = stored_switch(j.switch.strip().lower())  # the model says 'shift'
+                    k = (j.shift_kind or "").strip().lower() or None
                     if c not in CONTENTS or sw not in SWITCHES or (k is not None and k not in KINDS):
                         log.warning("bad judgement for segment %d: %s/%s/%s", j.segment_id, c, sw, k)
                         continue
@@ -412,8 +418,8 @@ class ChunkEvaluator:
                     betas=["server-side-fallback-2026-07-01"], fallbacks="default")
 
             def _cmp(a, b):
-                pa = {j.segment_id: (j.content, j.switch, j.interruption_kind) for j in a.segments}
-                pb = {j.segment_id: (j.content, j.switch, j.interruption_kind) for j in b.segments}
+                pa = {j.segment_id: (j.content, stored_switch(j.switch), j.shift_kind) for j in a.segments}
+                pb = {j.segment_id: (j.content, stored_switch(j.switch), j.shift_kind) for j in b.segments}
                 keys = set(pa) & set(pb)
                 if not keys:
                     return 0.0, "no overlapping segments"
@@ -449,8 +455,8 @@ def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> in
         try:
             extra = (f"a whole-span coherence review of this stretch found: {r['issue']} "
                      f"Re-judge with that in hand. If a NEW piece of work begins mid-stretch, "
-                     f"mark the segment where it begins as switch='interruption', "
-                     f"interruption_kind='focus_start'.")
+                     f"mark the segment where it begins as switch='shift', "
+                     f"shift_kind='focus_start'.")
             self_n = _get().evaluate_chunk(conn, r["start"] - 1, r["end"] + 1, extra=extra)
             log.info("coherence-driven re-evaluation of %s-%s: %d segments re-judged",
                      dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"),
@@ -477,7 +483,7 @@ def derive_kind(conn, cfg: Config | None = None, segment_id: int = 0, note: str 
              f"what preceded it (their ruling is authoritative - do not relitigate it"
              + (f"; their note: {note}" if note else "") + "). "
              f"Your job is the derived half: given the recorded record of what FOLLOWED, judge "
-             f"what that thread became - interruption_kind='focus_start' if it became a "
+             f"what that thread became - shift_kind='focus_start' if it became a "
              f"sustained object of focused attention, 'detour' if it stayed brief or never "
              f"cohered, 'self_distraction' if it became consumption. Re-judge the affected "
              f"segments' kinds (and downstream switches like returns) accordingly.")
@@ -502,7 +508,7 @@ CHAT_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "label": {"type": "string", "description": "The answer as an option label, in the person's own terms, e.g. 'A window that was just open on my desktop, not looked at'."},
          "content": {"type": ["string", "null"], "enum": list(CONTENTS) + [None], "description": "Content label this asserts, or null to leave the content as judged."},
-         "switch_label": {"type": ["string", "null"], "enum": list(SWITCHES) + [None], "description": "continuation | interruption | return, or null to leave the thread relation as judged."},
+         "switch_label": {"type": ["string", "null"], "enum": list(SHOWN_SWITCHES) + [None], "description": "continuation | shift (a separate thread began) | return, or null to leave the thread relation as judged."},
          "antecedent_id": {"type": ["integer", "null"], "description": "For continuation/return: the id of the segment this continues (from the log), else null."},
          "hybrid": {"type": ["boolean", "null"], "description": "true = the activity was done inside a live discussion; false = solo; null = no ruling."},
          "note": {"type": "string", "description": "One sentence, in the person's words, stored as the precedent future judgments see: what was really going on and why it is labelled this way."}},
@@ -559,7 +565,7 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         preds = conn.execute("SELECT model, p_content, p_switch, p_kind FROM seg_predictions WHERE segment_id=?",
                              (segment_id,)).fetchall()
         ptxt = "\n".join(f"  {p['model']}: content={p['p_content']} switch={p['p_switch']}" for p in preds) or "  (none stored)"
-        vtxt = (f"resolved: content={ev_row['content']}, switch={ev_row['switch_label']}, "
+        vtxt = (f"resolved: content={ev_row['content']}, switch={shown_switch(ev_row['switch_label'])}, "
                 f"kind={ev_row['interruption_kind']}, rationale: {ev_row['rationale']}") if ev_row else "(no evaluation recorded)"
         system = [{"type": "text", "text": ev._system_blocks(conn)[0]["text"], "cache_control": {"type": "ephemeral"}}]
         api_msgs = []
@@ -616,7 +622,8 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
             j = dict(b.input)
             if j.get("content") not in CONTENTS:
                 j["content"] = None
-            if j.get("switch_label") not in SWITCHES:
+            j["switch_label"] = stored_switch(j.get("switch_label"))
+            if j["switch_label"] not in SWITCHES:
                 j["switch_label"] = None
             if j["switch_label"] not in ("continuation", "return"):
                 j["antecedent_id"] = None

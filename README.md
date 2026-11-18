@@ -256,6 +256,21 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+* **"Shift" and "interruption" are two things (renamed 2026-11-17).** The Rules doc defines an
+  attention-interruption event as leaving the object of a focus span. The evaluator's switch
+  label of the same name meant something else: attention moved to something new at this
+  switch, at any time of day. One word for both left the evaluator unsure what a switch could
+  "interrupt" when no span was running. Models and the dashboard now call the switch label a
+  **shift** (kinds: detour, self-distraction, focus start); "interruption" is kept for the
+  span-level event that the app derives and counts. Only the wording changed: the stored value
+  is still `interruption` (`seg_evals`, `seg_reviews`, the four-way `ensemble` labels), and
+  `seg_models.shown_switch` / `stored_switch` translate at the boundary, so nothing was
+  migrated. The evaluator's output field is now `shift_kind`; `eval_runs.response` rows from
+  before the change say `interruption` / `interruption_kind`. Not yet reworded: the prompts of
+  the question generator, the day chat and correction propagation (`questions.py`, `chat.py`,
+  `propagation.py`), which still say "interruption" for the switch label; they accept "shift"
+  as an answer.
+
 * **A span needs one continuous 10-minute block (rule from Eli, 2026-11-17).** The break rule
   alone (an absence under `break_min` does not end a span) turns project A 4 min / B 3 min /
   A 4 min ... into one long span on A with B as contained interruptions, which the Rules doc

@@ -24,6 +24,20 @@ log = logging.getLogger("seg_models")
 CONTENTS = ("creative", "task", "correspondence", "reading", "planning", "other", "passive", "meeting", "idle",
             "transition")
 SWITCHES = ("continuation", "interruption", "return")
+# What models and the person are SHOWN for the stored switch label 'interruption': a "shift".
+# The Rules doc keeps "attention-interruption event" for something narrower - a shift that
+# happens during a focus span - and using one word for both confused the evaluator about
+# switches outside any span (2026-11-17). The stored value is unchanged, so old judgments and
+# the person's corrections need no migration; translate at the model/UI boundary only.
+SHOWN_SWITCHES = ("continuation", "shift", "return")
+
+
+def shown_switch(sw):
+    return "shift" if sw == "interruption" else sw
+
+
+def stored_switch(sw):
+    return "interruption" if sw == "shift" else sw
 KINDS = ("self_distraction", "focus_start", "detour")
 HEADS = {"content": CONTENTS, "switch": SWITCHES, "kind": KINDS}
 

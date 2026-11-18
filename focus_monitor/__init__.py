@@ -2,7 +2,7 @@
 
 # Internal keys (also DB column suffixes). "task_change" is displayed as "focus start".
 LABELS = ["continuation", "interruption", "distraction", "task_change"]
-LABEL_NAMES = {"continuation": "continuation", "interruption": "interruption",
+LABEL_NAMES = {"continuation": "continuation", "interruption": "detour",  # shown name; stored label unchanged
                "distraction": "distraction", "task_change": "focus start"}
 LABEL_HELP = {
     "continuation": "Same activity/state continues: reading<->notes, editor<->terminal, tab-to-tab on the "

@@ -5,8 +5,8 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 ### Definitions:
 
 * A **segment** is a period of time during which a particular window and tab is active on my computer.
-* A **switch** is the transition between seguments.
-* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea.
+* A **switch** is the transition between segments.
+* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea. (This requires at least 10 consecutive minutes, uninterrupted by diversions.)
   * Focus spans are always independent work, not interactive. Chatting in Signal never counts toward a focus span (though drafting a long message that I then send can - that is creative work).
   * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.
   * A focus span ends...
@@ -14,12 +14,14 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).
   * Attention interruptions that are less than 5 minutes long do not break the focus span.
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
+  * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
 * A **self-distraction event** is a sub-case of an attention-interruption event in which I seek out stimulation or distraction without a clear intent.
   * For instance:
-    * absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.
+    * Absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.
     * Opening a new tab to go to a blocked website.
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
+    * Opening my phone to look at a random app, unrelated to what I'm doing.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
 * A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.
@@ -43,27 +45,31 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
       * (However, correctly tagging writing work vs reading work, is unimportant compared to correctly capturing the length of a focus span)
   * A **planning / reflecting span** is a sub-type of focus span in which I'm doing metacognition rather than execution: reviewing my goals, journaling, prioritizing, deciding what to work on, or reflecting on how things are going. Typically this happens on my daily page or in a planning document.
     - Brief flips to my daily page during another span are still just note capture, not a planning span. A planning span is when the planning or reflecting is the work.
-  * An **other focused work span** is a residual category: a genuine focus span — sustained attention on one project or object — that doesn't fit any of the named sub-types. 
+  * An **other focused work span** is a residual category: a genuine focus span — sustained attention on one project or object — that doesn't fit any of the named sub-types.
     * This category should be used sparingly. If a span keeps landing here, that's a signal it either deserves its own named sub-type or the standard isn't being applied strictly enough — it must not become a loophole for activity that failed to qualify as one of the named kinds (e.g., task churn with no Toggl entry is unfocused, not "other focused work").
     * Because this category should be used sparingly, the model should maintain the hypothesis that what seems to be other focused work is instead unfocused activity of some kind.
   * A **fully-absorbed focus span** is a length of focus span with 0 attention interruption events.
     * Focused task spans and meeting spans do not count towards fully-absorbed focus spans.
 
-### Model evaluations: 
+### Model evaluations:
 
 For each segment, the model to do several different related evaluations:
 
-* Evaluate the content of the *segment*: 
+* Evaluate the content of the *segment*:
   * 1) What kind of span is this: Lable as Creative, Task, Correspondence (chats and email), Reading, Planning/Reflecting, Meeting, Other, Passive Consumption, or transition.
-    2) Is the user focused during this segment, or unfocused? 
-* Evaluate the nature of the *switch*: Does this switch corespondent to a shift in the user's object of attention? Label as either a continuation, an interuption, transition (meaning, navigating through apps or windows to get to the relevant target or return from ineruption. 
-* If a switch is labled as an interuption, then additionally evaluate if it's additionally a self-distraction event (it probably is if the type is "passive consumption", but not if it's something else), or a new focus start. 
+    2) Is the user focused during this segment, or unfocused?
+* Evaluate the nature of the *switch*: did the user's attention just shift? Judge this at every switch, based on all the surrounding context, whether or not a focus span is running. Label as one of:
+  * a **continuation**: the user is still on the same attentional thread even though the window changed. (Navigating through apps or windows to get to the relevant target, or to get back from an interruption, is a continuation; those segments are labeled as transitions.)
+  * a **shift**: the user's attention moved to something new.
+  * a **return**: the user's attention moved back to something it was on recently.
+  * A shift is not the same thing as an attention-interruption event, as defined above. An attention-interruption event is a shift that happens during a focus span. The model labels every shift; the app works out which shifts are attention-interruption events. (renamed from "interruption" 2026-11-17, because one word was being used for both)
+* If a switch is labeled as a shift, then additionally evaluate what it became: a self-distraction (it probably is if the type is "passive consumption", but not if it's something else), a new focus start, or a detour (neither of those: brief, or it never settled into one focused thing).
 * It doesn't make sense to ask whether something is part of a continuous thread unless there has been enough time of focused attention for there to be a thread. A few short segments of poking around (a minute here, two minutes there, inside a bigger stretch of something else) are not a thread to be "the same as" or "different from"; under the 5-minute break threshold they are a contained event inside whatever surrounds them, and the app derives everything about them from the data. (added 2026-11-08)
 * Each review question is about one thing. There are a few separate dimensions a judgment can be uncertain along: which thread a segment belongs to (the same as before, and which, or a separate one), what its content was (an errand, reading, writing, passive consumption...), and whether it was done inside a live discussion. A question resolves exactly one of these, and its options differ only along that dimension. When more than one is in doubt, they are separate questions, which can sit on the same review card. "Was this browsing part of the coding work?" is a different question from "was this deliberate browsing, or passively perusing without intent?"; the second is a content question, and "passive consumption" is its answer for the drift case. (added 2026-11-12)
 
-All of these should be things that can be audited and edited by the user, and those edits should be used to adjust the model so that it learns over time. 
+All of these should be things that can be audited and edited by the user, and those edits should be used to adjust the model so that it learns over time.
 
-The model can evaluate these lazily with a 15 minute delay, if that improves performance. It doesn't have to evaluate each segment immediately, it can wait until it has more context about what happened afterwards has come in. 
+The model can evaluate these lazily with a 15 minute delay, if that improves performance. It doesn't have to evaluate each segment immediately, it can wait until it has more context about what happened afterwards has come in.
 
 ### The app tracks:
 
@@ -89,7 +95,17 @@ It's the app's job to review the data and make intelligent judgements about  whe
 * If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
 * My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.
-* Agent coding should usually count as a task, and be evaluated by the standards of task spans. Deep, contiuous  engagement with an agent, where the user is carefully reading, thinking about, and responding to a coding agent, or writing up up a detailed spec for a peice of software are both creative work.
+* Agent-coding should usually count as a task, and be evaluated by the standards of task spans. However, deep, continuous  engagement with an agent, where the user is carefully reading, thinking about, and responding to a coding agent, or writing up up a detailed spec for a peice of software are both creative work.
+  * Identifying which is which is a judgement call
+    * Agent coding as a task looks like quickly sending off orders to an agent, often only skimming the replies.
+    * Agent coding as creative work is slower. I will fully read each response and ask followup questions, and generally try to understand and solve problems.
+  * If the user appears to switch from the creative mode of agent-coding to the task mode on the _same project_, by default treat this as a continuation of the focus span. Alternatively, if the user switches from the task mode to the the creative mode on a project, only the intensive thinking part should count as part of the focus span.
+* Agent-coding work will often switching between different software projects, in different terminals (usually within the same Agentic coding UI app). Work on each project should be regarded separately, for computing focus spans.
+  * 10 minutes spent agent coding, where I am alternating between one of several different projects, spending less than 5 minutes on each one, should _not_ count as a focus span (at best it might be a focused task span), except insofar as that block of coding meets the standard for a focused task span.
+  * However, 10 minutes engaging with the _same_ coding project can count as a focus span, if it's evaluated to be the thoughtful creative mode (or if it meets the standards for a focus task span).
+* While an agent is running, switching away to something else (email, a feed, another tab) is never a continuation of the coding work. It is an attention interruption.
+  * The exception is a focused task block: if I'm intentionally moving on to a different task while the agent runs, that is part of the focused task span, by the usual standard for those (a toggl entry running, and judgement that I'm deliberately executing on tasks).
+  * Whether the interruption is also a self-distraction event follows the usual rule: scrolling a feed is or absentmindedly looking at my inbox is, deliberately handling an email probably is not.
 
 
 ### Lessons from reviews
