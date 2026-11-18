@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import db, llm
 from .config import Config, load_config
-from .seg_models import CONTENTS, KINDS, SWITCHES, stored_switch
+from .seg_models import CONTENTS, KINDS, SWITCHES, shown_switch, stored_switch
 
 log = logging.getLogger("propagation")
 
@@ -31,8 +31,8 @@ class PropVerdict(BaseModel):
     segment_id: int
     verdict: str = Field(description="'applies' (the correction clearly covers this segment too), 'does_not_apply', or 'uncertain' (plausible but the person should decide - it will be flagged for their review).")
     content: str | None = Field(default=None, description="When applies: the corrected content label.")
-    switch_label: str | None = Field(default=None, description="When applies and the switch judgment changes.")
-    interruption_kind: str | None = Field(default=None, description="When applies and switch_label is 'interruption'.")
+    switch_label: str | None = Field(default=None, description="When applies and the switch judgment changes: continuation, shift (attention moved to something new), or return.")
+    shift_kind: str | None = Field(default=None, description="When applies and switch_label is 'shift': self_distraction, focus_start, or detour.")
     note: str = Field(description="One short sentence.")
 
 
@@ -98,9 +98,9 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         correction = (f"The person corrected segment id={seg['id']} "
                       f"({seg['app']} {seg['domain'] or ''} | {(seg['title'] or '')[:70]}).\n"
                       f"Model had said: content={old['content'] if old else '?'}, "
-                      f"switch={old['switch_label'] if old else '?'}, kind={old['interruption_kind'] if old else '?'}.\n"
+                      f"switch={shown_switch(old['switch_label']) if old else '?'}, kind={old['interruption_kind'] if old else '?'}.\n"
                       f"The person set: content={rv['content'] or '(unchanged)'}, "
-                      f"switch={rv['switch_label'] or '(unchanged)'}, kind={rv['interruption_kind'] or '(unchanged)'}.\n"
+                      f"switch={shown_switch(rv['switch_label']) or '(unchanged)'}, kind={rv['interruption_kind'] or '(unchanged)'}.\n"
                       f"Their note: {rv['note'] or '(none)'}")
         cands = conn.execute("""
             SELECT g.*, e.content AS e_content, e.switch_label AS e_switch,
@@ -169,8 +169,8 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                     if v.switch_label in SWITCHES:
                         sets.append("switch_label=?"); args.append(v.switch_label)
                         sets.append("interruption_kind=?")
-                        args.append(v.interruption_kind if (v.switch_label == "interruption"
-                                    and v.interruption_kind in KINDS) else None)
+                        args.append(v.shift_kind if (v.switch_label == "interruption"
+                                    and v.shift_kind in KINDS) else None)
                     if not sets:
                         continue
                     sets.append("uncertain=0")

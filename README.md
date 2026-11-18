@@ -266,10 +266,10 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   is still `interruption` (`seg_evals`, `seg_reviews`, the four-way `ensemble` labels), and
   `seg_models.shown_switch` / `stored_switch` translate at the boundary, so nothing was
   migrated. The evaluator's output field is now `shift_kind`; `eval_runs.response` rows from
-  before the change say `interruption` / `interruption_kind`. Not yet reworded: the prompts of
-  the question generator, the day chat and correction propagation (`questions.py`, `chat.py`,
-  `propagation.py`), which still say "interruption" for the switch label; they accept "shift"
-  as an answer.
+  before the change say `interruption` / `interruption_kind`. Every model prompt uses the new word: the evaluator, question generator, day chat and
+  propagation say `shift` / `shift_kind` and are translated back on the way in (`edits.py`
+  accepts either). The older per-switch classifier keeps its four class names (`interruption`
+  there is the class for a detour) with a sentence explaining the naming.
 
 * **A span needs one continuous 10-minute block (rule from Eli, 2026-11-17).** The break rule
   alone (an absence under `break_min` does not end a span) turns project A 4 min / B 3 min /

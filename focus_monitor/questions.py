@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from . import db, llm
 from .config import (PRICE_CACHE_READ, PRICE_CACHE_WRITE, PRICE_INPUT, PRICE_OUTPUT, Config,
                      load_config)
-from .seg_models import CONTENTS, KINDS, SWITCHES, stored_switch
+from .seg_models import CONTENTS, KINDS, SWITCHES, shown_switch, stored_switch
 
 log = logging.getLogger("questions")
 
@@ -36,9 +36,9 @@ MAX_TRIGGERS_PER_CALL = 6
 class QOption(BaseModel):
     label: str = Field(description="The answer in the person's own terms, e.g. 'a continuation of the essay writing'.")
     segment_id: int = Field(description="The segment this option's edit applies to.")
-    switch_label: str | None = Field(default=None, description="continuation | interruption | return, when the option settles the thread relation.")
-    antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (interruption) and content-only options.")
-    interruption_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
+    switch_label: str | None = Field(default=None, description="continuation | shift | return, when the option settles the thread relation. (shift = attention moved to something new, a separate thread.)")
+    antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (shift) and content-only options.")
+    shift_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
     hybrid: bool | None = Field(default=None, description="True when the option says the activity was being done INSIDE a live discussion with someone (e.g. 'reading the bill with Dave on a call while taking notes') - content stays the activity; False when the option asserts solo work; None when the option says nothing about it.")
 
@@ -76,10 +76,10 @@ they were doing, skipping over contained detours.
 WHAT TO ASK (the person's own division of labor): the person is ground truth for INTENTION and \
 for AMBIGUOUS CONTENT - nothing else. Two canonical thread forms:
   1. "You were doing A, then switched to B. Was B part of the A task, or a separate thread?" \
-- same thread: switch_label='continuation'; separate thread: switch_label='interruption'.
+- same thread: switch_label='continuation'; separate thread: switch_label='shift'.
   2. "You were doing A, briefly went to B, then switched to C. Was C the same thread/intention \
 as A, or something different?" - same: switch_label='return'; different: \
-switch_label='interruption'.
+switch_label='shift'.
 Content questions are equally welcome when content is the doubt: "was drafting that Signal \
 message routine correspondence ('correspondence') or writing you were absorbed in ('creative')?" - each \
 option sets a content label.
@@ -109,7 +109,7 @@ omit it.
 In general, do NOT ask the person whether something was "a quick detour or the start of a new \
 focus" - that answer mixes two facts: whether it was a separate thread (theirs to say) and \
 whether it went on long and coherently enough to be its own span (the app records the data and \
-derives this). Options therefore never set interruption_kind; asserting 'interruption' is \
+derives this). Options therefore never set shift_kind; asserting 'shift' is \
 enough - the app derives the kind from what followed. The standing exception: a confusion or \
 uncertainty the system genuinely cannot resolve from its data should always be surfaced to the \
 person - but then the question must name the actual confusion in its own terms, not launder it \
@@ -125,7 +125,7 @@ not just a label.
 - For boundary and coherence doubts (a stretch that may contain TWO objects of attention), ask \
 about the moment the SECOND object would begin - the split point named or implied in the \
 doubt's reason - and you MUST include an option asserting the separate thread: \
-switch_label='interruption' on the segment where it begins (its id is visible in the log). \
+switch_label='shift' on the segment where it begins (its id is visible in the log). \
 "Was <activity> at <time> a separate piece of work, or still part of <thread A>?" is the shape.
 - Options must be mutually exclusive IN THE EDIT THEY MAKE and cover the plausible readings. \
 Two options that set the same fields to the same values are one option, however differently \
@@ -624,7 +624,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                  for s in seg_ctx if s["duration"] > 0]
         ev = conn.execute("SELECT content, switch_label, interruption_kind, rationale FROM seg_evals WHERE segment_id=?",
                           (t["segment_id"],)).fetchone()
-        cur = (f"current judgment: content={ev['content']}, switch={ev['switch_label']}, "
+        cur = (f"current judgment: content={ev['content']}, switch={shown_switch(ev['switch_label'])}, "
                f"kind={ev['interruption_kind']} - {ev['rationale']}") if ev else "(no judgment)"
         parts.append(f"DOUBT {i + 1} - segment id={t['segment_id']} (source: {t['source']}; {t['reason']})\n"
                      f"{cur}\nSurrounding activity (>>> marks the segment in doubt):\n" + "\n".join(lines))

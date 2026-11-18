@@ -11,7 +11,7 @@ import json
 import time
 
 from . import db
-from .seg_models import CONTENTS, KINDS, SWITCHES
+from .seg_models import CONTENTS, KINDS, SWITCHES, stored_switch
 
 # The person's edit of the evaluator's judgment maps onto the legacy 4-label review scheme so the
 # older per-switch models keep learning from the same corrections.
@@ -44,6 +44,7 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
     evaluator's kind derivation."""
     if content is not None and content not in CONTENTS:
         raise BadEdit(f"bad content label {content!r}")
+    switch_label = stored_switch(switch_label)  # models are shown 'shift'
     if switch_label is not None and switch_label not in SWITCHES:
         raise BadEdit(f"bad switch label {switch_label!r}")
     if interruption_kind is not None and interruption_kind not in KINDS:
@@ -116,7 +117,7 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
     for o in options:
         label = (o.get("label") or "").strip()
         sid = o.get("segment_id") or segment_id
-        sw, ct = o.get("switch_label"), o.get("content")
+        sw, ct = stored_switch(o.get("switch_label")), o.get("content")  # models are shown 'shift'
         if not label or (sw is not None and sw not in SWITCHES) or (ct is not None and ct not in CONTENTS):
             continue
         if ct == "transition":

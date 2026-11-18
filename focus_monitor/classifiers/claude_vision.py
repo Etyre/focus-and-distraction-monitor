@@ -45,6 +45,9 @@ draft <-> reference, or asking an AI assistant a question that grows out of the 
 while distracted, or Slack -> Signal while already on a messaging detour. It means "nothing changed".
 - "interruption" is leaving focused work for a quick unrelated detour (a stray question, reactive \
 email/message checking, a notification) - usually short, usually followed by returning.
+  (Naming: the person's rules call any move of attention to something new a "shift". The three \
+labels other than "continuation" are kinds of shift; "interruption" here is the label for a shift \
+that is a detour, and is not the same as the "attention-interruption event" their rules define.)
 - "distraction" is leaving focused work to seek stimulation without an objective: feeds, aimless \
 shopping, dating apps, a blocked URL. Duration is not the test - intent is.
 - "task_change" means FOCUS START: focused work begins or resumes with this switch - returning to the \

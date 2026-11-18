@@ -6,6 +6,7 @@ import logging
 import anthropic
 
 from . import LABEL_HELP, db, llm
+from .seg_models import stored_switch
 from .classifiers.base import build_context
 from .classifiers.claude_vision import _b64
 from .config import Config
@@ -306,13 +307,13 @@ You can also ACT, but only through the tools:
   a concrete judgment - use this when a call needs their eyes and they do not want to settle it now.
 - propose_rule: suggest a general rule for their rules document (they approve it with a click).
 How a block's STATE (focus / interrupted / distracted) is derived from these labels - you must work with this: \
-a 'continuation' block inherits the state of the block before it; a 'return' block is focus; an 'interruption' \
+a 'continuation' block inherits the state of the block before it; a 'return' block is focus; a 'shift' \
 block starts a new thread and takes its kind (focus_start -> focus, detour -> interrupted, self_distraction -> \
 distracted); passive content is always distracted; correspondence content with no Toggl entry is interrupted - \
 UNLESS the person explicitly rules a block an exception (focus_exception=true: "this was correspondence and it \
 still counts as independent focus"); never set that on your own judgment, only when they ask for it. \
-So to make a stretch count as focused work: set its FIRST block to switch_label=interruption with \
-interruption_kind=focus_start (only when the person has ruled it was focused work; otherwise leave the kind null \
+So to make a stretch count as focused work: set its FIRST block to switch_label=shift with \
+shift_kind=focus_start (only when the person has ruled it was focused work; otherwise leave the kind null \
 and the app derives it), give the blocks inside it the right content with switch_label=continuation, and after \
 any block you leave out as a diversion (a feed flip, a chat) mark the next block of the thread as 'return' with \
 antecedent_id = an earlier block of that thread - otherwise it inherits the diversion's state. Hypothesized \
@@ -334,7 +335,7 @@ About this person (their own words):
 
 _LABEL_DOC = ("content = what the block was: creative | task | correspondence | reading | planning | other | passive "
               "| meeting | idle | transition. switch_label = how it relates to the thread before it: continuation "
-              "(same thread) | interruption (a separate thread began) | return (back to an earlier thread; give "
+              "(same thread) | shift (attention moved to something new: a separate thread began) | return (back to an earlier thread; give "
               "antecedent_id). hybrid = the activity was carried on inside a live discussion. null leaves a field "
               "as judged.")
 
@@ -348,9 +349,9 @@ DAY_TOOLS = [
          "segment_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
          "content": {"type": ["string", "null"], "enum": ["creative", "task", "correspondence", "reading", "planning",
                                                          "other", "passive", "meeting", "idle", "transition", None]},
-         "switch_label": {"type": ["string", "null"], "enum": ["continuation", "interruption", "return", None]},
-         "interruption_kind": {"type": ["string", "null"], "enum": ["focus_start", "detour", "self_distraction", None],
-                               "description": "With switch_label=interruption only: what the new thread was. Set it "
+         "switch_label": {"type": ["string", "null"], "enum": ["continuation", "shift", "return", None]},
+         "shift_kind": {"type": ["string", "null"], "enum": ["focus_start", "detour", "self_distraction", None],
+                               "description": "With switch_label=shift only: what the new thread was. Set it "
                                               "only when the person has explicitly ruled on it; null lets the app "
                                               "derive it from what followed."},
          "antecedent_id": {"type": ["integer", "null"]},
@@ -565,6 +566,9 @@ class DayChat:
 
         try:
             if name == "set_segment_judgment":
+                # the model is shown 'shift' / 'shift_kind'; the stored names are unchanged
+                args = dict(args, switch_label=stored_switch(args.get("switch_label")),
+                            interruption_kind=args.get("shift_kind", args.get("interruption_kind")))
                 ids = [int(x) for x in (args.get("segment_ids") or ([args["segment_id"]] if "segment_id" in args else []))]
                 if not ids:
                     return "error: segment_ids is empty"

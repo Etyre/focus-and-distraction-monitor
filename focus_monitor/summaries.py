@@ -68,7 +68,10 @@ def seg_line(s) -> str:
     if s.get("content"):
         bits.append(f"<{s['content']}>" + (" <FOCUS EXCEPTION by ruling>" if s.get("focus_exception") else ""))
     if s.get("label") and s["label"] != "continuation":
-        bits.append(f"<switch: {s['label']}>")
+        # the stored four-way label, in the words models are given: the three non-continuations
+        # are kinds of shift (attention moved); "interruption" is the span-level event only
+        bits.append("<switch: " + {"interruption": "shift (detour)", "distraction": "shift (self_distraction)",
+                                   "task_change": "shift (focus_start)"}.get(s["label"], s["label"]) + ">")
     if s.get("activity"):
         bits.append(f"[{s['activity']}]")
     if s.get("toggl_desc"):
