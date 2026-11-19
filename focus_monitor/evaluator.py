@@ -230,8 +230,17 @@ away), there is nothing to continue: it is a shift.
 correspondence, a feed or dating app is passive, an errand is task).
    - self_distraction: on a shift, the test of section 4 - did they pick it up seeking \
 stimulation without a clear intent (absent-mindedly opening a dating app, a feed, a shop)? \
-Not a self-distraction: answering a message that just arrived ("opened from a notification" \
-points that way), a deliberate errand, logging something in a tracker.
+Their rule, in their words: "Opening my phone and looking at a random app without a clear \
+task, is [a self-distraction event]." So unlocking the phone and looking at an app with no \
+evident task is a self-distraction, however short - including a few seconds on whatever app \
+happened to be open when it was unlocked (a line with one app, a few seconds, and no "opened \
+from"). Not a self-distraction: answering a message that just arrived ("opened from a \
+notification" points that way), a deliberate errand, a use that serves the current task, \
+logging something in a tracker.
+   Also in their words: "just glancing at my lock screen on my phone is an interruption, but \
+isn't a self-distraction event." A PHONE line that says they glanced at the lock screen is \
+already settled that way by the app (<phone: shift>); it is never marked EVALUATE. The phone \
+log records a lock-screen look only rarely, so most of them never appear.
    A pickup never changes how you label the computer segments themselves: the app cuts the \
 phone time out of the segment it falls in, so do not turn a segment into a shift or a return \
 because a PHONE line sits inside it. A PHONE line that already has a judgment shows it as \
@@ -332,9 +341,12 @@ class ChunkEvaluator:
         # judgment yet are judged in this call; on a re-judgment of the segments all of them are.
         from . import phone as _phone
         picks_all = _phone.pickups(self.cfg, t0 - CTX_S, t1 + CTX_S)
+        for p in picks_all:   # lock-screen glances are settled by rule, not by the model
+            if p["lock_screen"] and t0 <= p["start"] < t1:
+                store_lock_glance(conn, p)
         pk_have = {r["pickup_key"]: r for r in conn.execute(
             "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - CTX_S - 1, t1 + CTX_S + 1))}
-        picks = [p for p in picks_all if t0 <= p["start"] < t1
+        picks = [p for p in picks_all if t0 <= p["start"] < t1 and not p["lock_screen"]
                  and ((extra is not None and not phone_only) or p["key"] not in pk_have
                       or pk_have[p["key"]]["switch_label"] is None)]
         if not target and not picks:
@@ -404,7 +416,9 @@ class ChunkEvaluator:
                 tag = ("  <phone: shift" + (", self-distraction" if had["self_distraction"] else "") + ">"
                        if had["switch_label"] == "interruption" else "  <phone: continuation>")
             line = ((f"EVALUATE PHONE id=P{p['key']}: " if p["key"] in pick_keys else "(context) PHONE ")
-                    + f"{hm(p['start'])}-{hm(p['end'])}  iPhone in use {_dur(p['use_s'])}: {apps}"
+                    + (f"{hm(p['start'])}-{hm(p['end'])}  glanced at the iPhone's lock screen, did not unlock it"
+                       if p["lock_screen"] else
+                       f"{hm(p['start'])}-{hm(p['end'])}  iPhone in use {_dur(p['use_s'])}: {apps}")
                     + ("  (then left open, untouched)" if p["put_down"] else "") + tag)
             i = sum(1 for t in line_ts if t <= p["start"])
             lines.insert(i, line)
@@ -962,6 +976,18 @@ PHONE_MERGE_S = 300.0            # pickups this close together are re-judged in 
 _phone_seen = (None, 0.0)        # (phone.through, when last checked)
 
 
+LOCK_GLANCE_NOTE = "A look at the lock screen without unlocking: an interruption, never a self-distraction (set by rule, not judged)."
+
+
+def store_lock_glance(conn, p: dict) -> None:
+    """Eli, 2026-11-19: "just glancing at my lock screen on my phone is an interruption, but
+    isn't a self-distraction event." Decided here, in code: a shift, never a self-distraction."""
+    conn.execute("INSERT OR REPLACE INTO phone_evals(pickup_key, start, end, apps, switch_label, content, focused,"
+                 " self_distraction, rationale, created) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                 (p["key"], p["start"], p["end"], f"Lock screen {p['use_s']:.0f}s", "interruption", "other", 1, 0,
+                  LOCK_GLANCE_NOTE, time.time()))
+
+
 def _dur(s: float) -> str:
     return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f}m"
 
@@ -1002,6 +1028,9 @@ def queue_phone_rejudge(conn, cfg: Config | None = None) -> int:
                          (p["key"], p["start"], p["end"], ", ".join(f"{a} {d:.0f}s" for a, d, _ in p["apps"]),
                           None if on_mac else "(the Mac was not recording: not judged)", now))
             if not on_mac:
+                continue
+            if p["lock_screen"]:      # settled by rule: nothing to ask the model
+                store_lock_glance(conn, p)
                 continue
             a, b = p["start"] - 30, p["end"] + 30
             if windows and a - windows[-1][1] <= PHONE_MERGE_S and b - windows[-1][0] <= CHUNK_S:

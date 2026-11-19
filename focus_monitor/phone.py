@@ -183,12 +183,36 @@ def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
 PICKUP_PAD_S = 1800.0      # look this far either side of a window so a pickup's key is stable
 PUT_DOWN_USE_S = 10.0      # a put-down segment counts as use for its first seconds only
 PICKUP_MIN_S = 3.0         # shorter than this is a pocket wake, not a look
+# The one lock-screen view the stream records: swiping to the widgets page without unlocking.
+# A plain glance at the lock screen (time, notifications) leaves no record at all.
+LOCK_SCREEN_BUNDLE = "com.apple.springboard.today-view"
+
+
+def lock_glances(cfg, t0: float, t1: float) -> list[tuple[float, float]]:
+    """(start, end) of lock-screen widget views starting in [t0, t1): the phone was looked at
+    and not unlocked. Rare (20 in 40 days, 6 of them not followed by an unlock); it is all the
+    data shows of the lock screen."""
+    c = _connect(cfg)
+    if c is None:
+        return []
+    try:
+        return [(r[0], r[1]) for r in c.execute(
+            "SELECT start_ts, COALESCE(end_ts, start_ts + 1) FROM segments WHERE bundle_id = ?"
+            " AND (transition_reason LIKE '%lock-screen%' OR transition_reason LIKE '%DashBoard%')"
+            " AND start_ts >= ? AND start_ts < ? ORDER BY start_ts", (LOCK_SCREEN_BUNDLE, t0, t1))]
+    except sqlite3.Error as e:
+        log.warning("phone db: %s", e)
+        return []
+    finally:
+        c.close()
 
 
 def pickups(cfg, t0: float, t1: float) -> list[dict]:
     """Pickups STARTING in [t0, t1): one per stretch of phone use between locks.
 
-    {key, start, end, use_s, apps: [(name, seconds, how)], put_down}. Segments less than
+    {key, start, end, use_s, apps: [(name, seconds, how)], put_down, lock_screen}. A pickup with
+    lock_screen=True is a look at the lock screen with no unlock (lock_glances) that is not part
+    of a pickup of the ordinary kind; it has no minimum length. Segments less than
     LOCK_GAP_S apart are one pickup. Time on a put-down segment (the phone locked itself at the
     Auto-Lock interval: left open, untouched) is not use, beyond its first seconds. `key` is the
     pickup's start in whole seconds; it is computed from unclipped segments, so the same pickup
@@ -212,6 +236,19 @@ def pickups(cfg, t0: float, t1: float) -> list[dict]:
     for p in out:
         p["use_s"] = sum(d for _, d, _ in p["apps"])
         p["key"] = int(p["start"])
+        p["lock_screen"] = False
         if t0 <= p["start"] < t1 and p["use_s"] >= PICKUP_MIN_S:
             res.append(p)
+    glance = None
+    for a, b in lock_glances(cfg, t0, t1):
+        if any(q["start"] - LOCK_GAP_S < a < q["end"] + LOCK_GAP_S for q in out):
+            continue          # on the way into, or out of, an unlocked pickup: part of that pickup
+        if glance is not None and a - glance["end"] < LOCK_GAP_S:
+            glance["end"] = max(glance["end"], b)
+        else:
+            glance = {"start": a, "end": max(b, a + 1.0), "key": int(a), "put_down": False, "lock_screen": True}
+            res.append(glance)
+        glance["use_s"] = glance["end"] - glance["start"]
+        glance["apps"] = [("Lock screen", glance["use_s"], "")]
+    res.sort(key=lambda p: p["start"])
     return res

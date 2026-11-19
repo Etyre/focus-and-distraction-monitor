@@ -20,9 +20,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * Once a focus span has started, all time on the span's thread counts as focus time, even if it looks like I'm not making progress: I may still be thinking or processing. The model still judges each segment as focused or unfocused. If more than 20% of a span was judged unfocused, or it contains one continuous unfocused stretch of 10 minutes or more, the app asks me whether that time was really unfocused and should break the span. (added 2026-11-19)
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
   * It is one event per time I leave the focus object, however many things I pass through before I come back.
-  * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
-    * Opening my phone is evaluated as a switch, like any other. Was it a continuation (part of the same task: a confirmation code, starting or stopping my toggl timer, a call that is the task)? Or a shift, and if so, was it a self-distraction event?
-    * Time on my phone is time away from the focus object. It is never focus time itself, because the model can only see which app was open on the phone, not what I was doing in it.
+  * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread. (See "Evaluating phone data" below.)
   * Whether a segment is focused or unfocused is a separate question from whether it is a diversion. If I'm writing and I quickly jump to Amazon to buy a specific item, that segment is focused, and it is also a diversion from the writing span.
 * A **self-distraction event** is a shift in which I seek out stimulation or distraction without a clear intent.
   * For instance:
@@ -140,6 +138,14 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * This is not a special standard for agent coding. It is the general rule, and the general exception applies too: a focused task block can hold several attentional threads. If I'm intentionally moving on to the next task while the agent runs, that is part of the focused task block, by the usual standard for those (a toggl entry running, and judgement that I'm deliberately executing on tasks). The same goes for moving between several agent-coding projects: inside a focused task block each move is the next task; outside one, each move is an interruption.
   * Whether the interruption is also a self-distraction event follows the usual rule: scrolling a feed is or absentmindedly looking at my inbox is, deliberately handling an email probably is not.
 
+
+### Evaluating phone data
+* Opening my phone is evaluated as a switch, like any other. Was it a continuation (part of the same task: a confirmation code, starting or stopping my toggl timer, a call that is the task)? A diversion? A self-distraction event?
+* Just glancing at my lock screen on my phone is an interruption, but isn't a self-distraction event. Opening my phone and looking at a random app without a clear task, is.
+  * Opening my phone for a deliberate errand, or for something related to what I'm doing, is not a self-distraction event.
+* Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it. Phone time is never focus time itself.
+* Phone data arrives late, often hours after the fact. A stretch with phone use in it is judged when its phone data lands, so a day's numbers can change after the fact.
+* The phone data only shows which app was on the screen and when. It does not show what I was doing in the app, and there are no screenshots. A plain glance at the lock screen leaves no record at all, so most of those are not counted. The only one that is recorded is swiping to the widgets on the lock screen, which I do about once a week.
 
 ### Lessons from reviews
 * During a meeting, judge each on-screen activity on its content: if it serves the meeting, count it as meeting time; if not, treat it as a distraction during the meeting rather than meeting work. (added 2026-10-08 from a review of segment 18151)

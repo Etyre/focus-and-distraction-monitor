@@ -297,6 +297,27 @@ def cases():
         assert len(se["focus_spans"]) == 1 and len(se["focus_spans"][0]["detours"]) == 1
         assert stats.self_distraction_counts(d.segs, se) == (1, 1)
 
+    @case("a glance at the lock screen is an interruption and never a self-distraction")
+    def _():
+        import sqlite3
+        from . import evaluator
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("CREATE TABLE phone_evals (pickup_key INTEGER PRIMARY KEY, start REAL, end REAL, apps TEXT,"
+                  " switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, rationale TEXT,"
+                  " created REAL, run_id INTEGER)")
+        d = Day()
+        d.add(30, "Essay")
+        a = T0 + 14 * 60
+        evaluator.store_lock_glance(c, {"key": int(a), "start": a, "end": a + 4, "use_s": 4.0})   # the rule, as stored
+        for sg in d.segs:
+            sg["redesign"] = True
+        d.segs = stats._carve_phone(c, d.segs, T0, d.t)
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and sp[0]["detours"][0]["state"] == "interrupted", sp
+        assert stats.self_distraction_counts(d.segs, se) == (0, 0)
+
     @case("a phone pickup judged a continuation changes nothing")
     def _():
         d = Day()

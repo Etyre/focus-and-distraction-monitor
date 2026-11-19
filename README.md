@@ -78,6 +78,11 @@ first commit 2026-08-29, in continuous development since.
     3 days when their data arrives are not queued (`PHONE_LOOKBACK_S`).
     Carving can remove a span: the opening 10 unbroken focused minutes are measured after the
     phone time is cut out.
+    What the phone log cannot show (checked 2026-11-19 against 40 days of it): it is a stream of
+    "app in focus" records, with no record for the screen waking or the lock screen itself. A
+    3-second "Oura" pickup is not a lock-screen glance: a start record with no transition reason
+    is the phone being unlocked onto the app that was open when it was locked. There were 110
+    single-app pickups under 6 seconds in 30 days, 94 of that kind.
   * A touch-back of 15 seconds or less followed by leaving again does not reset the 5-minute
     clock (`TOUCH_BACK_S`): the absences on either side are one absence.
   * One attention-interruption event per time you leave the span: everything passed through
@@ -150,6 +155,11 @@ first commit 2026-08-29, in continuous development since.
   self-distraction event (and a bounce-away, when it is what left the span) when judged one.
   Phone time is never focus time, whatever was done on the phone. A pickup judged a
   continuation, or not judged yet, changes nothing.
+  A glance at the lock screen is an interruption and never a self-distraction (Eli's rule); that
+  is set in code (`evaluator.store_lock_glance`), not asked of the model. The phone log records
+  a lock-screen look only when you swipe to the widgets page without unlocking
+  (`phone.lock_glances`: 6 on their own in 40 days, 14 more on the way into an unlock, which
+  belong to that pickup); a plain glance leaves no record.
   The phone log arrives hours to a day after the fact, so most pickups are judged late:
   `evaluator.queue_phone_rejudge` (every classifier cycle; does work only when the phone data
   has advanced, or every 30 minutes) puts each stretch holding an unjudged pickup into
