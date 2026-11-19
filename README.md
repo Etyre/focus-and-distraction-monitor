@@ -231,6 +231,7 @@ open "dist/Focus Monitor.app"            # or drag to /Applications; add to Logi
 
 .venv/bin/python -m focus_monitor restart            # running app relaunches itself with the new code
 .venv/bin/python -m focus_monitor restart --if-stale # only if a source file is newer than the process
+nohup .venv/bin/python -m focus_monitor restart --when-idle >/dev/null 2>&1 &   # wait for 2 idle minutes, then restart if stale
 
 tail -f ~/Library/Logs/focus-and-distraction-monitor.log
 tail -f ~/Library/Application\ Support/FocusMonitor/launcher.log
@@ -451,6 +452,8 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   panel are open, which is why the automatic Stop hook was disabled. Typed text survives a restart: every
   text field saves to localStorage as you type (`draftKey` in the dashboard) and chats reload from the
   server. A new text field needs an id that `draftKey` handles, or a restart can lose what is in it.
+  After source edits the usual way to restart is `restart --when-idle` in the background (since 2026-11-19):
+  it waits for 2 minutes without keyboard or mouse input, so the dashboard is not reset under your hands.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.
 * The subscription backend (Claude Code binary) takes exactly one user message, no tools, and would
   prefer `ANTHROPIC_API_KEY` over the login if it saw it, so the child gets it blanked; session

@@ -43,10 +43,15 @@ def main():
     rs = sub.add_parser("restart", help="ask the running menu bar app to relaunch itself (picks up source edits)")
     rs.add_argument("--if-stale", action="store_true", help="only when a source file is newer than the running process")
     rs.add_argument("--hook", action="store_true", help="print Claude Code hook JSON (silent when nothing happened)")
+    rs.add_argument("--when-idle", action="store_true",
+                    help="wait until there has been no keyboard or mouse input for 2 minutes, then restart "
+                         "if the source is newer than the running process (run it in the background)")
     args = ap.parse_args()
 
     if args.cmd == "restart":
-        return restart_app(if_stale=args.if_stale, hook=args.hook)
+        if args.when_idle:
+            wait_for_idle()
+        return restart_app(if_stale=args.if_stale or args.when_idle, hook=args.hook)
 
     from .config import ensure_dirs
     ensure_dirs()
@@ -108,6 +113,20 @@ def main():
             print("claude: FAILED -", e)
 
 
+
+
+RESTART_IDLE_S = 120.0   # no input this long = nobody is mid-sentence in the dashboard
+
+
+def wait_for_idle() -> None:
+    """Block until the keyboard and mouse have been untouched for RESTART_IDLE_S. A restart only
+    resets which page is open (typed text is saved as drafts), but doing it while the person is
+    away means they never see even that. Several waiters are harmless: --when-idle restarts only
+    if the source is newer than the process, so the later ones find it up to date."""
+    import time
+    from .collector import idle_seconds
+    while idle_seconds() < RESTART_IDLE_S:
+        time.sleep(15)
 
 
 def restart_app(if_stale: bool, hook: bool) -> None:
