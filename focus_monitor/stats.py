@@ -36,28 +36,36 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None,
     """Segments in [t0,t1) with their resolved judgment and state. `overrides` ({segment_id:
     {content, switch_label, interruption_kind, antecedent_id, hybrid}}) simulates a user review
     of those segments in memory - what the day would look like if an answer were given - without
-    touching the database. With `phone` (the default), iPhone pickups judged to be a shift of
-    attention are carved out of the Mac segments they overlap (_carve_phone)."""
+    touching the database. With `phone` (the default), iPhone app segments judged to be time
+    away are carved out of the Mac segments they overlap (_carve_phone)."""
     segs = _labelled_segments(conn, t0, t1, overrides)
     return _carve_phone(conn, segs, t0, t1) if phone and segs else segs
 
 
+# Eli is being asked (2026-11-19) whether focused phone time - exercise tracking, a call - may
+# count as focus, and so start a focus span of its own. Until he says so it may not: phone time
+# that was a shift is always time away, drawn as a diversion. Set True to let a phone segment
+# judged focused (and not passive) take the state "focus" by the same rule as a computer segment.
+PHONE_CAN_BE_FOCUS = False
+
+
 def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
-    """Time on the phone is time away from the Mac window that was in front (Eli, 2026-11-19:
-    "Opening my phone should be evaluated as a switch"). Each pickup the evaluator judged a
-    SHIFT (phone_evals) becomes a segment of its own - app "iPhone", a negative id that no real
-    segment can have, phone=True - cut out of the Mac segment(s) it overlaps. The Mac window
-    was still in front the whole time, so the rest of a cut segment is a return to the same
-    thread. Phone time is never focus time: only the app on screen is known, so a focused use
-    of the phone is still a diversion from the work on the Mac. A pickup judged a continuation,
-    or not judged yet, changes nothing. Pieces of a cut segment keep its id (reviews, questions
-    and thread pointers are per segment); only clip_start / clip_end / duration differ."""
+    """Phone app segments are judged like computer segments (Eli, 2026-11-19: "The app should
+    make the same segment judgements of open phone apps as it does of computer segments"). One
+    that is time AWAY from what was on the Mac (phone_evals.away: a shift, or more of the same
+    shift) becomes a segment of its own - app "iPhone", domain = the phone app, a negative id
+    that no real segment can have, phone=True - cut out of the Mac segment(s) it overlaps. The
+    Mac window was still in front the whole time, so the rest of a cut segment is a return to
+    the same thread. A phone segment that was a continuation of the Mac thread or a pass-through,
+    or that is not judged yet, changes nothing. Pieces of a cut segment keep its id (reviews,
+    questions and thread pointers are per segment); only clip_start / clip_end / duration differ."""
     import sqlite3
     try:
-        rows = conn.execute("SELECT * FROM phone_evals WHERE switch_label = 'interruption'"
+        rows = conn.execute("SELECT * FROM phone_evals WHERE away = 1 AND switch_label IS NOT NULL"
                             " AND start < ? AND end > ? ORDER BY start", (t1, t0)).fetchall()
     except sqlite3.OperationalError:   # a database from before the table existed, opened read-only
         return segs
+    last: dict = {}    # pickup -> (id of its latest carved segment, did that thread begin as a self-distraction)
     for p in rows:
         a, b = max(p["start"], t0), min(p["end"], t1)
         if b - a <= 0:
@@ -80,27 +88,31 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
                 out.append(post)
         if base is None:        # nothing was being recorded on the Mac: nothing to be away from
             continue
-        sd = bool(p["self_distraction"])
-        apps = p["apps"] or ""
-
-        def _secs(part):   # "Signal 43s" -> 43
-            try:
-                return float(part.rsplit(" ", 1)[1].rstrip("s"))
-            except (IndexError, ValueError):
-                return 0.0
-        main_app = max(apps.split(", "), key=_secs).rsplit(" ", 1)[0] if apps else ""
+        prev = last.get(p["pickup_key"])
+        shift = p["switch_label"] == "interruption" or prev is None
+        sd = bool(p["self_distraction"]) and shift
+        sd_live = sd if shift else prev[1]
+        content, focused = p["content"] or "other", bool(p["focused"])
+        state = "distracted" if sd_live else "interrupted"
+        if (PHONE_CAN_BE_FOCUS and focused and content not in ("passive", "transition")
+                and not (content == "correspondence" and not base.get("toggl_id"))):
+            state = "focus"    # the rule for a computer segment (see _labelled_segments)
         ph = dict(base)
         for k in ("eval_split_p", "split_user"):
             ph.pop(k, None)
-        ph.update(id=-int(p["pickup_key"]), phone=True, app="iPhone", domain=main_app,
-                  title=apps, url="", clip_start=a, clip_end=b, duration=b - a, idle=0, neutral=0,
-                  state="distracted" if sd else "interrupted", label="distraction" if sd else "interruption",
-                  content=p["content"] or "other", focused=bool(p["focused"]), switch="interruption",
-                  redesign=True, self_distraction=sd, next_task=False, user_unfocused=False,
-                  antecedent_id=None, source="eval", switch_id=None, own_switch_id=None, uncertain=0,
+        ph.update(id=-int(p["seg_key"]), phone=True, app="iPhone", domain=p["app"] or "",
+                  title=p["app"] or "", url="", clip_start=a, clip_end=b, duration=b - a, idle=0, neutral=0,
+                  state=state, content=content, focused=focused, redesign=True, user_unfocused=False,
+                  label=("continuation" if not shift else "distraction" if sd else
+                         "task_change" if state == "focus" else "interruption"),
+                  switch="interruption" if shift else "continuation", self_distraction=sd,
+                  next_task=bool(p["next_task"]) and shift,
+                  antecedent_id=None if shift else prev[0], antecedent_p=1.0,
+                  source="eval", switch_id=None, own_switch_id=None, uncertain=0,
                   hybrid=0, inact_s=0.0, activity=None, probs=None, focus_exception=0,
                   review_chat_mid=None, first_screenshot=None, last_screenshot=None,
                   note=p["rationale"])
+        last[p["pickup_key"]] = (ph["id"], sd_live)
         out.append(ph)
         out.sort(key=lambda s: s["clip_start"])   # stable: equal starts keep their order
         segs = out

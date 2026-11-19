@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 import time
 
 from pydantic import BaseModel, Field
@@ -68,17 +69,19 @@ class SegJudgement(BaseModel):
 
 
 class PhoneJudgement(BaseModel):
-    pickup_id: int = Field(description="The number after 'id=P' on the EVALUATE PHONE line.")
-    switch: str = Field(description="continuation (the phone use was part of what they were doing) or shift (attention left it).")
-    content: str = Field(description="What the phone use was: correspondence, passive, task, planning, reading, meeting, or other.")
-    focused: bool = Field(description="As for a segment: true = doing one thing with intent, false = drifting or consuming.")
-    self_distraction: bool = Field(default=False, description="Only on a shift: they picked up the phone seeking stimulation or distraction WITHOUT a clear intent.")
+    phone_id: int = Field(description="The number after 'id=P' on the EVALUATE PHONE line.")
+    content: str = Field(description="As for a computer segment: creative, task, correspondence, reading, planning, other, passive, meeting, or transition.")
+    focused: bool = Field(description="As for a computer segment: quality of attention during this phone segment.")
+    switch: str = Field(description="The switch INTO this phone segment: continuation, shift, or return - the same meanings as for a computer segment.")
+    continues: str = Field(default="", description="When switch is continuation or return: the id of the log line this attaches to - 'P<number>' for an earlier phone line, or a computer segment's id. Leave empty for a continuation of the line just before it.")
+    self_distraction: bool = Field(default=False, description="As for a computer segment (section 4): only on a shift, or a return to something that is not their work.")
+    next_task: bool = Field(default=False, description="As for a computer segment (section 4): only on a shift.")
     note: str = Field(description="One short sentence of reasoning.")
 
 
 class ChunkJudgement(BaseModel):
     segments: list[SegJudgement]
-    phone: list[PhoneJudgement] = Field(default_factory=list, description="One entry per line marked EVALUATE PHONE; empty when there are none.")
+    phone: list[PhoneJudgement] = Field(default_factory=list, description="One entry per line marked EVALUATE PHONE (each is one app on the phone's screen); empty when there are none.")
     hold_from: int | None = Field(default=None, description="Only when the prompt says holding is allowed. The id of the first EVALUATE segment you would rather judge LATER, because what the person does next would change your judgment of it. Judge every segment before it; leave it and every segment after it out of `segments`. null = judge everything now (the normal case).")
 
 
@@ -217,38 +220,44 @@ judge the intention. False when the shift is not the next task: a glance at a fe
 question, drifting to something else. How long a task takes does not matter: one task that turns \
 out fiddly and takes 25 slower minutes is still the next task, and so is the one after it.
 
-5. PHONE PICKUPS. The log may contain PHONE lines: the person picked up their iPhone, with \
-the apps that were on its screen and for how long. That is all that is known - which app, not \
-what was in it, and there are no phone screenshots. For each line marked EVALUATE PHONE add an \
-entry to `phone`:
-   - switch: 'continuation' when the phone use was part of what they were doing at that moment \
-- a confirmation code for the thing on the computer screen, looking something up for the task, \
-a call or message exchange that IS the current activity, a timer or tracker for the current \
-work. Starting or stopping their time tracker (Toggl) or jotting a note is never a diversion, \
-like flipping to their daily page. Otherwise 'shift': attention left what they were doing. \
-Their rule is that looking at the phone is a diversion unless what they look at is clearly \
-related to the current thread - so when the app is not evidently part of the current activity \
-it is a shift, however short. When the computer shows nothing going on around the pickup (idle, \
-away), there is nothing to continue: it is a shift.
-   - content and focused: as for a segment, about the phone use itself (messaging is \
-correspondence, a feed or dating app is passive, an errand is task).
-   - self_distraction: on a shift, the test of section 4 - did they pick it up seeking \
-stimulation without a clear intent (absent-mindedly opening a dating app, a feed, a shop)? \
-Their rule, in their words: "Opening my phone and looking at a random app without a clear \
-task, is [a self-distraction event]." So unlocking the phone and looking at an app with no \
-evident task is a self-distraction, however short - including a few seconds on whatever app \
-happened to be open when it was unlocked (a line with one app, a few seconds, and no "opened \
-from"). Not a self-distraction: answering a message that just arrived ("opened from a \
-notification" points that way), a deliberate errand, a use that serves the current task, \
-logging something in a tracker.
-   Also in their words: "just glancing at my lock screen on my phone is an interruption, but \
+5. PHONE SEGMENTS. The log may contain PHONE lines. Each is one app on the screen of the \
+person's iPhone for a stretch of time: a segment, like a computer segment, and judged BY THE \
+SAME RULES (sections 1-4) - content, focused, switch, and on a shift self_distraction and \
+next_task. For each line marked EVALUATE PHONE add an entry to `phone`. What is different is \
+only what you can see:
+   - You know the app and the timing, nothing else: not what was in the app, and there are no \
+phone screenshots. Lean on the app, the duration, how it was opened, what was happening on the \
+computer, and the person's notes about their apps in the rules below.
+   - "(phone unlocked)" marks the first line of a pickup. Unlocking puts the phone on whatever \
+app was open when it was last locked, so a first line of a few seconds with no "opened from" is \
+usually them passing through that app on the way to another, or looking and locking again: by \
+the usual standard that is a 'transition' (a continuation), not a shift - unless the pattern \
+around it shows they went there for it.
+   - "(first <app> open today)" marks an app's first use of their day.
+   - switch reads the same way as for a computer segment, with the phone lines and the \
+computer lines as one sequence. 'continuation' on the first line of a pickup means the phone \
+use is part of what they were doing on the computer (a confirmation code for the thing on \
+screen, looking something up for the task, a call or message exchange that IS the current \
+activity); on a later line it continues the phone line before it. Starting or stopping their \
+time tracker (Toggl) or jotting a note is never a diversion, like flipping to their daily page. \
+'shift': attention moved to something new - their rule is that looking at the phone is a \
+diversion unless what they look at is clearly related to the current thread. 'return': back \
+to something from before the last shift. For a continuation or return that does not attach to \
+the line just before it, name the line in `continues`. When the computer shows nothing going on \
+around the pickup (idle, away), there is nothing on the computer to continue.
+   - self_distraction, as in section 4. Their words: "Opening my phone and looking at a random \
+app without a clear task, is [a self-distraction event]." A deliberate errand, a use that \
+serves the current task, answering a message that just arrived ("opened from a notification" \
+points that way), or logging something in a tracker is not.
+   - Also their words: "just glancing at my lock screen on my phone is an interruption, but \
 isn't a self-distraction event." A PHONE line that says they glanced at the lock screen is \
-already settled that way by the app (<phone: shift>); it is never marked EVALUATE. The phone \
-log records a lock-screen look only rarely, so most of them never appear.
-   A pickup never changes how you label the computer segments themselves: the app cuts the \
-phone time out of the segment it falls in, so do not turn a segment into a shift or a return \
-because a PHONE line sits inside it. A PHONE line that already has a judgment shows it as \
-<phone: continuation> or <phone: shift>.
+already settled that way by the app and is never marked EVALUATE. The phone log records a \
+lock-screen look only rarely, so most of them never appear.
+   Phone lines never change how you label the computer segments themselves: the app cuts phone \
+time that was a shift out of the computer segment it falls in, and treats the rest of that \
+segment as a return. So do not turn a computer segment into a shift or a return because a PHONE \
+line sits inside it. PHONE lines that already have a judgment carry the same tags as computer \
+lines.
 
 Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
 and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
@@ -348,11 +357,12 @@ class ChunkEvaluator:
         for p in picks_all:   # lock-screen glances are settled by rule, not by the model
             if p["lock_screen"] and t0 <= p["start"] < t1:
                 store_lock_glance(conn, p)
-        pk_have = {r["pickup_key"]: r for r in conn.execute(
-            "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - CTX_S - 1, t1 + CTX_S + 1))}
+        pk_have = {r["seg_key"]: r for r in conn.execute(
+            "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - 2 * CTX_S - 1800, t1 + 2 * CTX_S + 1800))}
+        # A pickup is judged whole: every app segment in it, when any of them has no judgment.
         picks = [p for p in picks_all if t0 <= p["start"] < t1 and not p["lock_screen"]
-                 and ((extra is not None and not phone_only) or p["key"] not in pk_have
-                      or pk_have[p["key"]]["switch_label"] is None)]
+                 and ((extra is not None and not phone_only) or any(
+                     g["key"] not in pk_have or pk_have[g["key"]]["switch_label"] is None for g in p["segs"]))]
         if not target and not picks:
             return 0
         # -- local models + deferral decision ---------------------------------------------
@@ -410,23 +420,37 @@ class ChunkEvaluator:
                          + (f"  // prior judgment: {rats[s['id']][:80]}" if s["id"] in rats else ""))
             line_ts.append(s["clip_start"])
         pick_keys = {p["key"] for p in picks}
-        for p in picks_all:   # PHONE lines, slotted into the log by time
-            hm = lambda t: dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
-            apps = ", ".join(f"{a} {_dur(d)}" + (f" (opened from {'a notification' if how == 'notification' else how if how == 'another app' else 'the ' + how})" if how else "")
-                             for a, d, how in p["apps"])
-            had = pk_have.get(p["key"])
-            tag = ""
-            if p["key"] not in pick_keys and had is not None and had["switch_label"]:
-                tag = ("  <phone: shift" + (", self-distraction" if had["self_distraction"] else "") + ">"
-                       if had["switch_label"] == "interruption" else "  <phone: continuation>")
-            line = ((f"EVALUATE PHONE id=P{p['key']}: " if p["key"] in pick_keys else "(context) PHONE ")
-                    + (f"{hm(p['start'])}-{hm(p['end'])}  glanced at the iPhone's lock screen, did not unlock it"
-                       if p["lock_screen"] else
-                       f"{hm(p['start'])}-{hm(p['end'])}  iPhone in use {_dur(p['use_s'])}: {apps}")
-                    + ("  (then left open, untouched)" if p["put_down"] else "") + tag)
-            i = sum(1 for t in line_ts if t <= p["start"])
-            lines.insert(i, line)
-            line_ts.insert(i, p["start"])
+        hms = lambda t: dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
+        for p in picks_all:   # PHONE lines, one per app segment, slotted into the log by time
+            for gi, g in enumerate(p["segs"]):
+                had = pk_have.get(g["key"])
+                bits = [hms(g["start"]), "%5s" % _dur(g["end"] - g["start"])]
+                if p["lock_screen"]:
+                    bits.append("glanced at the iPhone's lock screen, did not unlock it")
+                else:
+                    bits.append("iPhone: " + g["app"])
+                    if g["how"]:
+                        bits.append("(opened from " + ("a notification" if g["how"] == "notification" else
+                                                       g["how"] if g["how"] == "another app" else "the " + g["how"]) + ")")
+                    if gi == 0:
+                        bits.append("(phone unlocked)")
+                    if g["first_today"]:
+                        bits.append(f"(first {g['app']} open today)")
+                    if gi == len(p["segs"]) - 1:
+                        bits.append("(then left open, untouched)" if p["put_down"] else "(then locked)")
+                if (p["key"] not in pick_keys or p["lock_screen"]) and had is not None and had["switch_label"]:
+                    bits.append(f"<{had['content']}>")
+                    bits.append("<focused>" if had["focused"] else "<unfocused>")
+                    if had["switch_label"] == "interruption":
+                        bits.append("<switch: shift" + (", self-distraction" if had["self_distraction"] else "")
+                                    + (", next task in the block" if had["next_task"] else "") + ">")
+                    elif had["switch_label"] == "return":
+                        bits.append("<switch: return>")
+                line = ((f"EVALUATE PHONE id=P{g['key']}: " if p["key"] in pick_keys else "(context) PHONE ")
+                        + "  ".join(bits))
+                i = sum(1 for t in line_ts if t <= g["start"])
+                lines.insert(i, line)
+                line_ts.insert(i, g["start"])
         tg = toggl.entries_between(conn, t0 - CTX_S, t1 + CTX_S)
         tgtxt = "\n".join(f"  {dt.datetime.fromtimestamp(e['start']).strftime('%H:%M')}"
                           f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
@@ -569,23 +593,45 @@ class ChunkEvaluator:
                         (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid)),
                          int(foc), int(sd), int(nxt)))
                     n += 1
-                # Phone pickups: stored one row each. A pickup the model left out is stored as a
-                # continuation (changes nothing), so it is not queued for judgment again and again.
-                pj = {j.pickup_id: j for j in (resp.parsed_output.phone or [])}
+                # Phone app segments: one row each, with the fields of a computer segment. `away`
+                # is worked out here: is this time away from what was on the Mac (a shift, or
+                # more of a shift), or part of it (a continuation of the Mac thread, a pass-through)?
+                # A segment the model left out is stored as a continuation, so it is not queued again.
+                pj = {j.phone_id: j for j in (resp.parsed_output.phone or [])}
+                # earlier phone lines in view, so a return to an app from the pickup before attaches to it
+                away_of: dict = {k: bool(r["away"]) for k, r in pk_have.items() if r["away"] is not None}
                 for p in picks:
-                    j = pj.get(p["key"])
-                    psw = stored_switch(j.switch.strip().lower()) if j is not None else "continuation"
-                    if psw not in ("continuation", "interruption"):
-                        psw = "continuation"
-                    pc = j.content.strip().lower() if j is not None else None
-                    conn.execute(
-                        "INSERT OR REPLACE INTO phone_evals(pickup_key, start, end, apps, switch_label, content, focused,"
-                        " self_distraction, rationale, created, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (p["key"], p["start"], p["end"], ", ".join(f"{a} {d:.0f}s" for a, d, _ in p["apps"]), psw,
-                         pc if pc in CONTENTS else "other", int(bool(j.focused)) if j is not None else None,
-                         int(bool(j is not None and j.self_distraction and psw == "interruption")),
-                         j.note if j is not None else "(model omitted this pickup; defaulted)", now, run_id))
-                    n_phone += 1
+                    prev_away = False
+                    for g in p["segs"]:
+                        j = pj.get(g["key"])
+                        psw = stored_switch(j.switch.strip().lower()) if j is not None else "continuation"
+                        if psw not in SWITCHES:
+                            psw = "continuation"
+                        pc = j.content.strip().lower() if j is not None else "transition"
+                        pc = pc if pc in CONTENTS else "other"
+                        cont = (j.continues or "").strip() if j is not None else ""
+                        m = re.fullmatch(r"[Pp](\d+)", cont)
+                        if psw == "interruption":
+                            away, cont = True, ""
+                        elif m and int(m.group(1)) in away_of:
+                            away = away_of[int(m.group(1))]        # attaches to an earlier phone line
+                        elif cont and not m:
+                            away = False                           # attaches to a computer segment
+                        else:
+                            away = prev_away if psw == "continuation" else False   # a bare return: back to the work
+                        if pc == "transition" and psw == "continuation" and not prev_away:
+                            away = False                           # a pass-through is not a diversion
+                        away_of[g["key"]] = prev_away = away
+                        psd = bool(j is not None and j.self_distraction and psw in ("interruption", "return") and away)
+                        conn.execute(
+                            "INSERT OR REPLACE INTO phone_evals(seg_key, pickup_key, start, end, app, switch_label, content,"
+                            " focused, self_distraction, next_task, antecedent, away, rationale, created, run_id)"
+                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (g["key"], p["key"], g["start"], g["end"], g["app"], psw, pc,
+                             int(bool(j.focused)) if j is not None else None, int(psd),
+                             int(bool(j is not None and j.next_task and psw == "interruption")), cont or None, int(away),
+                             j.note if j is not None else "(model omitted this phone segment; defaulted)", now, run_id))
+                        n_phone += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
                 judged = {j.segment_id for j in resp.parsed_output.segments}
@@ -603,7 +649,7 @@ class ChunkEvaluator:
                             " VALUES (?,?,?,?,?,?,?)",
                             (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
                 conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
-        log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone pickup(s) ($%.3f)",
+        log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone segment(s) ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, n_phone, cost)
         # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
@@ -986,9 +1032,9 @@ LOCK_GLANCE_NOTE = "A look at the lock screen without unlocking: an interruption
 def store_lock_glance(conn, p: dict) -> None:
     """Eli, 2026-11-19: "just glancing at my lock screen on my phone is an interruption, but
     isn't a self-distraction event." Decided here, in code: a shift, never a self-distraction."""
-    conn.execute("INSERT OR REPLACE INTO phone_evals(pickup_key, start, end, apps, switch_label, content, focused,"
-                 " self_distraction, rationale, created) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                 (p["key"], p["start"], p["end"], f"Lock screen {p['use_s']:.0f}s", "interruption", "other", 1, 0,
+    conn.execute("INSERT OR REPLACE INTO phone_evals(seg_key, pickup_key, start, end, app, switch_label, content, focused,"
+                 " self_distraction, next_task, away, rationale, created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (p["key"], p["key"], p["start"], p["end"], "Lock screen", "interruption", "other", 1, 0, 0, 1,
                   LOCK_GLANCE_NOTE, time.time()))
 
 
@@ -1018,19 +1064,20 @@ def queue_phone_rejudge(conn, cfg: Config | None = None) -> int:
           AND COALESCE(g.end, g.start) > g.start AND e.segment_id IS NULL""",
         (now - PHONE_LOOKBACK_S, horizon)).fetchone()
     frontier = min(row[0], horizon) if row and row[0] else horizon
-    have = {r[0] for r in conn.execute("SELECT pickup_key FROM phone_evals WHERE start >= ?",
+    have = {r[0] for r in conn.execute("SELECT seg_key FROM phone_evals WHERE start >= ?",
                                        (now - PHONE_LOOKBACK_S - 3600,))}
     new = [p for p in phone.pickups(cfg, now - PHONE_LOOKBACK_S, frontier)
-           if p["key"] not in have and p["end"] < frontier]
+           if p["end"] < frontier and any(g["key"] not in have for g in p["segs"])]
     windows: list[list[float]] = []
     with db.tx(conn):
         for p in new:
             on_mac = conn.execute("SELECT 1 FROM segments WHERE start < ? AND COALESCE(end, ?) > ? LIMIT 1",
                                   (p["end"], now, p["start"])).fetchone()
-            conn.execute("INSERT OR IGNORE INTO phone_evals(pickup_key, start, end, apps, rationale, created)"
-                         " VALUES (?,?,?,?,?,?)",
-                         (p["key"], p["start"], p["end"], ", ".join(f"{a} {d:.0f}s" for a, d, _ in p["apps"]),
-                          None if on_mac else "(the Mac was not recording: not judged)", now))
+            for g in p["segs"]:
+                conn.execute("INSERT OR IGNORE INTO phone_evals(seg_key, pickup_key, start, end, app, rationale, created)"
+                             " VALUES (?,?,?,?,?,?,?)",
+                             (g["key"], p["key"], g["start"], g["end"], g["app"],
+                              None if on_mac else "(the Mac was not recording: not judged)", now))
             if not on_mac:
                 continue
             if p["lock_screen"]:      # settled by rule: nothing to ask the model
@@ -1112,8 +1159,8 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
         c1 = end if end - start <= CHUNK_S * 1.5 else start + CHUNK_S
         if q["reason"] == PHONE_REASON:
             extra = ("the phone log for this window arrived AFTER the computer activity was judged: the "
-                     "PHONE lines are new. Judge each one marked EVALUATE PHONE, against the activity "
-                     "around it. No computer segment is up for judgment in this call.")
+                     "PHONE lines are new. Judge each one marked EVALUATE PHONE, in the context of the "
+                     "activity around it. No computer segment is up for judgment in this call.")
         elif q["reason"] == WRONG_DISPLAY_REASON:
             extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
                      "display: the person had two monitors and you were shown the one they were not "

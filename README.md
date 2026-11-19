@@ -67,15 +67,18 @@ first commit 2026-08-29, in continuous development since.
     then back to the task) is part of the span: the evaluator labels it with the task's content,
     as a focused continuation. For segments judged under the redesign this also overrides the
     `passive_domains` rule (youtube.com is otherwise never focus).
-  * Phone pickups (2026-11-19). `stats.labelled_segments` returns segments with judged shift
-    pickups carved in, so a Mac segment cut by a pickup appears twice with the same id, and the
-    pickup itself has a negative id and no switch. Code that needs one row per real segment
-    (the evaluator's own log, the daily audit) passes `phone=False`. A database that has no
-    `phone_evals` table yet (opened read-only before the app has migrated it) is read as "no
-    pickups". Re-judging the computer segments along with a late pickup was tried and dropped:
-    one call cost $0.13 instead of $0.02 and rewrote 23 settled judgments. A pickup the model
-    leaves out is stored as a continuation, so it is not queued again. Pickups older than
-    3 days when their data arrives are not queued (`PHONE_LOOKBACK_S`).
+  * Phone segments (2026-11-19). `stats.labelled_segments` returns segments with the phone
+    segments that were time away carved in, so a Mac segment cut by one appears twice with the
+    same id, and the phone segment itself has a negative id and no switch. Code that needs one
+    row per real segment (the evaluator's own log, the daily audit) passes `phone=False`. A
+    database that has no `phone_evals` table yet (opened read-only before the app has migrated
+    it) is read as "no phone use". Re-judging the computer segments along with late phone data
+    was tried and dropped: one call cost $0.13 instead of $0.02 and rewrote 23 settled judgments.
+    A phone segment the model leaves out is stored as a continuation, so it is not queued again.
+    Pickups older than 3 days when their data arrives are not queued (`PHONE_LOOKBACK_S`).
+    The first draft judged a pickup as a whole, with its own short rulebook; it called most 3-10 s
+    looks at the app the phone unlocked onto a shift. Judging each app segment by the ordinary
+    rules lets those be pass-throughs.
     Carving can remove a span: the opening 10 unbroken focused minutes are measured after the
     phone time is cut out.
     What the phone log cannot show (checked 2026-11-19 against 40 days of it): it is a stream of
@@ -141,20 +144,29 @@ first commit 2026-08-29, in continuous development since.
   interval is inferred from the data (`phone.autolock_s`: lock-ended durations spike in a
   15-second band above one of iOS's Auto-Lock options), so changing the setting needs no code
   change; it takes a couple of days of self-locks to show up.
-* **Phone pickups are judged as switches** (since 2026-11-19). `phone.pickups` groups the phone
-  log into pickups: one per stretch of use between locks (segments under 60 s apart; a put-down
-  segment counts for its first 10 s; under 3 s of use is ignored). The evaluator sees each pickup
-  as a `PHONE` line in the activity log, slotted in by time, and judges it: a *continuation* (part
-  of what you were doing: a confirmation code, your Toggl timer, a call that is the activity) or
-  a *shift*, and on a shift whether it was a self-distraction. Only the app names and times are
-  known; there are no phone screenshots. Judgments are stored in `phone_evals`.
-  A pickup judged a shift is cut out of the Mac segment it overlaps (`stats._carve_phone`): it
-  becomes a block of its own on the timeline (app "iPhone", a negative id), the Mac window before
-  and after it stays one thread, and the phone time is time away from the span. So it is one
-  attention-interruption event, 5 minutes of it ends the span, and it counts as a
-  self-distraction event (and a bounce-away, when it is what left the span) when judged one.
-  Phone time is never focus time, whatever was done on the phone. A pickup judged a
-  continuation, or not judged yet, changes nothing.
+* **Phone app segments are judged like computer segments** (since 2026-11-19; Eli: "The app
+  should make the same segment judgements of open phone apps as it does of computer segments").
+  `phone.pickups` groups the phone log into pickups: one per stretch of use between locks
+  (records under 60 s apart; a put-down record counts for its first 10 s; under 3 s of use in
+  all is ignored). Each pickup carries its app segments in order. The evaluator sees every app
+  segment as a `PHONE` line in the activity log, slotted in by time, marked "(phone unlocked)" on
+  the first of a pickup and "(first Oura open today)" on an app's first use of the day, and judges
+  it with the fields of a computer segment: content, focused, switch (continuation / shift /
+  return), and on a shift self-distraction and next-task. Only the app and the timing are known;
+  there are no phone screenshots. Judgments are stored in `phone_evals`, one row per app segment.
+  When a row is stored the app works out `away`: a shift is time away from what was on the Mac,
+  and so is a continuation of a phone segment that was away; a continuation of the Mac thread, or
+  a pass-through (content `transition`: the few seconds on whatever app the phone unlocked onto),
+  is not.
+  A phone segment that is away is cut out of the Mac segment it overlaps (`stats._carve_phone`):
+  it becomes a block of its own on the timeline (app "iPhone", the phone app as its site, a
+  negative id), the Mac window before and after it stays one thread, and the phone time is time
+  away from the span. So one trip to the phone is one attention-interruption event, 5 minutes of
+  it ends the span, and each shift judged a self-distraction is a self-distraction event (and a
+  bounce-away, when it is what left the span). A phone segment that is not away, or not judged
+  yet, changes nothing.
+  `stats.PHONE_CAN_BE_FOCUS` (False) decides whether focused phone time may count as focus and
+  start a span of its own. Off, phone time that was a shift is always a diversion.
   A glance at the lock screen is an interruption and never a self-distraction (Eli's rule); that
   is set in code (`evaluator.store_lock_glance`), not asked of the model. The phone log records
   a lock-screen look only when you swipe to the widgets page without unlocking
@@ -163,9 +175,9 @@ first commit 2026-08-29, in continuous development since.
   The phone log arrives hours to a day after the fact, so most pickups are judged late:
   `evaluator.queue_phone_rejudge` (every classifier cycle; does work only when the phone data
   has advanced, or every 30 minutes) puts each stretch holding an unjudged pickup into
-  `reeval_queue` with the reason "phone data arrived", and `run_reevaluations` judges the pickups
-  in it against the activity already judged. The computer segments are shown as context and are
-  not judged again. A day's numbers can therefore change when the phone data lands.
+  `reeval_queue` with the reason "phone data arrived", and `run_reevaluations` judges the phone
+  segments in it against the activity already judged. The computer segments are shown as context
+  and are not judged again. A day's numbers can therefore change when the phone data lands.
 
 ### The app, the launcher and restarts
 

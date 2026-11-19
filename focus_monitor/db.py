@@ -383,12 +383,18 @@ def connect() -> sqlite3.Connection:
         segment_id INTEGER PRIMARY KEY,   -- first segment it held back (everything after waits too)
         until REAL NOT NULL,              -- do not ask again before this time
         created REAL NOT NULL)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS phone_evals (  -- one row per iPhone pickup (phone.pickups)
-        pickup_key INTEGER PRIMARY KEY,   -- the pickup's start, whole seconds
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(phone_evals)")}
+    if pcols and "seg_key" not in pcols:   # the first draft judged whole pickups; it never ran live
+        conn.execute("DROP TABLE phone_evals")
+    conn.execute("""CREATE TABLE IF NOT EXISTS phone_evals (  -- one row per iPhone app segment (phone.pickups()[..]["segs"])
+        seg_key INTEGER PRIMARY KEY,      -- the segment's start, whole seconds
+        pickup_key INTEGER,               -- the pickup it belongs to (that pickup's start)
         start REAL NOT NULL, end REAL NOT NULL,
-        apps TEXT,                        -- "Signal 43s, Oura 2s"
-        switch_label TEXT,                -- continuation | interruption (a shift); NULL = queued, not judged yet
-        content TEXT, focused INTEGER, self_distraction INTEGER,
+        app TEXT,                         -- "Signal"; "Lock screen" for a glance with no unlock
+        switch_label TEXT,                -- continuation | interruption (a shift) | return; NULL = queued, not judged yet
+        content TEXT, focused INTEGER, self_distraction INTEGER, next_task INTEGER,
+        antecedent TEXT,                  -- what a continuation/return attaches to: "P<seg_key>" or a Mac segment id
+        away INTEGER,                     -- 1 = time away from what was on the Mac (carved out by stats._carve_phone)
         rationale TEXT, created REAL NOT NULL, run_id INTEGER)""")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:

@@ -145,10 +145,16 @@ It's the app's job to review the data and make intelligent judgements about  whe
 
 
 ### Evaluating phone data
-* Opening my phone is evaluated as a switch, like any other. Was it a continuation (part of the same task: a confirmation code, starting or stopping my toggl timer, a call that is the task)? A diversion? A self-distraction event?
+* The app should make the same segment judgments of open phone apps as it does of computer segments. Each app I have open on my phone is a segment: it gets a content label, focused or unfocused, and a switch label (continuation, shift, or return), and a shift is checked for being a self-distraction event, all by the same standards as above.
+  * Opening my phone is a switch like any other. Was it a continuation (part of the same task: a confirmation code, starting or stopping my toggl timer, a call that is the task)? A diversion? A self-distraction event?
+  * When I unlock my phone it shows whichever app I had open last. Passing through that app for a few seconds on the way to something else is a transition, the same as passing through a window on the computer.
 * Just glancing at my lock screen on my phone is an interruption, but isn't a self-distraction event. Opening my phone and looking at a random app without a clear task, is.
   * Opening my phone for a deliberate errand, or for something related to what I'm doing, is not a self-distraction event.
-* Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it. Phone time is never focus time itself.
+* Some heuristics for particular apps:
+  * Oura is sometimes used for exercise tracking. The first Oura open of the day is for syncing to the server, and is intentional.
+  * Bumble is often, but not always, passive browsing.
+  * Amazon is sometimes intentionally ordering something, and sometimes absent-minded browsing of my orders.
+* Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it.
 * Phone data arrives late, often hours after the fact. A stretch with phone use in it is judged when its phone data lands, so a day's numbers can change after the fact.
 * The phone data only shows which app was on the screen and when. It does not show what I was doing in the app, and there are no screenshots. A plain glance at the lock screen leaves no record at all, so most of those are not counted. The only one that is recorded is swiping to the widgets on the lock screen, which I do about once a week.
 

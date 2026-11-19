@@ -55,18 +55,25 @@ class Day:
     def run(self):
         return stats.spans_and_events(self.segs, min_focus_min=10, break_min=5)
 
-    def phone(self, at_min, minutes, *, switch="interruption", sd=False, focused=False, apps="Signal 60s"):
-        """An iPhone pickup `at_min` minutes into the day, judged as given; carves it out of
-        the segments the way stats.labelled_segments does (through an in-memory phone_evals)."""
+    PHONE_DDL = ("CREATE TABLE phone_evals (seg_key INTEGER PRIMARY KEY, pickup_key INTEGER, start REAL, end REAL,"
+                 " app TEXT, switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER,"
+                 " next_task INTEGER, antecedent TEXT, away INTEGER, rationale TEXT, created REAL, run_id INTEGER)")
+
+    def phone(self, at_min, parts):
+        """An iPhone pickup `at_min` minutes into the day. `parts` is a list of judged app
+        segments, each (minutes, app, switch, away, self_distraction, focused) in the order used;
+        carves them out of the segments the way stats.labelled_segments does (through an
+        in-memory phone_evals)."""
         import sqlite3
         c = sqlite3.connect(":memory:")
         c.row_factory = sqlite3.Row
-        c.execute("CREATE TABLE phone_evals (pickup_key INTEGER PRIMARY KEY, start REAL, end REAL, apps TEXT,"
-                  " switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, rationale TEXT,"
-                  " created REAL, run_id INTEGER)")
-        a = T0 + at_min * 60.0
-        c.execute("INSERT INTO phone_evals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                  (int(a), a, a + minutes * 60.0, apps, switch, "correspondence", int(focused), int(sd), "test", 0, None))
+        c.execute(self.PHONE_DDL)
+        a = pk = T0 + at_min * 60.0
+        for minutes, app, switch, away, sd, focused in parts:
+            c.execute("INSERT INTO phone_evals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (int(a), int(pk), a, a + minutes * 60.0, app, switch, "other", int(focused), int(sd), 0, None,
+                       int(away), "test", 0, None))
+            a += minutes * 60.0
         for sg in self.segs:
             sg.setdefault("redesign", True)
         self.segs = stats._carve_phone(c, self.segs, T0, self.t)
@@ -273,7 +280,7 @@ def cases():
     def _():
         d = Day()
         d.add(30, "Essay")
-        d.phone(14, 2)                     # 2 minutes on the phone, 14 minutes in
+        d.phone(14, [(2, "Uber Eats", "interruption", True, False, True)])   # a 2-minute deliberate errand, 14 minutes in
         se = d.run()
         sp = se["focus_spans"]
         assert len(sp) == 1 and _mins(sp[0]) == 28 and len(sp[0]["detours"]) == 1, [(_mins(x), x["detours"]) for x in sp]
@@ -284,7 +291,7 @@ def cases():
     def _():
         d = Day()
         d.add(40, "Essay")
-        d.phone(15, 6)
+        d.phone(15, [(6, "Signal", "interruption", True, False, True)])
         sp = d.run()["focus_spans"]
         assert [_mins(x) for x in sp] == [15, 19], [_mins(x) for x in sp]
 
@@ -292,7 +299,7 @@ def cases():
     def _():
         d = Day()
         d.add(30, "Essay")
-        d.phone(14, 1, sd=True, apps="Bumble 60s")
+        d.phone(14, [(1, "Bumble", "interruption", True, True, False)])
         se = d.run()
         assert len(se["focus_spans"]) == 1 and len(se["focus_spans"][0]["detours"]) == 1
         assert stats.self_distraction_counts(d.segs, se) == (1, 1)
@@ -303,9 +310,7 @@ def cases():
         from . import evaluator
         c = sqlite3.connect(":memory:")
         c.row_factory = sqlite3.Row
-        c.execute("CREATE TABLE phone_evals (pickup_key INTEGER PRIMARY KEY, start REAL, end REAL, apps TEXT,"
-                  " switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, rationale TEXT,"
-                  " created REAL, run_id INTEGER)")
+        c.execute(Day.PHONE_DDL)
         d = Day()
         d.add(30, "Essay")
         a = T0 + 14 * 60
@@ -318,11 +323,45 @@ def cases():
         assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and sp[0]["detours"][0]["state"] == "interrupted", sp
         assert stats.self_distraction_counts(d.segs, se) == (0, 0)
 
+    @case("phone segments are judged one by one: a pass-through app, then a shift, then more of it")
+    def _():
+        d = Day()
+        d.add(30, "Essay")
+        # unlocked onto Oura for 3 s (pass-through: nothing), then Bumble (self-distraction), then on to Feeld
+        d.phone(14, [(0.05, "Oura", "continuation", False, False, True),
+                     (1, "Bumble", "interruption", True, True, False),
+                     (1, "Feeld", "continuation", True, False, False)])
+        se = d.run()
+        sp = se["focus_spans"]
+        ph = [g for g in d.segs if g.get("phone")]
+        assert [g["domain"] for g in ph] == ["Bumble", "Feeld"], [g["domain"] for g in ph]     # Oura is not carved
+        assert ph[1]["switch"] == "continuation" and ph[1]["antecedent_id"] == ph[0]["id"] and ph[1]["state"] == "distracted"
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and _mins(sp[0]) == 28, [(_mins(x), len(x["detours"])) for x in sp]
+        assert stats.self_distraction_counts(d.segs, se) == (1, 1)
+
+    @case("focused phone time is time away, and never focus, while PHONE_CAN_BE_FOCUS is off")
+    def _():
+        assert stats.PHONE_CAN_BE_FOCUS is False     # Eli has not ruled; see stats.py
+        d2 = Day()
+        d2.add(40, "Essay")
+        d2.phone(12, [(20, "Exercise Tracker", "interruption", True, False, True)])
+        sp = d2.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [12], [_mins(x) for x in sp]   # 20 focused minutes on the phone start no span
+        stats.PHONE_CAN_BE_FOCUS = True
+        try:
+            d3 = Day()
+            d3.add(40, "Essay")
+            d3.phone(12, [(20, "Exercise Tracker", "interruption", True, False, True)])
+            sp = d3.run()["focus_spans"]
+            assert [_mins(x) for x in sp] == [12, 20], [_mins(x) for x in sp]   # with it on, they are a span of their own
+        finally:
+            stats.PHONE_CAN_BE_FOCUS = False
+
     @case("a phone pickup judged a continuation changes nothing")
     def _():
         d = Day()
         d.add(30, "Essay")
-        d.phone(14, 2, switch="continuation")
+        d.phone(14, [(2, "Authenticator", "continuation", False, False, True)])
         se = d.run()
         sp = se["focus_spans"]
         assert len(d.segs) == 1 and len(sp) == 1 and _mins(sp[0]) == 30 and not sp[0]["detours"], sp

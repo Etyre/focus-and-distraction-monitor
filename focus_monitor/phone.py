@@ -207,31 +207,64 @@ def lock_glances(cfg, t0: float, t1: float) -> list[tuple[float, float]]:
         c.close()
 
 
+def _first_opens(cfg, ts: float) -> dict:
+    """{bundle: start of its first segment} for the logical day `ts` falls in - so a line can say
+    "first Oura open today" (Eli: the first Oura open of the day is an intentional sync)."""
+    from .config import day_bounds, logical_date
+    d0, d1 = day_bounds(logical_date(ts))
+    c = _connect(cfg)
+    if c is None:
+        return {}
+    try:
+        return {r[0]: r[1] for r in c.execute(
+            "SELECT bundle_id, MIN(start_ts) FROM segments WHERE start_ts >= ? AND start_ts < ?"
+            " AND (duration_s IS NULL OR duration_s >= 1.0) GROUP BY bundle_id", (d0, d1))}
+    except sqlite3.Error:
+        return {}
+    finally:
+        c.close()
+
+
 def pickups(cfg, t0: float, t1: float) -> list[dict]:
     """Pickups STARTING in [t0, t1): one per stretch of phone use between locks.
 
-    {key, start, end, use_s, apps: [(name, seconds, how)], put_down, lock_screen}. A pickup with
+    {key, start, end, use_s, apps: [(name, seconds, how)], segs, put_down, lock_screen}. `segs`
+    is the unit the evaluator judges: one entry per app in the order used, {key, start, end, app,
+    how, first_today} (back-to-back records of one app are one entry; key = its start in whole
+    seconds, unique within the pickup; first_today = that app's first open of the logical day).
+    A pickup with
     lock_screen=True is a look at the lock screen with no unlock (lock_glances) that is not part
     of a pickup of the ordinary kind; it has no minimum length. Segments less than
     LOCK_GAP_S apart are one pickup. Time on a put-down segment (the phone locked itself at the
     Auto-Lock interval: left open, untouched) is not use, beyond its first seconds. `key` is the
     pickup's start in whole seconds; it is computed from unclipped segments, so the same pickup
     gets the same key whichever window asks."""
+    from .config import logical_date
     w = window(cfg, t0 - PICKUP_PAD_S, t1 + PICKUP_PAD_S)
-    out, cur = [], None
+    out, cur, firsts = [], None, {}
     for sg in w["segments"]:
         end = min(sg["end"], sg["start"] + PUT_DOWN_USE_S) if sg["put_down"] else sg["end"]
         if cur is not None and sg["start"] - cur["end"] < LOCK_GAP_S and not cur["put_down"]:
             cur["end"] = max(cur["end"], end)
         else:
-            cur = {"start": sg["start"], "end": end, "apps": [], "put_down": False}
+            cur = {"start": sg["start"], "end": end, "apps": [], "segs": [], "put_down": False}
             out.append(cur)
         cur["put_down"] = sg["put_down"]
         if cur["apps"] and cur["apps"][-1][0] == sg["app"]:
             n, d, how = cur["apps"][-1]
             cur["apps"][-1] = (n, d + (end - sg["start"]), how)
+            cur["segs"][-1]["end"] = end
         else:
             cur["apps"].append((sg["app"], end - sg["start"], sg["how"]))
+            day = logical_date(sg["start"])
+            if day not in firsts:
+                firsts[day] = _first_opens(cfg, sg["start"])
+            f0 = firsts[day].get(sg["bundle"])
+            key = int(sg["start"])
+            if cur["segs"] and key <= cur["segs"][-1]["key"]:
+                key = cur["segs"][-1]["key"] + 1
+            cur["segs"].append({"key": key, "start": sg["start"], "end": end, "app": sg["app"], "how": sg["how"],
+                                "first_today": f0 is not None and abs(f0 - sg["start"]) < 1.0})
     res = []
     for p in out:
         p["use_s"] = sum(d for _, d, _ in p["apps"])
@@ -250,5 +283,7 @@ def pickups(cfg, t0: float, t1: float) -> list[dict]:
             res.append(glance)
         glance["use_s"] = glance["end"] - glance["start"]
         glance["apps"] = [("Lock screen", glance["use_s"], "")]
+        glance["segs"] = [{"key": glance["key"], "start": glance["start"], "end": glance["end"], "app": "Lock screen",
+                           "how": "", "first_today": False}]
     res.sort(key=lambda p: p["start"])
     return res
