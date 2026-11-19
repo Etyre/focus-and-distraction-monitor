@@ -130,7 +130,7 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * 10 minutes spent agent coding, where I am alternating between one of several different projects, spending less than 5 minutes on each one, should _not_ count as a focus span, unless that block of coding meets the standard for a focused task span.
   * However, 10 minutes engaging with the _same_ coding project can count as a focus span, if it's evaluated to be the thoughtful creative mode (or if it meets the standards for a focus task span).
 * While an agent is running, switching away to something else (email, a feed, another tab) is never a continuation of the coding work. It is an attention interruption.
-  * The exception is a focused task block: if I'm intentionally moving on to a different task while the agent runs, that is part of the focused task span, by the usual standard for those (a toggl entry running, and judgement that I'm deliberately executing on tasks).
+  * This is not a special standard for agent coding. It is the general rule, and the general exception applies too: a focused task block can hold several attentional threads. If I'm intentionally moving on to the next task while the agent runs, that is part of the focused task block, by the usual standard for those (a toggl entry running, and judgement that I'm deliberately executing on tasks). The same goes for moving between several agent-coding projects: inside a focused task block each move is the next task; outside one, each move is an interruption.
   * Whether the interruption is also a self-distraction event follows the usual rule: scrolling a feed is or absentmindedly looking at my inbox is, deliberately handling an email probably is not.
 
 
