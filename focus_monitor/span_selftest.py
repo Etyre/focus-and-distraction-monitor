@@ -209,6 +209,23 @@ def cases():
         assert len(se["focus_spans"][0]["detours"]) == 1
         assert stats.self_distraction_counts(d.segs, se) == (2, 1)
 
+    @case("creative work that turns into task mode on the same thread stays one creative span, no Toggl needed")
+    def _():
+        d = Day()
+        d.add(15, "Agent"); d.add(25, "Agent", content="task")
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 40 and sp[0]["subtype"] == "creative_work", sp
+        d = Day()   # only 6 creative minutes first: it never qualified as creative work
+        d.add(6, "Agent"); d.add(25, "Agent", content="task")
+        se = d.run()
+        assert not se["focus_spans"] and se["disqualified"], se["focus_spans"]
+        d = Day()   # task-mode work on OTHER threads is time away, and 5 minutes of it ends the span
+        a = d.add(15, "Agent")
+        d.add(6, "Mail", content="task", switch="interruption")
+        d.add(4, "Agent", content="task", switch="return", ante=a)
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [15], [_mins(x) for x in sp]
+
     return out
 
 

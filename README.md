@@ -51,6 +51,10 @@ first commit 2026-08-29, in continuous development since.
     one attention-interruption event; it is a bounce-away only if the move to email was itself
     a self-distraction, and a self-distraction later in the same time away is an event but not
     a bounce-away. The tile, the Trends chart and the menu bar show self-distraction events.
+  * A span that opens with 10 focused minutes of creative work keeps the kind "creative work"
+    when the same thread turns into task-mode work, even when task time dominates and no Toggl
+    entry is running (`_opens_creative`). Before 2026-11-19 such a span was thrown out whole as
+    "task activity without a Toggl entry". Task work on another thread is still time away.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older

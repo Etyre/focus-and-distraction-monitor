@@ -320,6 +320,22 @@ def _runs(segs: list[dict], state: str, new_run_on_label: str | None = None) -> 
     return runs
 
 
+def _opens_creative(sp: dict, cfg) -> bool:
+    """True when the span's opening unbroken focused block (before any diversion or unfocused
+    stretch) has at least min_unbroken_min of creative content before any other kind of work."""
+    need, got = cfg.min_unbroken_min * 60.0, 0.0
+    for r in sp["runs"]:
+        if r["cat"] != "focus" or r.get("soft"):
+            break
+        for s in r["segments"]:
+            c = s.get("content")
+            if c == "creative":
+                got += s["duration"]
+            elif c not in ("transition", "idle"):
+                return got >= need
+    return got >= need
+
+
 def span_subtype(sp: dict, cfg) -> str | None:
     """Classify a focus span into one of its kinds (Rules doc + user categories):
     creative_work, focused_task, reading, planning, other_focused, meeting. Prefers Claude's per-switch
@@ -369,6 +385,13 @@ def span_subtype(sp: dict, cfg) -> str | None:
             grp[ACT2SUB.get(a, "other_focused")] += s["duration"]
     if sum(grp.values()) / tot >= 0.4:
         top = grp.most_common(1)[0][0]
+        if top == "focused_task" and not task_ok and _opens_creative(sp, cfg):
+            # A span that began as creative work keeps that kind when the same thread turns
+            # into quick task-mode work (Eli, 2026-11-19): carefully designing with an agent,
+            # then rapid back-and-forth on the same project, needs no Toggl entry. Only the
+            # same thread gets here - a shift to another task is a new thread (_same_task),
+            # so interleaved other work is time away and ends the span by the usual rules.
+            return "creative_work"
         if top == "focused_task" and not task_ok:
             sp["disq_reason"] = "task activity without a Toggl entry"
             return None  # task churn without Toggl: not focused work at all
