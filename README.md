@@ -57,6 +57,8 @@ first commit 2026-08-29, in continuous development since.
     "task activity without a Toggl entry". Task work on another thread is still time away.
   * A brief look at a todo list to pick the next task belongs to that task's thread: the
     evaluator prompt puts the shift on the todo-list segment and makes the task a continuation.
+  * Passing through windows on the way to something new: the pass-throughs are transitions
+    (continuations) and the shift goes on the arrival segment, the same as for a return.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older
