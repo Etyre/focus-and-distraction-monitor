@@ -28,6 +28,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * Opening a new tab to go to a blocked website.
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
+  * Switching to email is a self-distraction event when I open the inbox, look at the list, maybe skim a message or two, do nothing, and go back. It is not one when the check is deliberate: I open a specific message and reply or act on it, or I go there right after a notification, or it is a natural stopping point in the work. Either way it is an interruption of what I was doing; this only decides whether it is also a self-distraction event.
     * Opening my phone to look at a random app, unrelated to what I'm doing.
 * Going back to a distraction I visited a few minutes earlier counts again, if that move was itself motivated by stimulation-seeking. The model evaluates each visit separately.
 * A **bounce-away** is a self-distraction event by which I leave a focus span: the moment my attention goes from the focus object to something else, when that shift is a self-distraction.
@@ -51,6 +52,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
       * Note that the absensece of a toggl entry disquailifes a span from being a *Focused* task span. But individual segments can and should still be tagged in the "task" category, regardless of whether there's a toggl running. Toggl is required as evidence of deliberate focus, not as evidence of task-nature.
     * **How focused task blocks are put together.** Attentional threads are tracked at the level of the individual task. When I finish one task and move to the next, that is a shift, because my attention moved to a new object. On each shift, the model additionally evaluates: is this the next task under the same overall intention of processing tasks? If yes, the shift stays inside the block. The app then joins the threads linked this way into one focused task block, and treats that block as a single focus span. A shift that is not the next task (a glance at Twitter, a random question to Claude) is a diversion from the block: it is an attention-interruption event if it lasts less than 5 minutes, and it ends the block if it lasts 5 minutes or more. The model judges each shift; the app does the joining, and applies the hard rule that a block can only count as a focused task span if a Toggl entry is running. (added 2026-11-19)
     * Correspondence items are potential components of a focused task block, like any other task. A session of nothing but email, under a running toggl entry, where I am deliberately working through the messages, is a focused task span.
+    * Anki reviews are a task. A review session under a running toggl entry is a focused task span; without one it is task time that does not form a focus span. A few cards done between other things is a small task or a diversion, by the usual rules.
     * Focused task spans will often include email correspondence. Correspondence that happens inside a task block (under a running toggl entry) is part of the focused task span, not a separate correspondence span; the segments are still tagged "correspondence".
   * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video. etc.
     * Creative work spans and focused task spans are mutually exclusive.
@@ -87,6 +89,7 @@ For each segment, the model does several different related evaluations:
 * If a switch is labeled as a continuation or as a return, evaluate which earlier segment does this segment continue.
   * This is used to alogirthmically consturct threads.
 * If a switch is labeled as a _shift_, then a model additionally evaluates is that shift was a **self-distraction event**?
+  * This judgment should use the focused / unfocused judgment of the segment as an input. Arriving somewhere and doing one thing with intent is evidence that the shift was deliberate; arriving and drifting or skimming is evidence that it was a self-distraction. It is evidence, not the whole answer: a planned video break is unfocused, but it is not a self-distraction.
 * If a switch is labeled as a shift, additionally evaluate whether it is the next task under the same task-processing intention (see focused task spans above).
   * Looking at a todo list or task feed briefly, to choose a next task, followed by doing that task, is the same attentional thread as the task itself. The shift is labeled on the todo-list segment, and the task that follows is a continuation of it.
 
@@ -123,6 +126,8 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * However, some judgement is required to distinguish this case from one in which I have in fact gotten briefly (or not so briefly) distracted and my focus shifted to a different task or object.
   * I should never spend more than 15 seconds on a page if I'm just passing through.
 * If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).
+* A long conversation with Claude that isn't coding (thinking through an idea, a plan, or a decision) is eligible to be a focus span, judged like agent coding: am I reading the replies fully and thinking, or skimming?
+  * Asking Claude questions that wander from one question to the next is not passive consumption. I am actively engaged. But it might not be focused: the model should judge whether that time is focused or unfocused, like any other segment.
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
 * My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.
 * Agent-coding should usually count as a task, and be evaluated by the standards of task spans. However, deep, continuous  engagement with an agent, where the user is carefully reading, thinking about, and responding to a coding agent, or writing up up a detailed spec for a peice of software are both creative work.
