@@ -63,6 +63,10 @@ first commit 2026-08-29, in continuous development since.
     own self-distraction judgment (the only return that can). When the model judges that visit
     stimulation-seeking, it counts as another self-distraction event, and as a bounce-away if
     it is what left the span.
+  * A video watched in service of the current task (a tutorial on the thing you are stuck on,
+    then back to the task) is part of the span: the evaluator labels it with the task's content,
+    as a focused continuation. For segments judged under the redesign this also overrides the
+    `passive_domains` rule (youtube.com is otherwise never focus).
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older

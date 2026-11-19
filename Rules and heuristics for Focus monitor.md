@@ -33,6 +33,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * If I go from writing to email to Bluesky and back to writing, there is at most one bounce-away: the shift from writing to email, if that shift was a self-distraction. A self-distraction later in the same time away (email to Bluesky) is a self-distraction event, but not a bounce-away.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
+  * The exception is a video watched in service of the current task: for example, a tutorial on exactly the thing I'm stuck on, after which I go back to the task. That is part of the focus span, not passive consumption. A video that is only on a related topic, or that I drift on from to other videos, is passive consumption as usual.
 * A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.
   * Correspondence is work, and is tracked in its own right, but it is interactive rather than independent, so it never counts toward a focus span on its own, unless I'm deliberately drafting a long message instead of engaged in a back and forth, which can count as a focused span.
   * Correspondence processed inside a focused task block (under a running toggl entry) is part of that focused task span.

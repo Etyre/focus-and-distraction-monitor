@@ -110,6 +110,13 @@ objective, reading comics/entertainment. When in doubt between 'other' and 'pass
 this person's calibration is that the system has been far too optimistic about focus. That lean \
 applies to AMBIGUOUS ENGAGEMENT only - a segment long enough that consumption could have happened. \
 It does not apply to segments too short for any engagement (see 'transition' below).
+     EXCEPTION - a video (or talk, or screencast) watched IN SERVICE OF THE CURRENT TASK is not \
+passive: a tutorial on exactly the thing they are stuck on, a recording they need for the piece \
+they are writing. Both must be evident from the log: the video is clearly about the task they \
+were just on, and they go back to that task afterwards (or it is still playing at the end of \
+the log). Give it the content label of the task it serves, switch 'continuation' of that task, \
+focused true. A video that is merely on a related topic, or that they drift on from to other \
+videos, is passive as usual.
    - meeting: a live conversation - video call (Zoom/Meet/FaceTime), call notes or live transcript \
 (e.g. Otter) during one. When the conversation is the ACTIVITY. If instead an activity (reading a \
 document, working through a task, writing, planning) is being carried on INSIDE a live discussion - \

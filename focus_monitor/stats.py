@@ -284,8 +284,12 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         # Categorical rule (Rules doc + user ruling): passive-consumption domains (video
         # watching) are never focused work, however the switch was labelled - continuation
         # inheritance must not launder a video session into focus. Only a human review of
-        # the inbound switch can override.
+        # the inbound switch can override. Exception (Eli, 2026-11-19): a video watched in
+        # service of the current task is part of the span. A segment judged under the redesign
+        # gets its state from its own focused field, not by inheritance, so when the evaluator
+        # looked at it and called it focused, non-passive work, that judgment stands.
         if (s["state"] == "focus" and s.get("source") != "review"
+                and not (s.get("redesign") and s.get("focused") and s.get("content") != "passive")
                 and any((s.get("domain") or "") == d or (s.get("domain") or "").endswith("." + d)
                         for d in cfg.passive_domains)):
             s["state"] = "distracted"
