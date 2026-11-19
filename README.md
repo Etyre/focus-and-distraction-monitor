@@ -67,6 +67,17 @@ first commit 2026-08-29, in continuous development since.
     then back to the task) is part of the span: the evaluator labels it with the task's content,
     as a focused continuation. For segments judged under the redesign this also overrides the
     `passive_domains` rule (youtube.com is otherwise never focus).
+  * Phone pickups (2026-11-19). `stats.labelled_segments` returns segments with judged shift
+    pickups carved in, so a Mac segment cut by a pickup appears twice with the same id, and the
+    pickup itself has a negative id and no switch. Code that needs one row per real segment
+    (the evaluator's own log, the daily audit) passes `phone=False`. A database that has no
+    `phone_evals` table yet (opened read-only before the app has migrated it) is read as "no
+    pickups". Re-judging the computer segments along with a late pickup was tried and dropped:
+    one call cost $0.13 instead of $0.02 and rewrote 23 settled judgments. A pickup the model
+    leaves out is stored as a continuation, so it is not queued again. Pickups older than
+    3 days when their data arrives are not queued (`PHONE_LOOKBACK_S`).
+    Carving can remove a span: the opening 10 unbroken focused minutes are measured after the
+    phone time is cut out.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older
@@ -122,8 +133,27 @@ first commit 2026-08-29, in continuous development since.
   phone and barely used: it is flagged `put_down` and drawn hollow (dashed) in the lane. The
   interval is inferred from the data (`phone.autolock_s`: lock-ended durations spike in a
   15-second band above one of iOS's Auto-Lock options), so changing the setting needs no code
-  change; it takes a couple of days of self-locks to show up. Display only for now: the evaluator
-  does not see the phone yet.
+  change; it takes a couple of days of self-locks to show up.
+* **Phone pickups are judged as switches** (since 2026-11-19). `phone.pickups` groups the phone
+  log into pickups: one per stretch of use between locks (segments under 60 s apart; a put-down
+  segment counts for its first 10 s; under 3 s of use is ignored). The evaluator sees each pickup
+  as a `PHONE` line in the activity log, slotted in by time, and judges it: a *continuation* (part
+  of what you were doing: a confirmation code, your Toggl timer, a call that is the activity) or
+  a *shift*, and on a shift whether it was a self-distraction. Only the app names and times are
+  known; there are no phone screenshots. Judgments are stored in `phone_evals`.
+  A pickup judged a shift is cut out of the Mac segment it overlaps (`stats._carve_phone`): it
+  becomes a block of its own on the timeline (app "iPhone", a negative id), the Mac window before
+  and after it stays one thread, and the phone time is time away from the span. So it is one
+  attention-interruption event, 5 minutes of it ends the span, and it counts as a
+  self-distraction event (and a bounce-away, when it is what left the span) when judged one.
+  Phone time is never focus time, whatever was done on the phone. A pickup judged a
+  continuation, or not judged yet, changes nothing.
+  The phone log arrives hours to a day after the fact, so most pickups are judged late:
+  `evaluator.queue_phone_rejudge` (every classifier cycle; does work only when the phone data
+  has advanced, or every 30 minutes) puts each stretch holding an unjudged pickup into
+  `reeval_queue` with the reason "phone data arrived", and `run_reevaluations` judges the pickups
+  in it against the activity already judged. The computer segments are shown as context and are
+  not judged again. A day's numbers can therefore change when the phone data lands.
 
 ### The app, the launcher and restarts
 
@@ -174,7 +204,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 |---|---|
 | `focus_monitor/__main__.py` | Entry point: `collect`, `classify`, `web`, `app`, `run`, `stats`, `check`, `restart`. Sets up logging. |
 | `focus_monitor/config.py` | `Config` dataclass, `config.toml` loader, paths (data dir, log, Keychain lookup), pricing constants. |
-| `focus_monitor/phone.py` | Read-only view of the phone-unlock-logger's database: per-app phone segments and unlocks for a window, app-name map, and how far the phone data reaches. |
+| `focus_monitor/phone.py` | Read-only view of the phone-unlock-logger's database: per-app phone segments and unlocks for a window, pickups (what the evaluator judges), app-name map, and how far the phone data reaches. |
 | `focus_monitor/collector.py` | Active-window polling, screenshots, idle detection, segments and switches. |
 | `focus_monitor/classify.py` | Classifier service loop: waits the lookahead, runs the ensemble, flags uncertain switches. |
 | `focus_monitor/classifiers/` | `claude_vision.py` (Claude + screenshots), `heuristic.py` (rules), `learned.py` (logistic model), `base.py` (switch context). |

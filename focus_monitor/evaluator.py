@@ -311,7 +311,8 @@ class ChunkEvaluator:
             self._examples_stamp = stamp
         return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
 
-    def evaluate_chunk(self, conn, t0: float, t1: float, extra: str | None = None) -> int:
+    def evaluate_chunk(self, conn, t0: float, t1: float, extra: str | None = None,
+                       phone_only: bool = False) -> int:
         """Evaluate all real segments starting in [t0, t1). Local models predict first (and are
         stored for track-record scoring); segments where the locals have EARNED confident
         deferral skip the LLM; the rest go into one LLM call, and the resolved judgment is the
@@ -321,14 +322,21 @@ class ChunkEvaluator:
         segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S, phone=False)  # pickups are shown as their own lines
         target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
                   and not s.get("neutral") and s["duration"] > 0]
+        if phone_only:
+            # Phone data that arrived late: judge the pickups against the activity already
+            # judged, and leave the computer segments' judgments alone. Re-judging them too was
+            # tried (2026-11-19): it cost 6x as much per call and rewrote 23 settled judgments
+            # in one stretch for no reason connected to the phone.
+            target = []
         # iPhone pickups in view (phone.pickups). Those starting in [t0, t1) that have no
-        # judgment yet are judged in this call; on a re-judgment (`extra`) all of them are.
+        # judgment yet are judged in this call; on a re-judgment of the segments all of them are.
         from . import phone as _phone
         picks_all = _phone.pickups(self.cfg, t0 - CTX_S, t1 + CTX_S)
         pk_have = {r["pickup_key"]: r for r in conn.execute(
             "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - CTX_S - 1, t1 + CTX_S + 1))}
         picks = [p for p in picks_all if t0 <= p["start"] < t1
-                 and (extra is not None or p["key"] not in pk_have or pk_have[p["key"]]["switch_label"] is None)]
+                 and ((extra is not None and not phone_only) or p["key"] not in pk_have
+                      or pk_have[p["key"]]["switch_label"] is None)]
         if not target and not picks:
             return 0
         # -- local models + deferral decision ---------------------------------------------
@@ -388,7 +396,7 @@ class ChunkEvaluator:
         pick_keys = {p["key"] for p in picks}
         for p in picks_all:   # PHONE lines, slotted into the log by time
             hm = lambda t: dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
-            apps = ", ".join(f"{a} {_dur(d)}" + (f" (opened from {'a notification' if how == 'notification' else 'the ' + how})" if how else "")
+            apps = ", ".join(f"{a} {_dur(d)}" + (f" (opened from {'a notification' if how == 'notification' else how if how == 'another app' else 'the ' + how})" if how else "")
                              for a, d, how in p["apps"])
             had = pk_have.get(p["key"])
             tag = ""
@@ -427,8 +435,9 @@ class ChunkEvaluator:
         can_hold = extra is None and bool(target) and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
         prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
                        + (f"\n\nIMPORTANT - {extra}" if extra else "")
-                       + "\n\nJudge every segment marked EVALUATE (all of them, by id)."
-                       + (" Judge every line marked EVALUATE PHONE too, in `phone`." if picks else "")
+                       + ("\n\nJudge every segment marked EVALUATE (all of them, by id)." if target else
+                          "\n\nNo segment is marked EVALUATE: leave `segments` empty.")
+                       + (" Judge every line marked EVALUATE PHONE, in `phone`." if picks else "")
                        + ("\n\nHolding is allowed for this chunk: if judging the LAST segments well depends on "
                           "what the person does after the activity shown here (for example a new piece of "
                           "work has only just begun and you cannot yet tell what it is), set hold_from to the "
@@ -1069,10 +1078,9 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             continue
         c1 = end if end - start <= CHUNK_S * 1.5 else start + CHUNK_S
         if q["reason"] == PHONE_REASON:
-            extra = ("the phone log for this window arrived AFTER your earlier judgment of it: the PHONE "
-                     "lines are new. Judge each one marked EVALUATE PHONE. Re-judge the computer segments "
-                     "marked EVALUATE as well, but change an earlier judgment (see the 'prior judgment' "
-                     "notes) only where the phone use gives a real reason to.")
+            extra = ("the phone log for this window arrived AFTER the computer activity was judged: the "
+                     "PHONE lines are new. Judge each one marked EVALUATE PHONE, against the activity "
+                     "around it. No computer segment is up for judgment in this call.")
         elif q["reason"] == WRONG_DISPLAY_REASON:
             extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
                      "display: the person had two monitors and you were shown the one they were not "
@@ -1087,13 +1095,15 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                      f"state and must be ignored. Re-judge every segment against the listed entries; where "
                      f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
                      f"entries, change it.")
+        phone_q = q["reason"] == PHONE_REASON
         try:
-            n = _get().evaluate_chunk(conn, start, c1, extra=extra)
+            n = _get().evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
         except Exception:
             log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
             conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
             break
-        nq, _ = _invalidate_derived(conn, start, c1, questions=True, summaries=False)
+        # (a phone re-judgment leaves the segments' judgments, and so their questions, as they were)
+        nq, _ = _invalidate_derived(conn, start, c1, questions=not phone_q, summaries=False)
         finished = c1 >= end
         if finished:
             _, ns = _invalidate_derived(conn, q["t0"], q["t1"], questions=False, summaries=True)

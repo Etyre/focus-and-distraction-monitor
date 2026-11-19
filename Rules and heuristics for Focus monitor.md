@@ -20,6 +20,8 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
   * It is one event per time I leave the focus object, however many things I pass through before I come back.
   * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
+    * Opening my phone is evaluated as a switch, like any other. Was it a continuation (part of the same task: a confirmation code, starting or stopping my toggl timer, a call that is the task)? Or a shift, and if so, was it a self-distraction event?
+    * Time on my phone is time away from the focus object. It is never focus time itself, because the model can only see which app was open on the phone, not what I was doing in it.
   * Whether a segment is focused or unfocused is a separate question from whether it is a diversion. If I'm writing and I quickly jump to Amazon to buy a specific item, that segment is focused, and it is also a diversion from the writing span.
 * A **self-distraction event** is a shift in which I seek out stimulation or distraction without a clear intent.
   * For instance:
