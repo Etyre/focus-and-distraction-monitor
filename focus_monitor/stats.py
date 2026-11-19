@@ -1158,6 +1158,7 @@ def day_stamp(conn, t0: float, t1: float) -> str:
          " WHERE s.ts >= ? AND s.ts < ?", (t0, t1)),
         ("SELECT COUNT(*), MAX(e.created) FROM ensemble e JOIN switches s ON s.id = e.switch_id"
          " WHERE s.ts >= ? AND s.ts < ?", (t0, t1)),
+        ("SELECT COUNT(*), MAX(created) FROM phone_evals WHERE switch_label IS NOT NULL AND start < ? AND end > ?", (t1, t0)),
         ("SELECT COUNT(*), MAX(created) FROM span_reviews WHERE start < ? AND end > ?", (t1, t0)),
         ("SELECT COUNT(*), MAX(created) FROM span_summaries WHERE start < ? AND end > ?", (t1, t0)),
         ("SELECT COUNT(*), MAX(q.created), MAX(q.answered_at), SUM(q.status = 'open') FROM review_questions q"
