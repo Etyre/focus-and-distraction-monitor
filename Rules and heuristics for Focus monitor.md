@@ -17,7 +17,8 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * Attention interruptions that are less than 5 minutes long do not break the focus span.
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
   * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
-* A **self-distraction event** is shift in which I seek out stimulation or distraction without a clear intent.
+  * Whether a segment is focused or unfocused is a separate question from whether it is a diversion. If I'm writing and I quickly jump to Amazon to buy a specific item, that segment is focused, and it is also a diversion from the writing span.
+* A **self-distraction event** is a shift in which I seek out stimulation or distraction without a clear intent.
   * For instance:
     * Absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.
     * Opening a new tab to go to a blocked website.
