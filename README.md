@@ -39,7 +39,8 @@ first commit 2026-08-29, in continuous development since.
   (interrupted/distracted) shorter than 5 min are events *inside* the span and don't end it; a detour of
   5+ min, being away, a recording gap, or a deliberate focus start ends it. A span must contain ≥ 10 min
   of focus (`min_focus_span_min`; it was 15 until 2026-11-17, against the Rules doc's 10), including one
-  continuous block of 10 min with no contained detour (`min_unbroken_min`). "Length" is wall-clock; "focused" excludes contained detours.
+  continuous block of 10 min with no contained detour (`min_unbroken_min`). "Length" is wall-clock; "focused" excludes contained detours. The span
+  starts at that block: a choppy opening before the first clean 10 minutes is cut off and kept as short focus.
 * **Toggl as intent**: set your Toggl Track API token from the menu (or Keychain account `toggl`).
   The synced table is also served read-only at `GET /api/toggl/current` and `GET /api/toggl/entries?days=N`
   (added 2026-11-11) so the executive assistant reads Toggl from here instead of polling Toggl itself; its
@@ -283,6 +284,18 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   on diversions against 5% for the rest. A bar of 5 minutes would have removed none.
   Together with lowering `min_focus_span_min` from 15 to 10 the same day, the 21 days go from
   103 spans to 130 (about 3,250 to 3,490 focus minutes).
+* **A focus span starts with its 10 continuous minutes (2026-11-19).** The rule above only
+  required a 10-minute block somewhere in the span, so a span could open with several broken
+  minutes and the clean block could come later. Eli's rule is stricter: "every focus span has
+  to start with at least 10 consecutive focused minutes on the focused object."
+  `stats.spans_and_events` now cuts each span's start forward to its first unbroken
+  `min_unbroken_min` block (`trimmed_start_min` on the span records how much); the cut opening
+  becomes short focus, or a disqualified span if it holds 10 focus minutes of its own. Meetings
+  are exempt, and a span you confirmed in a review keeps its reviewed bounds. A review of a
+  span that loses more than 20% of its length no longer matches it (reviews need 80% overlap),
+  so that span shows as unreviewed again. Measured on the 21 days before the change: no span
+  is lost, 25 of 110 non-meeting spans start later, and focus time drops from 2,996 to 2,851
+  minutes (about 5%); the longest span of the day gets shorter on 7 of 21 days.
 * **Two Agent Coding projects were always "the same task".** `_same_task` returned true for the
   same app and site before looking at anything else, and Agent Coding has no site. For apps in
   `title_apps` a different window title now skips that shortcut, so the thread pointer and the

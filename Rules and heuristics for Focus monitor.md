@@ -17,13 +17,14 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * Attention interruptions that are less than 5 minutes long do not break the focus span.
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
   * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
-* A **self-distraction event** is a sub-case of an attention-interruption event in which I seek out stimulation or distraction without a clear intent.
+* A **self-distraction event** is shift in which I seek out stimulation or distraction without a clear intent.
   * For instance:
     * Absent-mindedly opening lesswrong and scrolling the front page (though this requires some judgement, since I will also go to lessWrong to look up quotes or to read particular posts.
     * Opening a new tab to go to a blocked website.
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
     * Opening my phone to look at a random app, unrelated to what I'm doing.
+* A **bounce-away** is a self-distraction event that occurs in a focus span.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
 * A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.

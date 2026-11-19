@@ -633,10 +633,45 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if abs(sp["end"] - frontier_ts) <= MAX_GAP and sp["ended_by"] in ("ongoing", "gap (not recorded)"):
                 sp["ended_by"] = "awaiting evaluation"
 
-    qualifying = [sp for sp in spans if sp["focus_min"] >= min_focus_min]
-    short = [sp for sp in spans if sp["focus_min"] < min_focus_min]
     from .config import load_config as _lc
     _cfg = _lc()
+    # A focus span STARTS with its continuous block (user rule 2026-11-19: "every focus span
+    # has to start with at least 10 consecutive focused minutes on the focused object"). A
+    # choppy opening - focus broken by diversions before the first clean `min_unbroken_min` -
+    # is cut off the front and kept as short focus, not span time. Not applied to a meeting
+    # (a meeting is a meeting) or to a span the user has confirmed as shown (their review is
+    # about those bounds, and is authoritative over the gates).
+    if unbroken_s > 0:
+        _rev = conn.execute("SELECT * FROM span_reviews").fetchall() if conn is not None else []
+        cut = []
+        for sp in spans:
+            if sp["focus_min"] < min_focus_min or span_subtype(dict(sp), _cfg) == "meeting":
+                continue
+            rv = _span_review_for(_rev, sp)
+            if rv is not None and rv["verdict"] == "focus":
+                continue
+            acc, k0, at = 0.0, None, None
+            for k, r_ in enumerate(sp["runs"]):
+                if r_.get("gap_before") or r_["cat"] == "detour":
+                    acc, k0 = 0.0, None
+                if r_["cat"] == "focus":
+                    k0 = k if k0 is None else k0
+                    acc += r_["duration"]
+                    if acc >= unbroken_s:
+                        at = k0
+                        break
+            if not at:  # no block at all (disqualified below), or the span already starts with it
+                continue
+            head_runs = sp["runs"][:at]
+            if any(r_["cat"] == "focus" for r_ in head_runs):
+                cut.append(_finalize({"start": sp["start"], "runs": head_runs}, "interrupted"))
+            sp["runs"] = sp["runs"][at:]
+            sp["start"] = sp["runs"][0]["start"]
+            sp["trimmed_start_min"] = (sp["start"] - head_runs[0]["start"]) / 60
+            _finalize(sp, sp["ended_by"])
+        spans = sorted(spans + cut, key=lambda x: x["start"])
+    qualifying = [sp for sp in spans if sp["focus_min"] >= min_focus_min]
+    short = [sp for sp in spans if sp["focus_min"] < min_focus_min]
     for sp in qualifying:
         sp["subtype"] = span_subtype(sp, _cfg)
         # Hybrid span: the activity (reading, task, ...) happened inside a live discussion for
