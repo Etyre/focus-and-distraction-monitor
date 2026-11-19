@@ -69,6 +69,7 @@ For each segment, the model does several different related evaluations:
 * Evaluate the nature of the *switch* that lead into the segment: Did the user's attention just shift from one thread to another? Judge this at every switch, based on all the surrounding context, whether or not a focus span is running. Label as one of:
   * a **continuation**: the user is still on the same attentional thread even though the window changed.
     * A **transition** is a subtype of a continuation: When the user is navigating through apps or windows to get to the relevant target, or to get back from an interruption, each of the switches that make up that navigation is a transition.
+      * When the user navigates back to an earlier thread, the windows passed through on the way are transitions, and the segment where they arrive is labeled a return.
   * a **shift**: the user's attention moved to something new.
     * Note: A shift is not the same thing as an attention-interruption event, as defined above. An attention-interruption event is a shift that happens during a focus span. The model labels every shift; the app works out which shifts are attention-interruption events.
   * a **return**: the user's attention moved back to something it was on recently (within the past 10 minutes).

@@ -284,6 +284,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   on diversions against 5% for the rest. A bar of 5 minutes would have removed none.
   Together with lowering `min_focus_span_min` from 15 to 10 the same day, the 21 days go from
   103 spans to 130 (about 3,250 to 3,490 focus minutes).
+* **Where "return" goes when the way back passes through other windows (2026-11-19).** The doc
+  said navigating back is a continuation and also that coming back is a return, so it was unclear
+  which segment carries the `return` label. Eli's rule: the windows passed through are
+  transitions (switch `continuation`), and `return` goes on the segment where he arrives back on
+  the old thread. The Rules doc and the evaluator's instructions both say so now.
 * **A focus span starts with its 10 continuous minutes (2026-11-19).** The rule above only
   required a 10-minute block somewhere in the span, so a span could open with several broken
   minutes and the clean block could come later. Eli's rule is stricter: "every focus span has

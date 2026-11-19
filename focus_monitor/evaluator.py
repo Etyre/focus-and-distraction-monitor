@@ -125,7 +125,9 @@ one switch only, and applies at any time of day, whether or not a focus span is 
 person's rules use "attention-interruption event" for something narrower: a shift that happens \
 during a focus span. The app works out which shifts are those; you only say whether attention \
 moved.)
-   - return: attention moved back to an object they were on before an earlier shift.
+   - return: attention moved back to an object they were on before an earlier shift. When \
+they get back by passing through other windows, those pass-through segments are transitions \
+(switch 'continuation'); 'return' goes on the segment where they ARRIVE back on the old object.
    For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
 EARLIER segment (visible in the log) belonging to the SAME thread - the thing this segment \
 continues. For a continuation that is normally the immediately preceding non-transition segment; \
