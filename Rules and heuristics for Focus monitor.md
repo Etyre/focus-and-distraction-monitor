@@ -123,6 +123,8 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * However, some judgement is required to distinguish this case from one in which I have in fact gotten briefly (or not so briefly) distracted and my focus shifted to a different task or object.
   * I should never spend more than 15 seconds on a page if I'm just passing through.
 * If, while I’m reading, or writing an essay, I flip to Claude to ask a question that’s related to or branching off from what I’m reading or writing about, that’s an extension of the full absorption span. But if I flip to Claude to follow up on a random question that just occurred to me, that’s an attention interruption (but probably not a self-distraction event).
+* A long conversation with Claude that isn't coding (thinking through an idea, a plan, or a decision) is eligible to be a focus span, judged like agent coding: am I reading the replies fully and thinking, or skimming?
+  * Asking Claude questions that wander from one question to the next is not passive consumption. I am actively engaged.
 * Sometimes opening my email is a distraction event, but other times it’s an intentional choice.
 * My anki decks are generated from and linked to roam/logseq, and so anki reviews regularly involve clicking a link on an anki card to edit the card in roam/logseq.
 * Agent-coding should usually count as a task, and be evaluated by the standards of task spans. However, deep, continuous  engagement with an agent, where the user is carefully reading, thinking about, and responding to a coding agent, or writing up up a detailed spec for a peice of software are both creative work.
