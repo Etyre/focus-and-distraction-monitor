@@ -9,6 +9,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 * A **thread** is a series of segments during which the user's attention is directed toward a single project, task, intention, or idea. A thead can be composed of a single segment, but it will usually include multiple segments as the user switches tabs and windows while doing the same task or executing on the same intention.
 * A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea (plus the following criteria).
   * A focus span always starts with at least 10 consecutive minutes, uninterrupted by diversions.
+    * Those opening 10 minutes have to be focused. Unfocused time on a thread does not start a focus span, however long it lasts; the span starts where the focused time starts.
   * Focus spans are always independent work, not interactive. Chatting in Signal never counts toward a focus span (though drafting a long message that I then send can - that is creative work).
   * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.
   * A focus span ends...
