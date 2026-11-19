@@ -190,7 +190,11 @@ make it consistent with your switch judgment.
 It is about WHY they moved, not what is on the screen. NOT a self-distraction: a planned break \
 (they stopped the timer and put on a video they meant to watch), watching something someone \
 sent them, a deliberate errand or purchase, deliberately handling an email - even when the \
-content is passive. EXCEPTION - going BACK to a distraction: when they leave what they \
+content is passive. Use your own focused/unfocused judgment of the segment as an INPUT here: \
+arriving somewhere and doing one thing with intent (focused) is evidence the move was \
+deliberate; arriving and drifting, skimming or doing nothing (unfocused) is evidence it was \
+stimulation-seeking. It is evidence, not the answer - a planned video break is unfocused and \
+deliberate. EXCEPTION - going BACK to a distraction: when they leave what they \
 were doing and go again to a feed or other distraction they visited a few minutes ago, the \
 switch is a 'return' (to that earlier visit), and self_distraction is judged afresh for this \
 visit by the same test: was THIS move stimulation-seeking without a clear intent? Each such \
