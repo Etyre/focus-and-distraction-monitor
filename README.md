@@ -67,6 +67,8 @@ first commit 2026-08-29, in continuous development since.
     then back to the task) is part of the span: the evaluator labels it with the task's content,
     as a focused continuation. For segments judged under the redesign this also overrides the
     `passive_domains` rule (youtube.com is otherwise never focus).
+  * A touch-back of 15 seconds or less followed by leaving again does not reset the 5-minute
+    clock (`TOUCH_BACK_S`): the absences on either side are one absence.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older

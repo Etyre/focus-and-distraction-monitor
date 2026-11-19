@@ -303,6 +303,7 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
     return segs
 
 
+TOUCH_BACK_S = 15.0  # a visit back to the task this short, then away again, is a pass-through
 MAX_GAP = 60.0  # seconds of unrecorded time that breaks a run (collector down, sleep, ...)
 UNFOCUSED_ASK_FRAC = 0.20          # ask when more than this share of a span was judged unfocused
 UNFOCUSED_ASK_STRETCH_S = 600.0    # ... or when one unfocused stretch lasted this long
@@ -731,6 +732,19 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if r["cat"] == "idle":
                 out.append(_finalize(cur, reason() if away else "away"))
                 return out + _assemble((away + rs[i + 1:]) if away else rs[i + 1:])
+            if (away and r["cat"] == "focus" and r["duration"] <= TOUCH_BACK_S and i + 1 < n
+                    and not rs[i + 1].get("gap_before") and rs[i + 1]["cat"] != "idle"
+                    and _same_task(cur, r, away)
+                    and not (rs[i + 1]["cat"] == "focus" and _same_task(cur, rs[i + 1], away + [r]))):
+                # A touch-back with no re-engagement (a pass-through, 15 s or less, and then away
+                # again) does not reset the 5-minute clock: 4 minutes away, a flick back, 4 more
+                # minutes away is ONE 8-minute absence, and it ends the span (Eli, 2026-11-19).
+                away.append(dict(r, cat="detour", soft=False, state="interrupted", touch_back=True))
+                if away_s() >= break_s:
+                    out.append(_finalize(cur, reason()))
+                    return out + _assemble(rs[i - len(away) + 1:])
+                i += 1
+                continue
             if r["cat"] == "focus" and _same_task(cur, r, away):
                 if away:
                     if away_s() < break_s:  # brief diversion -> contained interruption(s), span continues
