@@ -55,6 +55,8 @@ first commit 2026-08-29, in continuous development since.
     when the same thread turns into task-mode work, even when task time dominates and no Toggl
     entry is running (`_opens_creative`). Before 2026-11-19 such a span was thrown out whole as
     "task activity without a Toggl entry". Task work on another thread is still time away.
+  * A brief look at a todo list to pick the next task belongs to that task's thread: the
+    evaluator prompt puts the shift on the todo-list segment and makes the task a continuation.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older

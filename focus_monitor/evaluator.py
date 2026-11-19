@@ -155,6 +155,10 @@ person's rules use "attention-interruption event" for something narrower: a shif
 during a focus span. The app works out which shifts are those; you only say whether attention \
 moved.) Finishing one discrete task and starting the next (email -> taxes -> errands) IS a \
 shift - attention moved to a new object - even inside a block of task processing; see next_task.
+A BRIEF look at a todo list or task feed to choose the next task, followed by doing that \
+task, is part of the chosen task's thread: the shift (with next_task, when it is one) goes on \
+the todo-list segment, and the task that follows is a continuation of it. The look itself is \
+neither a diversion nor a separate thread, and takes the task's content label.
    - return: attention moved back to an object they were on before an earlier shift, within \
 about the last 10 minutes. Coming back to something after longer than that is a shift. When \
 they get back by passing through other windows, those pass-through segments are transitions \

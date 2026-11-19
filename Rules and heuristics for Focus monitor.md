@@ -82,6 +82,7 @@ For each segment, the model does several different related evaluations:
   * This is used to alogirthmically consturct threads.
 * If a switch is labeled as a _shift_, then a model additionally evaluates is that shift was a **self-distraction event**?
 * If a switch is labeled as a shift, additionally evaluate whether it is the next task under the same task-processing intention (see focused task spans above).
+  * Looking at a todo list or task feed briefly, to choose a next task, followed by doing that task, is the same attentional thread as the task itself. The shift is labeled on the todo-list segment, and the task that follows is a continuation of it.
 
 For  all of these juduements the model also offers it's epistemic confidence in that judgement, which are used to construct review questions for user oversight.
 
