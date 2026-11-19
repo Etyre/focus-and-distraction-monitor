@@ -861,7 +861,7 @@ let pendingSwitch=null,pendingQSeg=null,pendingQSw=null,pendingAfter=null,detail
 // time order; `sw` is the fallback switch card for a flag that has no open question.
 function openQuestionFor(seg,sw){pendingQSeg=seg;pendingQSw=sw||null; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
 function openSwitch(id){pendingSwitch=id; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
-function openSegment(id){pendingSwitch=id; if((location.hash||'#day')==='#segments')loadSegments(); else location.hash='segments';}
+function openSegment(id){if(id==null)return; /* an iPhone pickup block has no switch to open */ pendingSwitch=id; if((location.hash||'#day')==='#segments')loadSegments(); else location.hash='segments';}
 async function loadSegments(){detailTarget='#segCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
   let id=pendingSwitch;pendingSwitch=null;
@@ -977,6 +977,7 @@ async function segEdit(field,val){
 }
 async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
 async function renderSwitch(id){
+  if(id==null)return;
   const f=await api('/api/switch/'+id);current=f;
   scrubSetup(f.timeline_shots,f.timeline,f.switch.ts-900,f.switch.ts+900,f.switch.ts,'#swTL svg');
   const P=k=>({continuation:f.ensemble?.p_continuation,interruption:f.ensemble?.p_interruption,distraction:f.ensemble?.p_distraction,task_change:f.ensemble?.p_task_change});

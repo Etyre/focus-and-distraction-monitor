@@ -31,11 +31,83 @@ def logical_today() -> dt.date:
     return logical_date()
 
 
-def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
+def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None,
+                      phone: bool = True) -> list[dict]:
     """Segments in [t0,t1) with their resolved judgment and state. `overrides` ({segment_id:
     {content, switch_label, interruption_kind, antecedent_id, hybrid}}) simulates a user review
     of those segments in memory - what the day would look like if an answer were given - without
-    touching the database."""
+    touching the database. With `phone` (the default), iPhone pickups judged to be a shift of
+    attention are carved out of the Mac segments they overlap (_carve_phone)."""
+    segs = _labelled_segments(conn, t0, t1, overrides)
+    return _carve_phone(conn, segs, t0, t1) if phone and segs else segs
+
+
+def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
+    """Time on the phone is time away from the Mac window that was in front (Eli, 2026-11-19:
+    "Opening my phone should be evaluated as a switch"). Each pickup the evaluator judged a
+    SHIFT (phone_evals) becomes a segment of its own - app "iPhone", a negative id that no real
+    segment can have, phone=True - cut out of the Mac segment(s) it overlaps. The Mac window
+    was still in front the whole time, so the rest of a cut segment is a return to the same
+    thread. Phone time is never focus time: only the app on screen is known, so a focused use
+    of the phone is still a diversion from the work on the Mac. A pickup judged a continuation,
+    or not judged yet, changes nothing. Pieces of a cut segment keep its id (reviews, questions
+    and thread pointers are per segment); only clip_start / clip_end / duration differ."""
+    import sqlite3
+    try:
+        rows = conn.execute("SELECT * FROM phone_evals WHERE switch_label = 'interruption'"
+                            " AND start < ? AND end > ? ORDER BY start", (t1, t0)).fetchall()
+    except sqlite3.OperationalError:   # a database from before the table existed, opened read-only
+        return segs
+    for p in rows:
+        a, b = max(p["start"], t0), min(p["end"], t1)
+        if b - a <= 0:
+            continue
+        out, base = [], None
+        for s in segs:
+            if s["duration"] <= 0 or s.get("phone") or s["clip_end"] <= a or s["clip_start"] >= b:
+                out.append(s)
+                continue
+            base = base or s
+            cut_inside = s["clip_start"] < a
+            if cut_inside:
+                out.append(dict(s, clip_end=a, duration=a - s["clip_start"]))
+            if s["clip_end"] > b:
+                post = dict(s, clip_start=b, duration=s["clip_end"] - b)
+                if cut_inside and s.get("state") != "idle":
+                    post.update(label="continuation", self_distraction=False, next_task=False)
+                    if s.get("focused") is not None:   # judged under the redesign: a stated return
+                        post.update(switch="return", antecedent_id=s["id"], antecedent_p=1.0)
+                out.append(post)
+        if base is None:        # nothing was being recorded on the Mac: nothing to be away from
+            continue
+        sd = bool(p["self_distraction"])
+        apps = p["apps"] or ""
+
+        def _secs(part):   # "Signal 43s" -> 43
+            try:
+                return float(part.rsplit(" ", 1)[1].rstrip("s"))
+            except (IndexError, ValueError):
+                return 0.0
+        main_app = max(apps.split(", "), key=_secs).rsplit(" ", 1)[0] if apps else ""
+        ph = dict(base)
+        for k in ("eval_split_p", "split_user"):
+            ph.pop(k, None)
+        ph.update(id=-int(p["pickup_key"]), phone=True, app="iPhone", domain=main_app,
+                  title=apps, url="", clip_start=a, clip_end=b, duration=b - a, idle=0, neutral=0,
+                  state="distracted" if sd else "interrupted", label="distraction" if sd else "interruption",
+                  content=p["content"] or "other", focused=bool(p["focused"]), switch="interruption",
+                  redesign=True, self_distraction=sd, next_task=False, user_unfocused=False,
+                  antecedent_id=None, source="eval", switch_id=None, own_switch_id=None, uncertain=0,
+                  hybrid=0, inact_s=0.0, activity=None, probs=None, focus_exception=0,
+                  review_chat_mid=None, first_screenshot=None, last_screenshot=None,
+                  note=p["rationale"])
+        out.append(ph)
+        out.sort(key=lambda s: s["clip_start"])   # stable: equal starts keep their order
+        segs = out
+    return segs
+
+
+def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
     from .config import load_config
     cfg = load_config()
     now = time.time()
@@ -600,7 +672,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     title_apps = set(_cfg0.title_apps)
     # min_focus_min=0 is a caller asking for every hypothesized span (focus_context): no gate.
     unbroken_s = _cfg0.min_unbroken_min * 60 if min_focus_min > 0 else 0
-    ante_of = {s["id"]: (s.get("antecedent_id"), s.get("antecedent_p", 0.85)) for s in segs}
+    # reversed: a segment cut in two by a phone pickup appears twice, and the first piece
+    # carries its real pointer (the second points back at the first)
+    ante_of = {s["id"]: (s.get("antecedent_id"), s.get("antecedent_p", 0.85)) for s in reversed(segs)}
 
     def _same_task(sp, r, away=()):
         """Is focus run r the same task as span sp? (returning to the exact window/site, a

@@ -383,6 +383,13 @@ def connect() -> sqlite3.Connection:
         segment_id INTEGER PRIMARY KEY,   -- first segment it held back (everything after waits too)
         until REAL NOT NULL,              -- do not ask again before this time
         created REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS phone_evals (  -- one row per iPhone pickup (phone.pickups)
+        pickup_key INTEGER PRIMARY KEY,   -- the pickup's start, whole seconds
+        start REAL NOT NULL, end REAL NOT NULL,
+        apps TEXT,                        -- "Signal 43s, Oura 2s"
+        switch_label TEXT,                -- continuation | interruption (a shift); NULL = queued, not judged yet
+        content TEXT, focused INTEGER, self_distraction INTEGER,
+        rationale TEXT, created REAL NOT NULL, run_id INTEGER)""")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
         conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")

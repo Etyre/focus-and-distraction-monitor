@@ -14,8 +14,9 @@ was in use to the end, and a longer one is ambiguous. The interval is read off t
 (`autolock_s`: the sharp spike in lock-ended durations at one of iOS's Auto-Lock options), so a
 change in Settings (5 min until 2026-11-11, 2 min after) is picked up on its own.
 
-The monitor only displays this for now (a lane under each timeline). Feeding it to the
-evaluator is a separate step.
+Besides the lane under each timeline, the evaluator is shown PICKUPS (`pickups()`): one per
+stretch of use between locks, each judged as a switch of attention (table phone_evals; see
+evaluator.py and stats._carve_phone).
 """
 from __future__ import annotations
 
@@ -177,3 +178,40 @@ def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
         return {"segments": [], "unlocks": [], "through": None, "available": False, "autolock_s": None}
     finally:
         c.close()
+
+
+PICKUP_PAD_S = 1800.0      # look this far either side of a window so a pickup's key is stable
+PUT_DOWN_USE_S = 10.0      # a put-down segment counts as use for its first seconds only
+PICKUP_MIN_S = 3.0         # shorter than this is a pocket wake, not a look
+
+
+def pickups(cfg, t0: float, t1: float) -> list[dict]:
+    """Pickups STARTING in [t0, t1): one per stretch of phone use between locks.
+
+    {key, start, end, use_s, apps: [(name, seconds, how)], put_down}. Segments less than
+    LOCK_GAP_S apart are one pickup. Time on a put-down segment (the phone locked itself at the
+    Auto-Lock interval: left open, untouched) is not use, beyond its first seconds. `key` is the
+    pickup's start in whole seconds; it is computed from unclipped segments, so the same pickup
+    gets the same key whichever window asks."""
+    w = window(cfg, t0 - PICKUP_PAD_S, t1 + PICKUP_PAD_S)
+    out, cur = [], None
+    for sg in w["segments"]:
+        end = min(sg["end"], sg["start"] + PUT_DOWN_USE_S) if sg["put_down"] else sg["end"]
+        if cur is not None and sg["start"] - cur["end"] < LOCK_GAP_S and not cur["put_down"]:
+            cur["end"] = max(cur["end"], end)
+        else:
+            cur = {"start": sg["start"], "end": end, "apps": [], "put_down": False}
+            out.append(cur)
+        cur["put_down"] = sg["put_down"]
+        if cur["apps"] and cur["apps"][-1][0] == sg["app"]:
+            n, d, how = cur["apps"][-1]
+            cur["apps"][-1] = (n, d + (end - sg["start"]), how)
+        else:
+            cur["apps"].append((sg["app"], end - sg["start"], sg["how"]))
+    res = []
+    for p in out:
+        p["use_s"] = sum(d for _, d, _ in p["apps"])
+        p["key"] = int(p["start"])
+        if t0 <= p["start"] < t1 and p["use_s"] >= PICKUP_MIN_S:
+            res.append(p)
+    return res

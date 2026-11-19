@@ -55,6 +55,23 @@ class Day:
     def run(self):
         return stats.spans_and_events(self.segs, min_focus_min=10, break_min=5)
 
+    def phone(self, at_min, minutes, *, switch="interruption", sd=False, focused=False, apps="Signal 60s"):
+        """An iPhone pickup `at_min` minutes into the day, judged as given; carves it out of
+        the segments the way stats.labelled_segments does (through an in-memory phone_evals)."""
+        import sqlite3
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("CREATE TABLE phone_evals (pickup_key INTEGER PRIMARY KEY, start REAL, end REAL, apps TEXT,"
+                  " switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, rationale TEXT,"
+                  " created REAL, run_id INTEGER)")
+        a = T0 + at_min * 60.0
+        c.execute("INSERT INTO phone_evals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                  (int(a), a, a + minutes * 60.0, apps, switch, "correspondence", int(focused), int(sd), "test", 0, None))
+        for sg in self.segs:
+            sg.setdefault("redesign", True)
+        self.segs = stats._carve_phone(c, self.segs, T0, self.t)
+        return self
+
 
 def _mins(sp):
     return round(sp["focus_min"], 1)
@@ -251,6 +268,43 @@ def cases():
         d.add(3, "Returns", content="task", switch="interruption", nxt=True, toggl=7)
         sp = d.run()["focus_spans"]
         assert len(sp) == 1 and _mins(sp[0]) == 35 and sp[0]["subtype"] == "focused_task", sp
+
+    @case("a phone pickup judged a shift, inside a span, is one diversion and one interruption")
+    def _():
+        d = Day()
+        d.add(30, "Essay")
+        d.phone(14, 2)                     # 2 minutes on the phone, 14 minutes in
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 28 and len(sp[0]["detours"]) == 1, [(_mins(x), x["detours"]) for x in sp]
+        assert sp[0]["detours"][0]["segments"][0]["app"] == "iPhone"
+        assert stats.self_distraction_counts(d.segs, se) == (0, 0)   # a deliberate look: no self-distraction
+
+    @case("six minutes on the phone ends the span where it was left")
+    def _():
+        d = Day()
+        d.add(40, "Essay")
+        d.phone(15, 6)
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [15, 19], [_mins(x) for x in sp]
+
+    @case("a phone pickup judged a self-distraction is an event, and a bounce-away from the span")
+    def _():
+        d = Day()
+        d.add(30, "Essay")
+        d.phone(14, 1, sd=True, apps="Bumble 60s")
+        se = d.run()
+        assert len(se["focus_spans"]) == 1 and len(se["focus_spans"][0]["detours"]) == 1
+        assert stats.self_distraction_counts(d.segs, se) == (1, 1)
+
+    @case("a phone pickup judged a continuation changes nothing")
+    def _():
+        d = Day()
+        d.add(30, "Essay")
+        d.phone(14, 2, switch="continuation")
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(d.segs) == 1 and len(sp) == 1 and _mins(sp[0]) == 30 and not sp[0]["detours"], sp
 
     return out
 

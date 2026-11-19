@@ -67,8 +67,18 @@ class SegJudgement(BaseModel):
     note: str = Field(description="One short sentence of reasoning.")
 
 
+class PhoneJudgement(BaseModel):
+    pickup_id: int = Field(description="The number after 'id=P' on the EVALUATE PHONE line.")
+    switch: str = Field(description="continuation (the phone use was part of what they were doing) or shift (attention left it).")
+    content: str = Field(description="What the phone use was: correspondence, passive, task, planning, reading, meeting, or other.")
+    focused: bool = Field(description="As for a segment: true = doing one thing with intent, false = drifting or consuming.")
+    self_distraction: bool = Field(default=False, description="Only on a shift: they picked up the phone seeking stimulation or distraction WITHOUT a clear intent.")
+    note: str = Field(description="One short sentence of reasoning.")
+
+
 class ChunkJudgement(BaseModel):
     segments: list[SegJudgement]
+    phone: list[PhoneJudgement] = Field(default_factory=list, description="One entry per line marked EVALUATE PHONE; empty when there are none.")
     hold_from: int | None = Field(default=None, description="Only when the prompt says holding is allowed. The id of the first EVALUATE segment you would rather judge LATER, because what the person does next would change your judgment of it. Judge every segment before it; leave it and every segment after it out of `segments`. null = judge everything now (the normal case).")
 
 
@@ -203,6 +213,30 @@ judge the intention. False when the shift is not the next task: a glance at a fe
 question, drifting to something else. How long a task takes does not matter: one task that turns \
 out fiddly and takes 25 slower minutes is still the next task, and so is the one after it.
 
+5. PHONE PICKUPS. The log may contain PHONE lines: the person picked up their iPhone, with \
+the apps that were on its screen and for how long. That is all that is known - which app, not \
+what was in it, and there are no phone screenshots. For each line marked EVALUATE PHONE add an \
+entry to `phone`:
+   - switch: 'continuation' when the phone use was part of what they were doing at that moment \
+- a confirmation code for the thing on the computer screen, looking something up for the task, \
+a call or message exchange that IS the current activity, a timer or tracker for the current \
+work. Starting or stopping their time tracker (Toggl) or jotting a note is never a diversion, \
+like flipping to their daily page. Otherwise 'shift': attention left what they were doing. \
+Their rule is that looking at the phone is a diversion unless what they look at is clearly \
+related to the current thread - so when the app is not evidently part of the current activity \
+it is a shift, however short. When the computer shows nothing going on around the pickup (idle, \
+away), there is nothing to continue: it is a shift.
+   - content and focused: as for a segment, about the phone use itself (messaging is \
+correspondence, a feed or dating app is passive, an errand is task).
+   - self_distraction: on a shift, the test of section 4 - did they pick it up seeking \
+stimulation without a clear intent (absent-mindedly opening a dating app, a feed, a shop)? \
+Not a self-distraction: answering a message that just arrived ("opened from a notification" \
+points that way), a deliberate errand, logging something in a tracker.
+   A pickup never changes how you label the computer segments themselves: the app cuts the \
+phone time out of the segment it falls in, so do not turn a segment into a shift or a return \
+because a PHONE line sits inside it. A PHONE line that already has a judgment shows it as \
+<phone: continuation> or <phone: shift>.
+
 Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
 and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
 2026-11-19 carry an older tag instead - <switch: shift (detour)>, (self_distraction) or \
@@ -284,10 +318,18 @@ class ChunkEvaluator:
         accuracy-weighted ensemble of all models. Returns how many segments were judged."""
         from . import seg_models, stats, summaries, toggl
         from .classifiers.claude_vision import _b64
-        segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S)
+        segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S, phone=False)  # pickups are shown as their own lines
         target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
                   and not s.get("neutral") and s["duration"] > 0]
-        if not target:
+        # iPhone pickups in view (phone.pickups). Those starting in [t0, t1) that have no
+        # judgment yet are judged in this call; on a re-judgment (`extra`) all of them are.
+        from . import phone as _phone
+        picks_all = _phone.pickups(self.cfg, t0 - CTX_S, t1 + CTX_S)
+        pk_have = {r["pickup_key"]: r for r in conn.execute(
+            "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - CTX_S - 1, t1 + CTX_S + 1))}
+        picks = [p for p in picks_all if t0 <= p["start"] < t1
+                 and (extra is not None or p["key"] not in pk_have or pk_have[p["key"]]["switch_label"] is None)]
+        if not target and not picks:
             return 0
         # -- local models + deferral decision ---------------------------------------------
         sc = seg_models.scores(conn)
@@ -320,7 +362,7 @@ class ChunkEvaluator:
                 (s["id"], c, sw, k, 0, "(deferred to local models - earned track record)",
                  json.dumps(comb), now))
         target = [s for s in target if s["id"] not in deferred]
-        if not target:
+        if not target and not picks:
             log.info("chunk %s-%s: all %d segments deferred to local models ($0)",
                      dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
                      dt.datetime.fromtimestamp(t1).strftime("%H:%M"), len(deferred))
@@ -335,24 +377,43 @@ class ChunkEvaluator:
             rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
                 f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", all_ids)
                 if r2["rationale"]}
-        lines = []
+        lines, line_ts = [], []
         for s in segs:
             if s["duration"] <= 0:
                 continue
             mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else "(context) "
             lines.append(mark + summaries.seg_line(s)
                          + (f"  // prior judgment: {rats[s['id']][:80]}" if s["id"] in rats else ""))
+            line_ts.append(s["clip_start"])
+        pick_keys = {p["key"] for p in picks}
+        for p in picks_all:   # PHONE lines, slotted into the log by time
+            hm = lambda t: dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
+            apps = ", ".join(f"{a} {_dur(d)}" + (f" (opened from {'a notification' if how == 'notification' else 'the ' + how})" if how else "")
+                             for a, d, how in p["apps"])
+            had = pk_have.get(p["key"])
+            tag = ""
+            if p["key"] not in pick_keys and had is not None and had["switch_label"]:
+                tag = ("  <phone: shift" + (", self-distraction" if had["self_distraction"] else "") + ">"
+                       if had["switch_label"] == "interruption" else "  <phone: continuation>")
+            line = ((f"EVALUATE PHONE id=P{p['key']}: " if p["key"] in pick_keys else "(context) PHONE ")
+                    + f"{hm(p['start'])}-{hm(p['end'])}  iPhone in use {_dur(p['use_s'])}: {apps}"
+                    + ("  (then left open, untouched)" if p["put_down"] else "") + tag)
+            i = sum(1 for t in line_ts if t <= p["start"])
+            lines.insert(i, line)
+            line_ts.insert(i, p["start"])
         tg = toggl.entries_between(conn, t0 - CTX_S, t1 + CTX_S)
         tgtxt = "\n".join(f"  {dt.datetime.fromtimestamp(e['start']).strftime('%H:%M')}"
                           f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
                           f"{e['description'] or '(unnamed)'}" for e in tg) or "  (none)"
         content: list[dict] = []
         from . import shots as _shots
-        shot_rows = _shots.pick(conn, list(target_ids), MAX_SHOTS)  # the active display at each moment
+        shot_ids = list(target_ids) or [s["id"] for s in segs if s["duration"] > 0 and not s["idle"] and any(
+            s["clip_start"] < p["end"] and s["clip_end"] > p["start"] for p in picks)]  # the Mac window behind a pickup
+        shot_rows = _shots.pick(conn, shot_ids, MAX_SHOTS) if shot_ids else []  # the active display at each moment
         if not shot_rows:  # segments recorded before per-shot history existed
             shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
                          for s in target if s.get("first_screenshot")]
-        app_of = {s["id"]: s["app"] for s in target}
+        app_of = {s["id"]: s["app"] for s in segs}
         shot_meta: list[dict] = []
         for r2 in shot_rows[:MAX_SHOTS]:
             b = _b64(r2["path"])
@@ -363,10 +424,11 @@ class ChunkEvaluator:
                 content.append({"type": "text", "text": label})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         # Hold-off (Rules doc): only for first-time judgments of activity under an hour old.
-        can_hold = extra is None and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
+        can_hold = extra is None and bool(target) and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
         prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
                        + (f"\n\nIMPORTANT - {extra}" if extra else "")
                        + "\n\nJudge every segment marked EVALUATE (all of them, by id)."
+                       + (" Judge every line marked EVALUATE PHONE too, in `phone`." if picks else "")
                        + ("\n\nHolding is allowed for this chunk: if judging the LAST segments well depends on "
                           "what the person does after the activity shown here (for example a new piece of "
                           "work has only just begun and you cannot yet tell what it is), set hold_from to the "
@@ -386,7 +448,7 @@ class ChunkEvaluator:
         cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
                 + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
                 + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
-        n = n_held = 0
+        n = n_held = n_phone = 0
         if resp.parsed_output is not None:
             now = time.time()
             per_seg_cost = cost / max(len(target), 1)
@@ -480,6 +542,23 @@ class ChunkEvaluator:
                         (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid)),
                          int(foc), int(sd), int(nxt)))
                     n += 1
+                # Phone pickups: stored one row each. A pickup the model left out is stored as a
+                # continuation (changes nothing), so it is not queued for judgment again and again.
+                pj = {j.pickup_id: j for j in (resp.parsed_output.phone or [])}
+                for p in picks:
+                    j = pj.get(p["key"])
+                    psw = stored_switch(j.switch.strip().lower()) if j is not None else "continuation"
+                    if psw not in ("continuation", "interruption"):
+                        psw = "continuation"
+                    pc = j.content.strip().lower() if j is not None else None
+                    conn.execute(
+                        "INSERT OR REPLACE INTO phone_evals(pickup_key, start, end, apps, switch_label, content, focused,"
+                        " self_distraction, rationale, created, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (p["key"], p["start"], p["end"], ", ".join(f"{a} {d:.0f}s" for a, d, _ in p["apps"]), psw,
+                         pc if pc in CONTENTS else "other", int(bool(j.focused)) if j is not None else None,
+                         int(bool(j is not None and j.self_distraction and psw == "interruption")),
+                         j.note if j is not None else "(model omitted this pickup; defaulted)", now, run_id))
+                    n_phone += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
                 judged = {j.segment_id for j in resp.parsed_output.segments}
@@ -497,9 +576,9 @@ class ChunkEvaluator:
                             " VALUES (?,?,?,?,?,?,?)",
                             (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
                 conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
-        log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later ($%.3f)",
+        log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone pickup(s) ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
-                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, cost)
+                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, n_phone, cost)
         # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
         if resp.parsed_output is not None and extra is None:
             from . import efforts as _eff
@@ -525,7 +604,7 @@ class ChunkEvaluator:
 
             _eff.run_shadows(conn, self.cfg, self.client, "segment_evaluator", str(run_id),
                              self.cfg.claude_effort, resp, _call, _cmp)
-        return n + len(deferred)
+        return n + len(deferred) + n_phone
 
 
 def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> int:
@@ -774,7 +853,7 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     t0, t1 = stats.day_bounds(day)
-    segs = [s for s in stats.labelled_segments(conn, t0, t1)
+    segs = [s for s in stats.labelled_segments(conn, t0, t1, phone=False)
             if not s["idle"] and not s.get("neutral") and s["duration"] > 0]
     evaluated = [s for s in segs if s.get("content")]
     if not evaluated:
@@ -868,6 +947,65 @@ def _invalidate_derived(conn, t0: float, t1: float, questions: bool, summaries: 
 
 
 WRONG_DISPLAY_REASON = "screenshots shown were of the wrong display"
+PHONE_REASON = "phone data arrived"
+PHONE_LOOKBACK_S = 3 * 86400     # the phone pushes its log hours to a day late
+PHONE_MERGE_S = 300.0            # pickups this close together are re-judged in one call
+_phone_seen = (None, 0.0)        # (phone.through, when last checked)
+
+
+def _dur(s: float) -> str:
+    return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f}m"
+
+
+def queue_phone_rejudge(conn, cfg: Config | None = None) -> int:
+    """Phone data arrives after the Mac activity it overlaps has been judged (Eli, 2026-11-19:
+    "re-judge when the phone data lands"). Queue a re-judgment (reeval_queue) of each stretch
+    that holds a pickup with no judgment, so the evaluator sees it again with the pickup in
+    view. Only stretches that contain a pickup, and only behind the point the first-pass
+    evaluation has reached - pickups ahead of it are judged in the first pass. Each queued
+    pickup gets a placeholder row in phone_evals (no label) so it is queued once."""
+    global _phone_seen
+    from . import phone
+    cfg = cfg or load_config()
+    thr = phone.through(cfg)
+    now = time.time()
+    if thr is None or (thr == _phone_seen[0] and now - _phone_seen[1] < 1800):
+        return 0
+    _phone_seen = (thr, now)
+    horizon = now - LAZY_S
+    row = conn.execute("""
+        SELECT MIN(g.start) FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+        WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0
+          AND COALESCE(g.end, g.start) > g.start AND e.segment_id IS NULL""",
+        (now - PHONE_LOOKBACK_S, horizon)).fetchone()
+    frontier = min(row[0], horizon) if row and row[0] else horizon
+    have = {r[0] for r in conn.execute("SELECT pickup_key FROM phone_evals WHERE start >= ?",
+                                       (now - PHONE_LOOKBACK_S - 3600,))}
+    new = [p for p in phone.pickups(cfg, now - PHONE_LOOKBACK_S, frontier)
+           if p["key"] not in have and p["end"] < frontier]
+    windows: list[list[float]] = []
+    with db.tx(conn):
+        for p in new:
+            on_mac = conn.execute("SELECT 1 FROM segments WHERE start < ? AND COALESCE(end, ?) > ? LIMIT 1",
+                                  (p["end"], now, p["start"])).fetchone()
+            conn.execute("INSERT OR IGNORE INTO phone_evals(pickup_key, start, end, apps, rationale, created)"
+                         " VALUES (?,?,?,?,?,?)",
+                         (p["key"], p["start"], p["end"], ", ".join(f"{a} {d:.0f}s" for a, d, _ in p["apps"]),
+                          None if on_mac else "(the Mac was not recording: not judged)", now))
+            if not on_mac:
+                continue
+            a, b = p["start"] - 30, p["end"] + 30
+            if windows and a - windows[-1][1] <= PHONE_MERGE_S and b - windows[-1][0] <= CHUNK_S:
+                windows[-1][1] = max(windows[-1][1], b)
+            else:
+                windows.append([a, b])
+        for a, b in windows:
+            conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)",
+                         (a, b, PHONE_REASON, now))
+    if windows:
+        log.info("phone data through %s: %d pickup(s) in %d stretch(es) queued for judgment",
+                 dt.datetime.fromtimestamp(thr).strftime("%m-%d %H:%M"), len(new), len(windows))
+    return len(windows)
 
 
 def queue_wrong_display_rejudge(conn) -> int:
@@ -930,7 +1068,12 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
             continue
         c1 = end if end - start <= CHUNK_S * 1.5 else start + CHUNK_S
-        if q["reason"] == WRONG_DISPLAY_REASON:
+        if q["reason"] == PHONE_REASON:
+            extra = ("the phone log for this window arrived AFTER your earlier judgment of it: the PHONE "
+                     "lines are new. Judge each one marked EVALUATE PHONE. Re-judge the computer segments "
+                     "marked EVALUATE as well, but change an earlier judgment (see the 'prior judgment' "
+                     "notes) only where the phone use gives a real reason to.")
+        elif q["reason"] == WRONG_DISPLAY_REASON:
             extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
                      "display: the person had two monitors and you were shown the one they were not "
                      "working on. The screenshots above are of the display that held the active "
