@@ -40,7 +40,9 @@ first commit 2026-08-29, in continuous development since.
     diversion. Under 5 minutes it is counted inside the span; at 5 minutes the span ended.
   * Unfocused time on the span's own thread counts as focus ("I may still be thinking"). When
     it is more than 20% of a span, or one stretch of 10+ minutes, the span panel asks whether
-    it really was unfocused; "yes" makes that time a diversion.
+    it really was unfocused; "yes" makes that time a diversion. An open question of this kind
+    counts in the Day page's "To review" number and puts the span in the Review queue, even
+    if you already confirmed the span.
   * A *focused task block* is several threads joined by next-task shifts, under a running Toggl
     entry. Diversions are measured against the block.
   * A *self-distraction event* is a self-distraction shift at any time of day; a *bounce-away*

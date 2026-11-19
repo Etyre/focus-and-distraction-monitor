@@ -142,7 +142,10 @@ def api_day(day: str | None = None):
     return {"day": d.isoformat(), "t0": t0, "t1": t1, "metrics": stats.daily_metrics(c, d), "segments": slim,
             "stamp": stats.day_stamp(c, t0, t1),
             "spend_avg_30d": db.spend_daily_avg(c, 30), "budget": cfg.daily_budget_usd,
-            "to_review": len(selected), "reviewed": reviewed,  # open questions + unresolved flags today
+            # open questions + unresolved flags today, plus each span waiting on the
+            # "was part of this span unfocused?" question (it is a review question like the others)
+            "to_review": len(selected) + sum(1 for r in se["focus_spans"] if r.get("unfocused_ask")),
+            "reviewed": reviewed,
             "metric_slack": slack, "priority_open": n_prio,
             "short_breaks": stats.short_breaks(c, t0, t1),
             "phone": phone.window(cfg, t0, t1),
@@ -315,8 +318,10 @@ def api_span_queue(days: int = 7):
         day_segs = stats.labelled_segments(c, t0, t1)
         se = stats.spans_and_events(day_segs, conn=c)
         for sp in sorted(se["focus_spans"] + se["disqualified"], key=lambda s: s["start"]):
-            if sp.get("confirmed") or sp.get("ended_by") in ("ongoing", "awaiting evaluation"):
+            if sp.get("ended_by") in ("ongoing", "awaiting evaluation"):
                 continue
+            if sp.get("confirmed") and not sp.get("unfocused_ask"):
+                continue   # a confirmed span comes back only while its unfocused-time question is open
             out.append(_span_payload(c, sp, day.isoformat(), day_segs))
     return out
 
