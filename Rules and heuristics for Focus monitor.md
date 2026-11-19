@@ -66,7 +66,7 @@ For each segment, the model does several different related evaluations:
 * Evaluate the content of the *segment*:
   * 1) What kind of span is this: Lable as Creative, Reading, Planning/Reflecting, Task, Correspondence (chats and email), Meeting, Other, Passive Consumption, or transition.
     2) Is the user focused during this segment, or unfocused?
-      * Note that infering whether a segment is focused or not may depend on context from the surrounding segments. If the surrounding segments are all about the same attentional thread, it's more likely that this focus segment is focused.
+      * Note that infering whether a segment is focused or not may depend on context from the surrounding segments. If the surrounding segments are all about the same attentional thread, it's more likely that this segment is focused.
 * Evaluate the nature of the *switch* that lead into the segment: Did the user's attention just shift from one thread to another? Judge this at every switch, based on all the surrounding context, whether or not a focus span is running. Label as one of:
   * a **continuation**: the user is still on the same attentional thread even though the window changed.
     * Navigating through apps or windows to get to a target, or to get back from an interruption, is a continuation at each switch. The segments passed through get the content label "transition".
@@ -120,7 +120,7 @@ It's the app's job to review the data and make intelligent judgements about  whe
     * Agent coding as creative work is slower. I will fully read each response and ask followup questions, and generally try to understand and solve problems.
   * If the user appears to switch from the creative mode of agent-coding to the task mode on the _same project_, by default treat this as a continuation of the focus span. Alternatively, if the user switches from the task mode to the the creative mode on a project, only the intensive thinking part should count as part of the focus span.
 * Agent-coding work will often switching between different software projects, in different terminals (usually within the same Agentic coding UI app). Work on each project should be regarded separately, for computing focus spans.
-  * 10 minutes spent agent coding, where I am alternating between one of several different projects, spending less than 5 minutes on each one, should _not_ count as a focus span (at best it might be a focused task span), except insofar as that block of coding meets the standard for a focused task span.
+  * 10 minutes spent agent coding, where I am alternating between one of several different projects, spending less than 5 minutes on each one, should _not_ count as a focus span, unless that block of coding meets the standard for a focused task span.
   * However, 10 minutes engaging with the _same_ coding project can count as a focus span, if it's evaluated to be the thoughtful creative mode (or if it meets the standards for a focus task span).
 * While an agent is running, switching away to something else (email, a feed, another tab) is never a continuation of the coding work. It is an attention interruption.
   * The exception is a focused task block: if I'm intentionally moving on to a different task while the agent runs, that is part of the focused task span, by the usual standard for those (a toggl entry running, and judgement that I'm deliberately executing on tasks).
