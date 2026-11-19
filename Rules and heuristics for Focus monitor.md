@@ -6,7 +6,9 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 
 * A **segment** is a period of time during which a particular window and tab is active on my computer.
 * A **switch** is the transition between segments.
-* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea. (This requires at least 10 consecutive minutes, uninterrupted by diversions.)
+* A **thread** is a series of segments during which the user's attention is directed toward a single project, task, intention, or idea. A thead can be composed of a single segment, but it will usually include multiple segments as the user switches tabs and windows while doing the same task or executing on the same intention.
+* A **focus span** is a period of 10 minutes or greater in which my attention is directed toward a single project, task, intention, or idea (plus the following criteria).
+  * A focus span always starts with at least 10 consecutive minutes, uninterrupted by diversions.
   * Focus spans are always independent work, not interactive. Chatting in Signal never counts toward a focus span (though drafting a long message that I then send can - that is creative work).
   * That I’m in a focus span does not mean that I’m only using one app, or only staying on one webpage. I will often switch between different apps and pages while still being engaged in the same intention.
   * A focus span ends...
@@ -37,6 +39,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
       * It doesn't have to be the *same* continuous toggl entry. It could be that there's one there's one for processing email, followed by another for doing taxes, followed by another for returning amazon packages. Or maybe there's a single toggl entry labled "task processing". But if there's there's not a running toggl entry, it can't be focused task work.
       * That does not imply the converse: just because a toggl entry is running does not make task segments focused. Judgement is required to evalate if a series of task segments are focused, unfocused, or distracted. 
       * Note that the absensece of a toggl entry disquailifes a span from being a *Focused* task span. But individual segments can and should still be tagged in the "task" category, regardless of whether there's a toggl running. Toggl is required as evidence of deliberate focus, not as evidence of task-nature.
+    * **How focused task blocks are put together.** Attentional threads are tracked at the level of the individual task. When I finish one task and move to the next, that is a shift, because my attention moved to a new object. On each shift, the model additionally evaluates: is this the next task under the same overall intention of processing tasks? If yes, the shift stays inside the block. The app then joins the threads linked this way into one focused task block, and treats that block as a single focus span. A shift that is not the next task (a glance at Twitter, a random question to Claude) is a diversion from the block: it is an attention-interruption event if it lasts less than 5 minutes, and it ends the block if it lasts 5 minutes or more. The model judges each shift; the app does the joining, and applies the hard rule that a block can only count as a focused task span if a Toggl entry is running. (added 2026-11-19; the app does not work this way yet)
     * Focused task spans will often include email correspondence. Correspondence that happens inside a task block (under a running toggl entry) is part of the focused task span, not a separate correspondence span; the segments are still tagged "correspondence".
   * A **creative work span** is a sub-type of focus span in which I’m creating something: an essay, a video. etc.
     * Creative work spans and focused task spans are mutually exclusive.
@@ -53,23 +56,32 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
 
 ### Model evaluations:
 
-For each segment, the model to do several different related evaluations:
+For each segment, the model does several different related evaluations:
 
 * Evaluate the content of the *segment*:
-  * 1) What kind of span is this: Lable as Creative, Task, Correspondence (chats and email), Reading, Planning/Reflecting, Meeting, Other, Passive Consumption, or transition.
+  * 1) What kind of span is this: Lable as Creative, Reading, Planning/Reflecting, Task, Correspondence (chats and email), Meeting, Other, Passive Consumption, or transition.
     2) Is the user focused during this segment, or unfocused?
-* Evaluate the nature of the *switch*: did the user's attention just shift? Judge this at every switch, based on all the surrounding context, whether or not a focus span is running. Label as one of:
-  * a **continuation**: the user is still on the same attentional thread even though the window changed. (Navigating through apps or windows to get to the relevant target, or to get back from an interruption, is a continuation; those segments are labeled as transitions.)
+      * Note that infering whether a segment is focused or not may depend on context from the surrounding segments. If the surrounding segments are all about the same attentional thread, it's more likely that this focus segment is focused.
+* Evaluate the nature of the *switch* that lead into the segment: Did the user's attention just shift from one thread to another? Judge this at every switch, based on all the surrounding context, whether or not a focus span is running. Label as one of:
+  * a **continuation**: the user is still on the same attentional thread even though the window changed.
+    * A **transition** is a subtype of a continuation: When the user is navigating through apps or windows to get to the relevant target, or to get back from an interruption, each of the switches that make up that navigation is a transition.
   * a **shift**: the user's attention moved to something new.
-  * a **return**: the user's attention moved back to something it was on recently.
-  * A shift is not the same thing as an attention-interruption event, as defined above. An attention-interruption event is a shift that happens during a focus span. The model labels every shift; the app works out which shifts are attention-interruption events. (renamed from "interruption" 2026-11-17, because one word was being used for both)
-* If a switch is labeled as a shift, then additionally evaluate what it became: a self-distraction (it probably is if the type is "passive consumption", but not if it's something else), a new focus start, or a detour (neither of those: brief, or it never settled into one focused thing).
-* It doesn't make sense to ask whether something is part of a continuous thread unless there has been enough time of focused attention for there to be a thread. A few short segments of poking around (a minute here, two minutes there, inside a bigger stretch of something else) are not a thread to be "the same as" or "different from"; under the 5-minute break threshold they are a contained event inside whatever surrounds them, and the app derives everything about them from the data. (added 2026-11-08)
+    * Note: A shift is not the same thing as an attention-interruption event, as defined above. An attention-interruption event is a shift that happens during a focus span. The model labels every shift; the app works out which shifts are attention-interruption events.
+  * a **return**: the user's attention moved back to something it was on recently (within the past 10 minutes).
+* If a switch is labeled as a continuation or as a return, evaluate which earlier segment does this segment continue.
+  * This is used to alogirthmically consturct threads.
+* If a switch is labeled as a _shift_, then a model additionally evaluates is that shift was a **self-distraction event**?
+* If a switch is labeled as a shift, additionally evaluate whether it is the next task under the same task-processing intention (see focused task spans above).
+
+For  all of these juduements the model also offers it's epistemic confidence in that judgement, which are used to construct review questions for user oversight.
+
+The model evaluates these lazily with a 15 minute delay. That allows the model to evaluate the segments together in the context of all the nearby segments. The model can also choose to hold off on evaluating some segments for up to an hour, if it guesses that it will have more relevant information after more segments have been logged.
+
+All of these jugdement  can be audited and edited by the user, and those edits should be used to adjust the model so that it learns over time.
+
+### Review questions
+
 * Each review question is about one thing. There are a few separate dimensions a judgment can be uncertain along: which thread a segment belongs to (the same as before, and which, or a separate one), what its content was (an errand, reading, writing, passive consumption...), and whether it was done inside a live discussion. A question resolves exactly one of these, and its options differ only along that dimension. When more than one is in doubt, they are separate questions, which can sit on the same review card. "Was this browsing part of the coding work?" is a different question from "was this deliberate browsing, or passively perusing without intent?"; the second is a content question, and "passive consumption" is its answer for the drift case. (added 2026-11-12)
-
-All of these should be things that can be audited and edited by the user, and those edits should be used to adjust the model so that it learns over time.
-
-The model can evaluate these lazily with a 15 minute delay, if that improves performance. It doesn't have to evaluate each segment immediately, it can wait until it has more context about what happened afterwards has come in.
 
 ### The app tracks:
 
@@ -81,7 +93,7 @@ The model can evaluate these lazily with a 15 minute delay, if that improves per
 
 ### Some rules and heuristics for evaluating which app transitions are attention-interruption events:
 
-It's the app's job to review the data and make intelligent judgements about  whether the focus of the user's attention has remained stable or has shifted. 
+It's the app's job to review the data and make intelligent judgements about  whether the focus of the user's attention has remained stable or has shifted.
 
 * Toggl should be taken as a highly-weighted clue about the focus the user's intention. If a toggl entry labled with a task is likely to cover a focus span in which the users attention was focused on that task. But toggl data is not definitive. A toggl entry could be runnning, and the user might have gotten destracted or shifted focus to something else without having chanaged the time-tracking. Or it might be that the user is continually getting briefly distracted by interruptions, and the minimum amount of interupted time has not been reached. It's the app's job to review the data and make intelligent judgements about what is actually a span of time in which the user's attention is focused on a single object / project / task / intention / goal.
 * Flipping to my daily page in roam / logseq, is never an attention-interruption event. I often want to take metacognitive notes on my daily page, and when I have a stray thought while focusing on something else, my protocol is to jot it down on my daily page.
