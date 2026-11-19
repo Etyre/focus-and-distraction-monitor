@@ -75,7 +75,9 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
         ante = valid_antecedent(c, segment_id, antecedent_id) if switch_label in ("continuation", "return") else None
         _i = lambda v: None if v is None else int(bool(v))
         if switch_label and switch_label != "interruption":
-            self_distraction = next_task = None   # the two shift judgments only mean something on a shift
+            next_task = None
+        if switch_label and switch_label not in ("interruption", "return"):
+            self_distraction = None   # the two shift judgments only mean something on a shift
         c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id,"
                   " note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
                   " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",

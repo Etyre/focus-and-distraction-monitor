@@ -190,8 +190,8 @@ const labelColor={continuation:'var(--focus)',interruption:'var(--interrupted)',
 // What to draw at the start of a block. Blocks judged under the 19 Nov 2026 redesign carry the
 // switch itself (a triangle on every shift, red for a self-distraction); older blocks carry the
 // four-way label (green tick = focus start, triangles = detour / distraction).
-const shiftMark=g=>g.focused!=null?(g.switch==='interruption'?(g.self_distraction?'sd':'shift'):null):(g.label==='task_change'?'start':g.label==='distraction'?'sd':g.label==='interruption'?'shift':null);
-const swText=g=>g.focused!=null?((g.switch==='interruption'?'shift'+(g.self_distraction?' (self-distraction)':'')+(g.next_task?' (next task in the block)':''):g.switch||'continuation')+' · '+(g.focused?'focused':'unfocused')):swName(g.label);
+const shiftMark=g=>g.focused!=null?(g.switch==='interruption'?(g.self_distraction?'sd':'shift'):(g.switch==='return'&&g.self_distraction?'sd':null)):(g.label==='task_change'?'start':g.label==='distraction'?'sd':g.label==='interruption'?'shift':null);
+const swText=g=>g.focused!=null?((g.switch==='interruption'?'shift'+(g.self_distraction?' (self-distraction)':'')+(g.next_task?' (next task in the block)':''):(g.switch||'continuation')+(g.switch==='return'&&g.self_distraction?' (self-distraction)':''))+' · '+(g.focused?'focused':'unfocused')):swName(g.label);
 const swName=l=>({interruption:'shift (detour)',distraction:'shift (self-distraction)',task_change:'shift (focus start)'}[l]||l);
 let LABELS={},COUNT_EVENTS=false,MIN_SPAN=5,TL={},CHAT={};
 async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await r.text());return r.json();}

@@ -59,6 +59,10 @@ first commit 2026-08-29, in continuous development since.
     evaluator prompt puts the shift on the todo-list segment and makes the task a continuation.
   * Passing through windows on the way to something new: the pass-throughs are transitions
     (continuations) and the shift goes on the arrival segment, the same as for a return.
+  * Going back to a distraction visited a few minutes earlier is a `return`, and it carries its
+    own self-distraction judgment (the only return that can). When the model judges that visit
+    stimulation-seeking, it counts as another self-distraction event, and as a bounce-away if
+    it is what left the span.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older

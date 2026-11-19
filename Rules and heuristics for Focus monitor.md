@@ -28,6 +28,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
     * Opening my phone to look at a random app, unrelated to what I'm doing.
+* Going back to a distraction I visited a few minutes earlier counts again, if that move was itself motivated by stimulation-seeking. The model evaluates each visit separately.
 * A **bounce-away** is a self-distraction event by which I leave a focus span: the moment my attention goes from the focus object to something else, when that shift is a self-distraction.
   * If I go from writing to email to Bluesky and back to writing, there is at most one bounce-away: the shift from writing to email, if that shift was a self-distraction. A self-distraction later in the same time away (email to Bluesky) is a self-distraction event, but not a bounce-away.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.

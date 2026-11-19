@@ -189,12 +189,14 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
             if vsw == "interruption":
                 sd_live = bool(v_sd) if v_sd is not None else vkind == "self_distraction"
             elif vsw == "return":
-                sd_live = False
+                # going back to a distraction is judged afresh (Eli, 2026-11-19); a return to
+                # work, and every return judged before that date, carries no flag
+                sd_live = bool(v_sd)
             s["switch"] = vsw
             s["redesign"] = v_foc is not None   # judged with the 2026-11-19 fields
             s["focused"] = bool(v_foc) if by_field else None
             s["user_unfocused"] = bool(by_field and u_foc and not v_foc)
-            s["self_distraction"] = bool(vsw == "interruption" and sd_live)
+            s["self_distraction"] = bool(vsw in ("interruption", "return") and sd_live)
             s["next_task"] = bool(vsw == "interruption" and v_nxt)
             if by_field:
                 # "Distracted" is not a judgment about the segment: it marks unfocused time that
@@ -466,7 +468,7 @@ def _runs3(segs: list[dict]) -> list[dict]:
                 if sw == "interruption":
                     in_detour = True
                 elif sw == "return":
-                    in_detour = False
+                    in_detour = bool(s.get("self_distraction"))   # back to a distraction, not to work
                 soft = (s["focused"] is False and not in_detour and not s.get("user_unfocused")
                         and s.get("content") != "passive")
             elif s.get("content") in ("transition", "idle") and s.get("switch") == "continuation":
@@ -901,14 +903,15 @@ def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
     has one bounce-away at most, "the moment you go from writing to email"; a self-distraction
     later in the same time away is a self-distraction event and not a bounce-away; leaving for
     a deliberate errand and then drifting is no bounce-away). So bounce-aways <= events, and
-    at most one per leaving. The leaving shift is the first shift of a diversion inside a span,
+    at most one per leaving. Going back to a distraction visited a few minutes earlier is a
+    'return' carrying its own self-distraction judgment, and counts like a shift. The leaving shift is the first shift of a diversion inside a span,
     or the first shift after a span's end. Stretches judged before the redesign have no
     per-shift flag and keep the older count: one per stretch of mostly-distracted time."""
     events = sum(1 for s in segs if _is_sd_shift(s))
     bounces = 0
     for sp in se["focus_spans"]:
         for d in sp["detours"]:
-            first = next((sg for sg in d["segments"] if sg.get("switch") == "interruption"), None)
+            first = next((sg for sg in d["segments"] if sg.get("switch") in ("interruption", "return")), None)
             bounces += int(first is not None and _is_sd_shift(first))
         prev_end = sp["end"]
         for s in segs:                     # the shift that ended the span, if a shift ended it
@@ -916,10 +919,8 @@ def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
                 continue
             if s["clip_start"] - prev_end > MAX_GAP or s["state"] == "idle":
                 break
-            if s.get("switch") == "interruption":
+            if s.get("switch") in ("interruption", "return"):
                 bounces += int(_is_sd_shift(s))
-                break
-            if s.get("switch") == "return":
                 break
             prev_end = s["clip_end"]       # windows passed through on the way out
     for d in se["distractions"]:

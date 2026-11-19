@@ -43,7 +43,7 @@ class Day:
             "id": sid, "app": what, "domain": domain or "", "title": "", "url": "",
             "start": self.t, "end": self.t + dur, "clip_start": self.t, "clip_end": self.t + dur,
             "duration": dur, "state": state, "label": label, "content": content,
-            "focused": focused, "switch": switch, "self_distraction": bool(sd and switch == "interruption"),
+            "focused": focused, "switch": switch, "self_distraction": bool(sd and switch in ("interruption", "return")),
             "next_task": bool(nxt and switch == "interruption"), "user_unfocused": user_unfocused,
             "antecedent_id": ante if switch != "interruption" else None, "antecedent_p": 1.0,
             "toggl_id": toggl, "tg_near_a": toggl, "tg_near_b": toggl, "toggl_tags": "", "toggl_desc": "",
@@ -225,6 +225,22 @@ def cases():
         d.add(4, "Agent", content="task", switch="return", ante=a)
         sp = d.run()["focus_spans"]
         assert [_mins(x) for x in sp] == [15], [_mins(x) for x in sp]
+
+    @case("going back to the same feed is a return that counts again, when it is judged a self-distraction")
+    def _():
+        d = Day()
+        a = d.add(12, "Essay")
+        b = d.add(1, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        a2 = d.add(3, "Essay", switch="return", ante=a)
+        d.add(1, "Feed", switch="return", ante=b, focused=False, sd=True, content="passive")
+        a3 = d.add(3, "Essay", switch="return", ante=a2)
+        d.add(1, "Feed", switch="return", ante=b, focused=False, content="passive")   # deliberate this time
+        d.add(6, "Essay", switch="return", ante=a3)
+        flag(d)
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 3, sp
+        assert stats.self_distraction_counts(d.segs, se) == (2, 2)
 
     return out
 
