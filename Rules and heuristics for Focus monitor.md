@@ -28,6 +28,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * Opening a new tab to go to a blocked website.
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
+  * Switching to email is a self-distraction event when I open the inbox, look at the list, maybe skim a message or two, do nothing, and go back. It is not one when the check is deliberate: I open a specific message and reply or act on it, or I go there right after a notification, or it is a natural stopping point in the work. Either way it is an interruption of what I was doing; this only decides whether it is also a self-distraction event.
     * Opening my phone to look at a random app, unrelated to what I'm doing.
 * Going back to a distraction I visited a few minutes earlier counts again, if that move was itself motivated by stimulation-seeking. The model evaluates each visit separately.
 * A **bounce-away** is a self-distraction event by which I leave a focus span: the moment my attention goes from the focus object to something else, when that shift is a self-distraction.
