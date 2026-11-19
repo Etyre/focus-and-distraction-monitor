@@ -55,6 +55,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * An **other focused work span** is a residual category: a genuine focus span — sustained attention on one project or object — that doesn't fit any of the named sub-types.
     * This category should be used sparingly. If a span keeps landing here, that's a signal it either deserves its own named sub-type or the standard isn't being applied strictly enough — it must not become a loophole for activity that failed to qualify as one of the named kinds (e.g., task churn with no Toggl entry is unfocused, not "other focused work").
     * Because this category should be used sparingly, the model should maintain the hypothesis that what seems to be other focused work is instead unfocused activity of some kind.
+  * A **meeting span** is a period when I'm in a live voice or video call. It is tracked in its own right, but it is not independent work, so it does not count toward total independent focus time or fully-absorbed time.
   * A **fully-absorbed focus span** is a length of focus span with 0 attention interruption events.
     * Focused task spans and meeting spans do not count towards fully-absorbed focus spans.
 
