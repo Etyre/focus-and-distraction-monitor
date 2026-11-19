@@ -306,6 +306,25 @@ def cases():
         sp = se["focus_spans"]
         assert len(d.segs) == 1 and len(sp) == 1 and _mins(sp[0]) == 30 and not sp[0]["detours"], sp
 
+    @case("a pass-through touch-back does not reset the 5-minute clock; a real re-engagement does")
+    def _():
+        d = Day()
+        a = d.add(12, "Essay")
+        b = d.add(4, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        a2 = d.add(0.2, "Essay", switch="return", ante=a)
+        d.add(4, "Feed", switch="return", ante=b, focused=False, sd=True, content="passive")
+        d.add(12, "Essay", switch="return", ante=a2)
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [12, 12], [_mins(x) for x in sp]   # one 8-minute absence
+        d = Day()
+        a = d.add(12, "Essay")
+        b = d.add(4, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        a2 = d.add(1, "Essay", switch="return", ante=a)                      # a minute of real work
+        d.add(4, "Feed", switch="return", ante=b, focused=False, sd=True, content="passive")
+        d.add(12, "Essay", switch="return", ante=a2)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 2, [_mins(x) for x in sp]
+
     return out
 
 

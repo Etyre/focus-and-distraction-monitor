@@ -16,6 +16,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * when my computer has been idle for ten minutes (in which case, the span is retroactively made to end when the idle period started) or
     * if my attention has been interrupted and I’ve shifted my attention to a different task, project, or object for 5 minutes (in which case, the span is retroactively shortened to the start of the interruption, which may or may not be the start of a new focus span).
   * Attention interruptions that are less than 5 minutes long do not break the focus span.
+    * Touching the task briefly in the middle of an absence only resets this clock if I actually re-engage with it. If the visit back is a pass-through (15 seconds or less, nothing done) and I leave again, the time before and after it is one absence.
   * Once a focus span has started, all time on the span's thread counts as focus time, even if it looks like I'm not making progress: I may still be thinking or processing. The model still judges each segment as focused or unfocused. If more than 20% of a span was judged unfocused, or it contains one continuous unfocused stretch of 10 minutes or more, the app asks me whether that time was really unfocused and should break the span. (added 2026-11-19)
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
   * It is one event per time I leave the focus object, however many things I pass through before I come back.

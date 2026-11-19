@@ -78,6 +78,8 @@ first commit 2026-08-29, in continuous development since.
     3 days when their data arrives are not queued (`PHONE_LOOKBACK_S`).
     Carving can remove a span: the opening 10 unbroken focused minutes are measured after the
     phone time is cut out.
+  * A touch-back of 15 seconds or less followed by leaving again does not reset the 5-minute
+    clock (`TOUCH_BACK_S`): the absences on either side are one absence.
   * One attention-interruption event per time you leave the span: everything passed through
     while away is merged into one diversion (`_assemble`).
   Segments judged before the redesign have no focused/unfocused field. They are read the older
