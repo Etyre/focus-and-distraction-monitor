@@ -11,10 +11,14 @@ judges:
      continuation (no shift of the object of attention) | shift (attention moved to
      something new; stored as 'interruption', see seg_models.shown_switch) |
      return (coming back to the object attention was on before a shift)
-  3. For shifts, the KIND - a retrospective judgment of what the shift BECAME:
-     self_distraction (it became stimulation-seeking/consumption) |
-     focus_start (it became a sustained new object of focused attention) |
-     detour (it didn't become either - brief, or never cohered into one focused thing)
+  3. FOCUSED - was attention focused during the segment, or unfocused (quality of attention,
+     independent of which thread the segment belongs to).
+  4. For shifts, two yes/no judgments: SELF_DISTRACTION (sought out stimulation without a
+     clear intent) and NEXT_TASK (the next task under the same task-processing intention;
+     the app joins those threads into one focused task block).
+The older per-shift KIND (self_distraction | focus_start | detour) is no longer asked of the
+model (Rules doc redesign, 2026-11-19); it is derived from these fields and still stored, so
+history, the local models and the person's past corrections keep working.
 
 The user audits and edits these (seg_reviews); edits are authoritative for state derivation
 and are fed back to the evaluator as few-shot corrections, so it learns over time."""
@@ -39,6 +43,9 @@ from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # si
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
 CTX_S = 10 * 60           # context shown on each side of the chunk
+RETURN_MAX_S = 10 * 60    # Rules doc: a return is to something left within the past 10 minutes
+HOLD_MAX_S = 60 * 60      # Rules doc: the model may hold a segment back for up to an hour
+HOLD_RETRY_S = 15 * 60    # after a hold, ask again this much later (more activity will be logged)
 MAX_SHOTS = 8
 
 
@@ -50,16 +57,29 @@ class AnteCand(BaseModel):
 class SegJudgement(BaseModel):
     segment_id: int
     content: str = Field(description="One of: creative, task, correspondence, reading, planning, other, passive, meeting, idle, transition.")
+    focused: bool = Field(description="Quality of attention during THIS segment: true = focused (doing one thing with intent, however small), false = unfocused (half-hearted, scattered, drifting, or consuming). Independent of which thread the segment belongs to and of whether it is a diversion from something else.")
     switch: str = Field(description="The switch INTO this segment: continuation, shift, or return.")
     antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is shift (a new thread).")
-    shift_kind: str | None = Field(default=None, description="Only when switch is 'shift': self_distraction, focus_start, or detour.")
-    uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
+    self_distraction: bool = Field(default=False, description="Only when switch is 'shift': true when the person sought out stimulation or distraction WITHOUT a clear intent. False for every other shift, and always false for continuation/return.")
+    next_task: bool = Field(default=False, description="Only when switch is 'shift': true when this is the person moving on to the NEXT TASK under the same overall intention of processing tasks. False for every other shift, and always false for continuation/return.")
+    uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content, focus or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
     hybrid: bool = Field(default=False, description="True when the activity (reading, task, creative, planning...) was being done INSIDE a live discussion with someone - e.g. reading a bill together on a call while taking notes. Keep content = the activity; hybrid marks the live-discussion dimension. False for solo work and for plain meetings (content='meeting').")
     note: str = Field(description="One short sentence of reasoning.")
 
 
 class ChunkJudgement(BaseModel):
     segments: list[SegJudgement]
+    hold_from: int | None = Field(default=None, description="Only when the prompt says holding is allowed. The id of the first EVALUATE segment you would rather judge LATER, because what the person does next would change your judgment of it. Judge every segment before it; leave it and every segment after it out of `segments`. null = judge everything now (the normal case).")
+
+
+def kind_of(switch: str | None, focused, self_distraction) -> str | None:
+    """The older per-shift kind, derived from the fields the model now gives (see the module
+    docstring). Stored alongside them so everything written for the old label keeps working."""
+    if switch != "interruption":
+        return None
+    if self_distraction:
+        return "self_distraction"
+    return "focus_start" if focused else "detour"
 
 
 SYSTEM = """You are the segment evaluator for a personal attention monitor. You receive a stretch \
@@ -111,21 +131,32 @@ with no screenshot and no scroll/typing evidence, flanked by segments of the sam
 pass-through regardless of what the window contains (a Substack post, a feed, a comic). Ten \
 seconds is not consumption; do not label it passive or a shift on the strength of the \
 window's name alone.
-2. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
+2. focused - the QUALITY of the person's attention during this segment: focused or unfocused.
+   - focused (true): doing one thing with intent, engaged with it. This holds for small things \
+and for things off the main work: jumping to a shop to buy one specific item is focused, even \
+though it is a diversion from the essay they were writing.
+   - unfocused (false): half-hearted, scattered or drifting - bouncing between surfaces with no \
+one object, poking at something without engaging, lackadaisical task churn, browsing without an \
+objective. Passive consumption is always unfocused.
+   This is a SEPARATE question from which thread the segment belongs to (the switch, below) and \
+from whether it is a diversion from something else (the app works that out). Judge the segment \
+honestly on its own evidence, with the surrounding segments as context: if the segments around \
+it are all the same thread of engaged work, this one is more likely focused. Do not mark time \
+unfocused only because progress looks slow - the person may be thinking; mark it unfocused when \
+the evidence shows attention was not on one thing. For a 'transition' or 'idle' segment give \
+the value of the thread it sits inside (the app does not use it).
+3. switch - did the switch INTO this segment shift the person's OBJECT OF ATTENTION?
    - continuation: same object (window-hopping within one piece of work counts - text<->notes, \
 editor<->terminal, stepping through desktops to find something; also staying within one ongoing \
-distraction session). Special case, FOCUSED TASK blocks: moving from one discrete task to the \
-next (email -> taxes -> errands) is continuation of the block ONLY when a Toggl entry is \
-running AND the pattern looks like focused task processing - operating from a todo list, \
-returning to it between tasks, efficient execution. A running Toggl entry alone is NOT \
-sufficient (people forget timers); and without a running entry, task-to-task hopping is never \
-one block - judge each shift on its own.
+distraction session).
    - shift: the object of attention changed to something new. This is a judgment about this \
 one switch only, and applies at any time of day, whether or not a focus span is running. (The \
 person's rules use "attention-interruption event" for something narrower: a shift that happens \
 during a focus span. The app works out which shifts are those; you only say whether attention \
-moved.)
-   - return: attention moved back to an object they were on before an earlier shift. When \
+moved.) Finishing one discrete task and starting the next (email -> taxes -> errands) IS a \
+shift - attention moved to a new object - even inside a block of task processing; see next_task.
+   - return: attention moved back to an object they were on before an earlier shift, within \
+about the last 10 minutes. Coming back to something after longer than that is a shift. When \
 they get back by passing through other windows, those pass-through segments are transitions \
 (switch 'continuation'); 'return' goes on the segment where they ARRIVE back on the old object.
    For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
@@ -139,22 +170,28 @@ all is your switch judgment) and sum to ~1 across candidates. Usually one candid
 essentially all the mass; when you are genuinely torn between two attachments, say so with a \
 runner-up (and rarely a third). This pointer is the primary statement of thread structure; \
 make it consistent with your switch judgment.
-3. shift_kind - ONLY for switch='shift'. These are RETROSPECTIVE judgments: you \
-see what came after, so name what the shift BECAME, not what it looked like in the moment.
-   - self_distraction: the time away became stimulation-seeking/consumption (passive content, \
-feeds, a blocked site, absent-minded shopping/dating apps) - regardless of how long it lasted.
-   - focus_start: the shift became a SUSTAINED new object of focused attention - the person \
-settled into a new piece of work and stayed with it. Markers like a fresh Toggl entry, a todo \
-list, or note-taking are supporting evidence, but what settles the label is what actually \
-followed. A deliberate, work-like shift the person abandoned within a few minutes to return \
-to the prior work is a detour, not a focus_start, however intentional it looked.
-   - detour: the shift did NOT become a new sustained object - either brief (they soon returned \
-to what they were doing) or the time away never cohered into one focused thing (answering a \
-message, a stray question, a quick errand, unfocused bouncing between surfaces).
+4. Two yes/no judgments, ONLY for switch='shift' (false otherwise):
+   - self_distraction: the person sought out stimulation or distraction WITHOUT A CLEAR INTENT \
+- absent-mindedly opening a feed, a blocked site, a dating or shopping app with no objective. \
+It is about WHY they moved, not what is on the screen. NOT a self-distraction: a planned break \
+(they stopped the timer and put on a video they meant to watch), watching something someone \
+sent them, a deliberate errand or purchase, deliberately handling an email - even when the \
+content is passive.
+   - next_task: this shift is the person moving on to the NEXT TASK under the same overall \
+intention of processing tasks - working from a todo list or tracker and returning to it between \
+tasks, executing efficiently, one task after another. The app joins tasks linked this way into \
+one focused task block, and it applies the rule that a block needs a running Toggl entry; you \
+judge the intention. False when the shift is not the next task: a glance at a feed, a stray \
+question, drifting to something else.
+
+Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
+and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
+2026-11-19 carry an older tag instead - <switch: shift (detour)>, (self_distraction) or \
+(focus_start) - from when the kind of shift was a single label; read those as a shift.
 
 Judge each segment in the context of the whole stretch - what came before AND after it. A flip to \
 a notes app mid-video does not make the video session work; a quick message check inside a writing \
-session is a detour, not the end of the work.
+session is a shift away and a return, not the end of the work.
 
 Their own rules and definitions (authoritative):
 {rules}
@@ -189,8 +226,8 @@ class ChunkEvaluator:
 
     def _examples(self, conn) -> str:
         rows = conn.execute("""
-            SELECT r.segment_id, r.content, r.switch_label, r.interruption_kind, r.note, r.hybrid,
-                   g.app, g.domain, g.title
+            SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task,
+                   r.note, r.hybrid, g.app, g.domain, g.title
             FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
             ORDER BY r.created DESC LIMIT 20""").fetchall()
         if not rows:
@@ -198,7 +235,11 @@ class ChunkEvaluator:
         lines = ["The person has corrected past judgments - follow these precedents:"]
         for r in rows:
             what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
-            verdict = " / ".join(v for v in (r["content"], shown_switch(r["switch_label"]), r["interruption_kind"]) if v)
+            verdict = " / ".join(v for v in (
+                r["content"], shown_switch(r["switch_label"]),
+                None if r["focused"] is None else ("focused" if r["focused"] else "unfocused"),
+                "self-distraction" if r["self_distraction"] else None,
+                "next task in the block" if r["next_task"] else None) if v)
             if r["hybrid"]:
                 verdict += " + hybrid (inside a live discussion)"
             elif r["hybrid"] == 0:
@@ -302,9 +343,17 @@ class ChunkEvaluator:
                 shot_meta.append({"path": r2["path"], "label": label})
                 content.append({"type": "text", "text": label})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        # Hold-off (Rules doc): only for first-time judgments of activity under an hour old.
+        can_hold = extra is None and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
         prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
                        + (f"\n\nIMPORTANT - {extra}" if extra else "")
-                       + "\n\nJudge every segment marked EVALUATE (all of them, by id).")
+                       + "\n\nJudge every segment marked EVALUATE (all of them, by id)."
+                       + ("\n\nHolding is allowed for this chunk: if judging the LAST segments well depends on "
+                          "what the person does after the activity shown here (for example a new piece of "
+                          "work has only just begun and you cannot yet tell what it is), set hold_from to the "
+                          "id of the first segment you would rather judge later, and leave it and everything "
+                          "after it out. You will be shown them again in about 15 minutes with more activity "
+                          "logged. Use this sparingly; most chunks need no hold." if can_hold else ""))
         content.append({"type": "text", "text": prompt_text})
         system_text = self._system_blocks(conn)[0]["text"]
         resp = llm.parse(self.client, site="evaluator", 
@@ -318,11 +367,15 @@ class ChunkEvaluator:
         cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
                 + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
                 + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
-        n = 0
+        n = n_held = 0
         if resp.parsed_output is not None:
             now = time.time()
             per_seg_cost = cost / max(len(target), 1)
             seg_starts = {s["id"]: s["clip_start"] for s in segs if s["duration"] > 0}
+            seg_ends = {s["id"]: s["clip_end"] for s in segs if s["duration"] > 0}
+            # Hold-off (Rules doc): the model may ask to judge the tail of the chunk later.
+            hold_id = resp.parsed_output.hold_from if can_hold else None
+            held_from = seg_starts.get(hold_id) if hold_id in target_ids else None
             with db.tx(conn):
                 run_id = conn.execute(
                     "INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created, system, prompt, shots, response, model)"
@@ -334,10 +387,15 @@ class ChunkEvaluator:
                         continue
                     c = j.content.strip().lower()
                     sw = stored_switch(j.switch.strip().lower())  # the model says 'shift'
-                    k = (j.shift_kind or "").strip().lower() or None
-                    if c not in CONTENTS or sw not in SWITCHES or (k is not None and k not in KINDS):
-                        log.warning("bad judgement for segment %d: %s/%s/%s", j.segment_id, c, sw, k)
+                    if c not in CONTENTS or sw not in SWITCHES:
+                        log.warning("bad judgement for segment %d: %s/%s", j.segment_id, c, sw)
                         continue
+                    if held_from is not None and seg_starts.get(j.segment_id, 0) >= held_from:
+                        continue  # the model asked to judge this one later
+                    foc = bool(j.focused)
+                    sd = bool(j.self_distraction) and sw == "interruption"
+                    nxt = bool(j.next_task) and sw == "interruption"
+                    k = kind_of(sw, foc, sd)   # the older per-shift kind, derived
                     # Claude's discrete judgment as (pseudo-)probabilities, so it can be scored
                     # and weighted alongside the local models.
                     top_p = 0.55 if j.uncertain else 0.85
@@ -353,7 +411,6 @@ class ChunkEvaluator:
                             for h in HEADS}
                     rc = max(comb["content"], key=comb["content"].get)
                     rsw = max(comb["switch"], key=comb["switch"].get)
-                    rk = max(comb["kind"], key=comb["kind"].get) if rsw == "interruption" else None
                     unc = int(j.uncertain or max(comb["content"].values()) < 0.5
                               or max(comb["switch"].values()) < 0.5)
                     # Antecedents (thread pointers): stored raw from the evaluator, never
@@ -368,8 +425,18 @@ class ChunkEvaluator:
                         else:
                             log.warning("dropping invalid antecedent %s for segment %d",
                                         cand.segment_id, j.segment_id)
+                    # Rules doc: coming back to something after more than 10 minutes is a shift,
+                    # not a return. The pointer says how long ago the old thread was last touched.
+                    if rsw == "return" and cands and cands[0][0] in seg_ends:
+                        if seg_starts[j.segment_id] - seg_ends[cands[0][0]] > RETURN_MAX_S:
+                            rsw = "interruption"
+                            sd = nxt = False
+                            j.note = (j.note or "") + " [return after more than 10 minutes: stored as a shift]"
                     if rsw == "interruption":
                         cands = []  # a new thread has no antecedent
+                    else:
+                        sd = nxt = False
+                    rk = kind_of(rsw, foc, sd)
                     cands.sort(key=lambda x: -x[1])
                     # The candidates' probabilities are conditional on same-thread and must sum
                     # to 1. The model sometimes returns one candidate carrying 0.2 (or three
@@ -389,23 +456,31 @@ class ChunkEvaluator:
                     if cands:
                         comb["antecedent"] = {str(i): p for i, p in cands}
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id, hybrid)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid))))
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id, hybrid, focused, self_distraction, next_task)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid)),
+                         int(foc), int(sd), int(nxt)))
                     n += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
                 judged = {j.segment_id for j in resp.parsed_output.segments}
+                if held_from is not None:
+                    first_held = min((s for s in target if s["clip_start"] >= held_from), key=lambda s: s["clip_start"])
+                    conn.execute("INSERT OR REPLACE INTO eval_holds(segment_id, until, created) VALUES (?,?,?)",
+                                 (first_held["id"], now + HOLD_RETRY_S, now))
+                    n_held = sum(1 for s in target if s["clip_start"] >= held_from)
                 for s in target:
+                    if held_from is not None and s["clip_start"] >= held_from:
+                        continue
                     if s["id"] not in judged:
                         conn.execute(
                             "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created, run_id)"
                             " VALUES (?,?,?,?,?,?,?)",
                             (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
                 conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
-        log.info("chunk %s-%s: %d/%d segments judged, %d deferred ($%.3f)",
+        log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
-                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), cost)
+                 dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, cost)
         # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
         if resp.parsed_output is not None and extra is None:
             from . import efforts as _eff
@@ -420,8 +495,8 @@ class ChunkEvaluator:
                     betas=["server-side-fallback-2026-07-01"], fallbacks="default")
 
             def _cmp(a, b):
-                pa = {j.segment_id: (j.content, stored_switch(j.switch), j.shift_kind) for j in a.segments}
-                pb = {j.segment_id: (j.content, stored_switch(j.switch), j.shift_kind) for j in b.segments}
+                pa = {j.segment_id: (j.content, stored_switch(j.switch), bool(j.focused)) for j in a.segments}
+                pb = {j.segment_id: (j.content, stored_switch(j.switch), bool(j.focused)) for j in b.segments}
                 keys = set(pa) & set(pb)
                 if not keys:
                     return 0.0, "no overlapping segments"
@@ -457,8 +532,8 @@ def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> in
         try:
             extra = (f"a whole-span coherence review of this stretch found: {r['issue']} "
                      f"Re-judge with that in hand. If a NEW piece of work begins mid-stretch, "
-                     f"mark the segment where it begins as switch='shift', "
-                     f"shift_kind='focus_start'.")
+                     f"mark the segment where it begins as switch='shift' (with focused=true "
+                     f"if the new work is focused).")
             self_n = _get().evaluate_chunk(conn, r["start"] - 1, r["end"] + 1, extra=extra)
             log.info("coherence-driven re-evaluation of %s-%s: %d segments re-judged",
                      dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"),
@@ -484,11 +559,10 @@ def derive_kind(conn, cfg: Config | None = None, segment_id: int = 0, note: str 
     extra = (f"The person has RULED that segment id={segment_id} began a SEPARATE thread from "
              f"what preceded it (their ruling is authoritative - do not relitigate it"
              + (f"; their note: {note}" if note else "") + "). "
-             f"Your job is the derived half: given the recorded record of what FOLLOWED, judge "
-             f"what that thread became - shift_kind='focus_start' if it became a "
-             f"sustained object of focused attention, 'detour' if it stayed brief or never "
-             f"cohered, 'self_distraction' if it became consumption. Re-judge the affected "
-             f"segments' kinds (and downstream switches like returns) accordingly.")
+             f"Your job is the rest: with that segment as switch='shift', re-judge the "
+             f"affected segments - whether each was focused or unfocused, whether the shift "
+             f"was a self-distraction or the next task in a task block, and the downstream "
+             f"switches (continuations of the new thread, returns to the old one).")
     try:
         n = _get().evaluate_chunk(conn, t0, t1, extra=extra)
         log.info("kind derivation after thread ruling on segment %d: %d segments re-judged",
@@ -511,6 +585,7 @@ CHAT_TOOLS = [
          "label": {"type": "string", "description": "The answer as an option label, in the person's own terms, e.g. 'A window that was just open on my desktop, not looked at'."},
          "content": {"type": ["string", "null"], "enum": list(CONTENTS) + [None], "description": "Content label this asserts, or null to leave the content as judged."},
          "switch_label": {"type": ["string", "null"], "enum": list(SHOWN_SWITCHES) + [None], "description": "continuation | shift (a separate thread began) | return, or null to leave the thread relation as judged."},
+         "focused": {"type": ["boolean", "null"], "description": "true = the person says their attention was focused in this segment; false = they say it was unfocused; null = no ruling on that."},
          "antecedent_id": {"type": ["integer", "null"], "description": "For continuation/return: the id of the segment this continues (from the log), else null."},
          "hybrid": {"type": ["boolean", "null"], "description": "true = the activity was done inside a live discussion; false = solo; null = no ruling."},
          "note": {"type": "string", "description": "One sentence, in the person's words, stored as the precedent future judgments see: what was really going on and why it is labelled this way."}},
@@ -633,7 +708,8 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
                 continue
             proposal["judgment"] = {"label": j["label"].strip(), "content": j["content"],
                                     "switch_label": j["switch_label"], "antecedent_id": j.get("antecedent_id"),
-                                    "hybrid": j.get("hybrid"), "note": (j.get("note") or "").strip()}
+                                    "hybrid": j.get("hybrid"), "focused": j.get("focused"),
+                                    "note": (j.get("note") or "").strip()}
         elif b.name == "propose_rule" and (b.input.get("rule") or "").strip():
             proposal["rule"] = b.input["rule"].strip()
     if not text:
@@ -646,7 +722,7 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
 
 class AuditFlag(BaseModel):
     segment_id: int
-    field: str = Field(description="Which judgment looks wrong: content, switch, or kind.")
+    field: str = Field(description="Which judgment looks wrong: content, switch, or focused.")
     suggested: str = Field(description="The label you would give instead.")
     reason: str = Field(description="One short sentence.")
 
@@ -884,13 +960,19 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
     done = 0
     for _ in range(max_chunks):
         row = conn.execute("""
-            SELECT MIN(g.start) FROM segments g
+            SELECT g.start, g.id FROM segments g
             LEFT JOIN seg_evals e ON e.segment_id = g.id
             WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0
               AND COALESCE(g.end, g.start) > g.start
-              AND COALESCE(g.end, g.start) <= ? AND e.segment_id IS NULL""",
+              AND COALESCE(g.end, g.start) <= ? AND e.segment_id IS NULL
+            ORDER BY g.start LIMIT 1""",
             (time.time() - lookback_s, horizon, horizon)).fetchone()
         if not row or row[0] is None:
+            break
+        # The evaluator asked to judge this segment later (hold-off): wait until then. Everything
+        # after it waits too, so spans are never assembled across an unjudged gap.
+        hold = conn.execute("SELECT until FROM eval_holds WHERE segment_id=?", (row[1],)).fetchone()
+        if hold and hold["until"] > time.time():
             break
         t0 = row[0] - 1
         t1 = min(t0 + CHUNK_S, horizon)

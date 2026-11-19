@@ -62,12 +62,14 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         s["review_chat_mid"] = r0["chat_message_id"] if r0 is not None and "chat_message_id" in r0.keys() else None
     if overrides:
         blank = {"segment_id": None, "content": None, "switch_label": None, "interruption_kind": None,
-                 "antecedent_id": None, "note": None, "created": now, "hybrid": None, "focus_exception": None}
+                 "antecedent_id": None, "note": None, "created": now, "hybrid": None, "focus_exception": None,
+                 "focused": None, "self_distraction": None, "next_task": None}
         for sid, o in overrides.items():
             if sid not in ids:
                 continue
             base = dict(rv[sid]) if sid in rv else dict(blank, segment_id=sid)
-            for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid"):
+            for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid",
+                      "focused", "self_distraction", "next_task"):
                 if o.get(k) is not None:
                     base[k] = o[k]
             if o.get("switch_label") == "interruption":
@@ -98,8 +100,24 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         hyb = (u["hybrid"] if u is not None and u["hybrid"] is not None else (e["hybrid"] if e is not None else 0))
         # The person's explicit "counts as focus anyway" ruling - a review-only field.
         fex = int((u["focus_exception"] if u is not None and "focus_exception" in u.keys() else 0) or 0)
-        return (g("content"), g("switch_label"), g("interruption_kind"), u is not None, unc, pr, u_sw, u_kind, ante, u_ante,
-                int(hyb or 0), fex)
+
+        def g2(k):
+            """A 0/1 field where 0 is a real answer: the person's value when they gave one."""
+            if u is not None and k in u.keys() and u[k] is not None:
+                return int(u[k]), True
+            if e is not None and k in e.keys() and e[k] is not None:
+                return int(e[k]), False
+            return None, False
+        foc, u_foc = g2("focused")
+        sd, _ = g2("self_distraction")
+        nxt, _ = g2("next_task")
+        sw_, kind_ = g("switch_label"), g("interruption_kind")
+        if sw_ == "interruption" and foc is not None and not u_kind:
+            # Under the redesign the older per-shift kind is not a judgment of its own: it
+            # follows from the focus field and the self-distraction flag (whoever set them).
+            kind_ = "self_distraction" if sd else ("focus_start" if foc else "detour")
+        return (g("content"), sw_, kind_, u is not None, unc, pr, u_sw, u_kind, ante, u_ante,
+                int(hyb or 0), fex, foc, u_foc, sd, nxt)
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -116,6 +134,7 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         return None
     by_to = {r["to_segment"]: r for r in sw}
     prev_state = "focus"
+    sd_live = False  # the thread being followed began with a self-distraction shift
     last_focus_ctx = None  # (app, domain) of the most recent focused segment
     last_detour = None  # ((app, domain), state) of the most recent detour segment: an ongoing
     # distraction/interruption context. A mere "continuation" back into it RESUMES the detour -
@@ -148,7 +167,8 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
         v = verdict(s["id"])
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
-            content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb, v_fex = v
+            (content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb, v_fex,
+             v_foc, u_foc, v_sd, v_nxt) = v
             s["hybrid"] = v_hyb
             s["focus_exception"] = v_fex
             # Thread pointer: meaningful only for continuation/return (an interruption IS
@@ -161,7 +181,25 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
             else:
                 s["antecedent_id"] = None
             vsw = vsw or "continuation"
-            if vsw == "continuation":
+            # Redesign 2026-11-19 (Rules doc): a segment judged with a focused/unfocused field
+            # takes its state from that field. A segment judged before it (or by the local
+            # models, or a pass-through/idle one) has no such field and keeps the older rule:
+            # the state follows the switch and is inherited through continuations.
+            by_field = v_foc is not None and content not in ("transition", "idle")
+            if vsw == "interruption":
+                sd_live = bool(v_sd) if v_sd is not None else vkind == "self_distraction"
+            elif vsw == "return":
+                sd_live = False
+            s["switch"] = vsw
+            s["focused"] = bool(v_foc) if by_field else None
+            s["user_unfocused"] = bool(by_field and u_foc and not v_foc)
+            s["self_distraction"] = bool(vsw == "interruption" and sd_live)
+            s["next_task"] = bool(vsw == "interruption" and v_nxt)
+            if by_field:
+                # "Distracted" is not a judgment about the segment: it marks unfocused time that
+                # follows a self-distraction shift, so the event can be counted and coloured.
+                st = "focus" if v_foc else ("distracted" if sd_live else "interrupted")
+            elif vsw == "continuation":
                 st = prev_state if prev_state != "idle" else "focus"
             elif vsw == "return":
                 st = "focus"
@@ -169,7 +207,10 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
                 st = {"self_distraction": "distracted", "focus_start": "focus",
                       "detour": "interrupted"}.get(vkind or "detour", "interrupted")
             if content == "passive":
-                st = "distracted"  # Rules doc: passive consumption never counts toward focus
+                # Rules doc: passive consumption never counts toward focus. Whether it was a
+                # self-distraction is about intent (a planned video is not one), so under the
+                # redesign the colour follows the shift, not the content.
+                st = ("distracted" if sd_live else "interrupted") if by_field else "distracted"
             elif content == "correspondence" and st == "focus" and not s.get("toggl_id") and not v_fex:
                 # Rules doc: focus spans are independent work, never interactive - chatting or
                 # answering mail is a diversion, not focus. The one exception is correspondence
@@ -256,6 +297,8 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
 
 
 MAX_GAP = 60.0  # seconds of unrecorded time that breaks a run (collector down, sleep, ...)
+UNFOCUSED_ASK_FRAC = 0.20          # ask when more than this share of a span was judged unfocused
+UNFOCUSED_ASK_STRETCH_S = 600.0    # ... or when one unfocused stretch lasted this long
 
 
 def _runs(segs: list[dict], state: str, new_run_on_label: str | None = None) -> list[dict]:
@@ -355,7 +398,12 @@ def span_subtype(sp: dict, cfg) -> str | None:
 
 
 def _detour_label(run: dict) -> str:
-    """A merged detour's dominant kind, by time (interrupted vs distracted)."""
+    """Whether a stretch of time away counts as a self-distraction ('distracted') or a plain
+    diversion ('interrupted'). Under the redesign a self-distraction is an EVENT - a shift made
+    without clear intent - so the stretch is one when it contains such a shift. Stretches judged
+    before the redesign keep the older rule: the dominant kind by time."""
+    if any(s.get("focused") is not None for s in run["segments"]):
+        return "distracted" if any(s.get("self_distraction") for s in run["segments"]) else "interrupted"
     from collections import Counter
     c = Counter()
     for s in run["segments"]:
@@ -366,17 +414,54 @@ def _detour_label(run: dict) -> str:
 def _runs3(segs: list[dict]) -> list[dict]:
     """Runs of three categories: 'focus', 'detour' (interrupted+distracted MERGED - stacked
     interruptions/distractions are one event), and 'idle'. Split on recording gaps and on a
-    deliberate focus start."""
+    deliberate focus start.
+
+    Redesign 2026-11-19: a segment judged with a focused/unfocused field can be unfocused and
+    still belong to a thread of work ("half-hearted fiddling in the same doc"). Such time forms
+    a SOFT run: cat 'focus' with soft=True. Inside a running span on its own thread it counts
+    as focus time (Rules doc); it can never start a span, never counts toward a span's opening
+    10 minutes, and off the span's thread it is time away like any other. Unfocused time that
+    began with a shift (a new, unfocused thread), passive consumption, and time the person
+    themselves ruled unfocused are ordinary detours."""
     runs, cur = [], None
+    in_detour = False   # the thread being followed began with a shift into unfocused time
+    last_soft = False
     for s in segs:
         if s["duration"] <= 0:
             continue
-        cat = "focus" if s["state"] == "focus" else ("idle" if s["state"] == "idle" else "detour")
+        by_field = s.get("focused") is not None
+        sw = s.get("switch") if by_field else None
+        soft = False
+        if s["state"] == "focus":
+            cat, in_detour = "focus", False
+        elif s["state"] == "idle":
+            cat = "idle"
+        else:
+            cat = "detour"
+            if by_field:
+                if sw == "interruption":
+                    in_detour = True
+                elif sw == "return":
+                    in_detour = False
+                soft = (s["focused"] is False and not in_detour and not s.get("user_unfocused")
+                        and s.get("content") != "passive")
+            elif s.get("content") in ("transition", "idle") and s.get("switch") == "continuation":
+                soft = last_soft          # a pass-through or a pause inside soft time stays in it
+            else:
+                in_detour = True          # judged the older way: a detour is a detour
+            if soft:
+                cat = "focus"
+        last_soft = soft
         gap = cur is not None and s["clip_start"] - cur["end"] > MAX_GAP
-        new = (cur is None or cur["cat"] != cat or gap or (cat == "focus" and s["label"] == "task_change"))
+        new = (cur is None or cur["cat"] != cat or gap or cur.get("soft", False) != soft
+               or (cat == "focus" and not soft and s["label"] == "task_change")
+               # a shift or a return is a thread boundary: the next run may or may not belong
+               # to the span, and _same_task has to be asked about it on its own
+               or (cat == "focus" and sw in ("interruption", "return")))
         if new:
             cur = {"cat": cat, "start": s["clip_start"], "end": s["clip_end"], "segments": [s],
-                   "focus_start": cat == "focus" and s["label"] == "task_change", "gap_before": gap}
+                   "focus_start": cat == "focus" and not soft and s["label"] == "task_change",
+                   "gap_before": gap, "soft": soft}
             runs.append(cur)
         else:
             cur["end"] = s["clip_end"]
@@ -496,7 +581,16 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         first = r["segments"][0]
         last_run = focus_runs[-1]
         last = last_run["segments"][-1]
-        if (first["app"], first["domain"]) == (last["app"], last["domain"]):
+        by_field = first.get("focused") is not None   # judged under the redesign
+        if by_field and first.get("switch") == "interruption":
+            # A shift is a new thread, whatever window it is in. It stays in the span only as
+            # the NEXT TASK of a focused task block (the evaluator's judgment), and only under
+            # a running Toggl entry (Rules doc: the app applies that rule, as a veto).
+            return bool(first.get("next_task") and (first.get("toggl_id") or first.get("tg_near_a")))
+        has_ptr = by_field and first.get("antecedent_id") is not None
+        # Rules doc: hand-coded rules may veto, never affirm. "Same window" is such a rule, so
+        # where the evaluator has stated which thread this continues, that is read first.
+        if not has_ptr and (first["app"], first["domain"]) == (last["app"], last["domain"]):
             # Same window/site = same task - except in an app whose window title names the
             # project (config title_apps, e.g. Agent Coding): there two projects share one app
             # and no site, and the Rules doc counts each project separately. A different title
@@ -521,6 +615,10 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             a, p = ante_of.get(a, (None, 0.0))
             conf *= p
             hops += 1
+        if has_ptr and a is None and conf >= 0.5:
+            # The stated chain was followed, with confidence, back to where its thread began,
+            # and that thread is neither this span nor the time away from it: a different thread.
+            return False
         if not r.get("focus_start"):
             # Continuation/return judgments are CHAINED - they continue whatever came
             # immediately before, which is not the span once `away` holds a focus run already
@@ -577,8 +675,8 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
 
     def _assemble(rs):
         out, n, i = [], len(rs), 0
-        while i < n and rs[i]["cat"] != "focus":
-            i += 1
+        while i < n and (rs[i]["cat"] != "focus" or rs[i].get("soft")):
+            i += 1   # a span starts on focused time; unfocused time on a thread does not start one
         if i >= n:
             return out
         cur = {"start": rs[i]["start"], "runs": [rs[i]]}
@@ -589,7 +687,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             return sum(r["duration"] for r in away)
 
         def reason():
-            if any(r["cat"] == "focus" for r in away):
+            if any(r["cat"] == "focus" and not r.get("soft") for r in away):
                 return "task change"
             dd = sum(r["duration"] for r in away if r.get("state") == "distracted")
             ii = sum(r["duration"] for r in away if r.get("state") == "interrupted")
@@ -607,7 +705,8 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 if away:
                     if away_s() < break_s:  # brief diversion -> contained interruption(s), span continues
                         for ar in away:
-                            cur["runs"].append(dict(ar, cat="detour", state="interrupted") if ar["cat"] == "focus" else ar)
+                            cur["runs"].append(dict(ar, cat="detour", soft=False, state=_detour_label(ar))
+                                               if ar["cat"] == "focus" else ar)
                         away = []
                     else:                    # away >= 5 min -> span ended when we left the task
                         out.append(_finalize(cur, reason()))
@@ -652,9 +751,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 continue
             acc, k0, at = 0.0, None, None
             for k, r_ in enumerate(sp["runs"]):
-                if r_.get("gap_before") or r_["cat"] == "detour":
-                    acc, k0 = 0.0, None
-                if r_["cat"] == "focus":
+                if r_.get("gap_before") or r_["cat"] == "detour" or r_.get("soft"):
+                    acc, k0 = 0.0, None   # the opening 10 minutes have to be FOCUSED time
+                if r_["cat"] == "focus" and not r_.get("soft"):
                     k0 = k if k0 is None else k0
                     acc += r_["duration"]
                     if acc >= unbroken_s:
@@ -690,15 +789,38 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         # The doc defines fully-absorbed as "a LENGTH of focus span with 0 interruption
         # events" - a stretch, not only a whole span. Longest unbroken focus stretch:
         best = cur = 0.0
+        best_f = cur_f = 0.0      # the same, counting only time judged focused (for the gate)
+        soft_s = soft_run = soft_max = 0.0
+        soft_ids: list[int] = []
         for r_ in sp["runs"]:
             if r_.get("gap_before"):
-                cur = 0.0
+                cur = cur_f = 0.0
             if r_["cat"] == "focus":
                 cur += r_["duration"]
                 best = max(best, cur)
+                if r_.get("soft"):
+                    cur_f = 0.0
+                    soft_s += r_["duration"]
+                    soft_run += r_["duration"]
+                    soft_max = max(soft_max, soft_run)
+                    soft_ids += [sg["id"] for sg in r_["segments"]]
+                else:
+                    cur_f += r_["duration"]
+                    best_f = max(best_f, cur_f)
+                    soft_run = 0.0
             elif r_["cat"] == "detour":
-                cur = 0.0
+                cur = cur_f = soft_run = 0.0
         sp["absorbed_max_min"] = best / 60
+        # Time on the span's own thread that the evaluator judged UNFOCUSED. It counts as focus
+        # (Rules doc: "I may still be thinking"), but when it is more than 20% of the span, or
+        # one stretch of 10 minutes or more, the person is asked whether it really was
+        # unfocused and should break the span. Their answer is stored per segment (focused 1/0).
+        sp["unfocused_min"] = soft_s / 60
+        sp["unfocused_max_min"] = soft_max / 60
+        sp["unfocused_seg_ids"] = soft_ids
+        sp["unfocused_ask"] = bool(soft_ids) and (soft_s > UNFOCUSED_ASK_FRAC * sp["duration"]
+                                                   or soft_max >= UNFOCUSED_ASK_STRETCH_S)
+        best = best_f
         # A span needs one unbroken block of `min_unbroken_min` (10) on its own object (user
         # rule 2026-11-17). The break threshold alone lets A 4 min / B 3 min / A 4 min ... run
         # on as one long span on A with B as contained interruptions, since no single absence
@@ -717,6 +839,8 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     for sp in qualifying:
         for d in sp["detours"]:
             d["is_event"] = True; d["inside_span"] = True
+            for sg in d["segments"]:
+                sg["diversion"] = True   # time off the span's thread, focused or not (for the timeline)
             (interruptions if d["state"] == "interrupted" else distractions).append(d)
     span_ends = {round(sp["end"]) for sp in qualifying}
     for r in runs:
@@ -788,8 +912,11 @@ def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
         "interruption_count": (sum(1 for r in se["interruptions"] if r.get("inside_span"))
                                + sum(1 for r in se["distractions"] if r.get("inside_span"))),
         "distraction_count": sum(1 for r in se["distractions"] if r.get("inside_span")),
-        # "Bounce-aways": every self-distraction event in the day, inside a focus span or not.
-        "bounce_aways": len(se["distractions"]),
+        # Rules doc: a self-distraction event can happen at any time of day; a BOUNCE-AWAY is
+        # one that happens during a focus span. (Until 2026-11-19 the app had these two names
+        # the other way round.)
+        "self_distraction_events": len(se["distractions"]),
+        "bounce_aways": sum(1 for r in se["distractions"] if r.get("inside_span")),
         "distracted_min": sum(d["duration"] for d in se["distractions"]) / 60,
         "interrupted_min": sum(d["duration"] for d in se["interruptions"]) / 60,
         "active_min": sum(s["duration"] for s in segs if s["state"] != "idle") / 60,

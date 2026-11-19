@@ -306,18 +306,31 @@ You can also ACT, but only through the tools:
 - open_review_question: put a question in the person's review queue for later, with options that each map to \
   a concrete judgment - use this when a call needs their eyes and they do not want to settle it now.
 - propose_rule: suggest a general rule for their rules document (they approve it with a click).
-How a block's STATE (focus / interrupted / distracted) is derived from these labels - you must work with this: \
-a 'continuation' block inherits the state of the block before it; a 'return' block is focus; a 'shift' \
-block starts a new thread and takes its kind (focus_start -> focus, detour -> interrupted, self_distraction -> \
-distracted); passive content is always distracted; correspondence content with no Toggl entry is interrupted - \
-UNLESS the person explicitly rules a block an exception (focus_exception=true: "this was correspondence and it \
-still counts as independent focus"); never set that on your own judgment, only when they ask for it. \
-So to make a stretch count as focused work: set its FIRST block to switch_label=shift with \
-shift_kind=focus_start (only when the person has ruled it was focused work; otherwise leave the kind null \
-and the app derives it), give the blocks inside it the right content with switch_label=continuation, and after \
-any block you leave out as a diversion (a feed flip, a chat) mark the next block of the thread as 'return' with \
-antecedent_id = an earlier block of that thread - otherwise it inherits the diversion's state. Hypothesized \
-spans are then recomputed from the blocks; you cannot create a span directly.
+How the app turns these labels into focus spans - you must work with this:
+- Every block has a focused/unfocused judgment (the QUALITY of attention in that block), separate from \
+which thread it belongs to. A focused block counts as focus; an unfocused one does not. Passive content is \
+never focus; correspondence content with no Toggl entry is not focus - UNLESS the person explicitly rules a \
+block an exception (focus_exception=true: "this was correspondence and it still counts as independent \
+focus"); never set that on your own judgment, only when they ask for it.
+- Threads come from the switch labels: a 'shift' block starts a new thread, a 'continuation' or 'return' block \
+belongs to the thread of its antecedent. A focus span is focused time on ONE thread, and it has to start with \
+10 continuous focused minutes. Time on a different thread inside a span is a diversion whether or not it was \
+focused (a quick purposeful purchase is a focused block and still a diversion); under 5 minutes it is a \
+contained interruption, at 5 minutes the span ended where it began.
+- Unfocused blocks on the span's OWN thread count as focus time while the unfocused judgment is only the \
+evaluator's ("I may still be thinking"). When the PERSON rules a block unfocused (focused=false set here), it \
+becomes time away from the span.
+- On a shift, self_distraction=true marks it as seeking stimulation without a clear intent (a planned break is \
+not one), and next_task=true marks it as the next task in a focused task block (the app joins those threads \
+into one block when a Toggl entry is running).
+- Blocks judged before 2026-11-19 have no focused judgment; for them a 'continuation' inherits the state of \
+the block before it, a 'return' is focus, and a 'shift' is focus, a detour or a distraction according to an \
+older kind label. Setting focused on such a block switches it to the rules above.
+So to make a stretch count as focused work: set focused=true on its blocks (only when the person has said it \
+was focused work), give them the right content, link them into one thread (first block switch_label=shift, the \
+rest continuation), and after any block you leave out as a diversion mark the next block of the thread as \
+'return' with antecedent_id = an earlier block of that thread. Hypothesized spans are then recomputed from \
+the blocks; you cannot create a span directly.
 Make a change only when the person has clearly asked for it or agreed to it; discuss first otherwise. Edit \
 every block the agreed change covers - the person expects the timeline to match what was agreed. Afterwards, state exactly what you changed. NEVER say you changed, queued, flagged or applied anything \
 unless a tool call in this reply actually did it; if a tool reports an error, say so. The log shows every block's \
@@ -336,8 +349,8 @@ About this person (their own words):
 _LABEL_DOC = ("content = what the block was: creative | task | correspondence | reading | planning | other | passive "
               "| meeting | idle | transition. switch_label = how it relates to the thread before it: continuation "
               "(same thread) | shift (attention moved to something new: a separate thread began) | return (back to an earlier thread; give "
-              "antecedent_id). hybrid = the activity was carried on inside a live discussion. null leaves a field "
-              "as judged.")
+              "antecedent_id). focused = the quality of attention in the block: true focused, false unfocused. "
+              "hybrid = the activity was carried on inside a live discussion. null leaves a field as judged.")
 
 DAY_TOOLS = [
     {"name": "set_segment_judgment",
@@ -350,10 +363,17 @@ DAY_TOOLS = [
          "content": {"type": ["string", "null"], "enum": ["creative", "task", "correspondence", "reading", "planning",
                                                          "other", "passive", "meeting", "idle", "transition", None]},
          "switch_label": {"type": ["string", "null"], "enum": ["continuation", "shift", "return", None]},
-         "shift_kind": {"type": ["string", "null"], "enum": ["focus_start", "detour", "self_distraction", None],
-                               "description": "With switch_label=shift only: what the new thread was. Set it "
-                                              "only when the person has explicitly ruled on it; null lets the app "
-                                              "derive it from what followed."},
+         "focused": {"type": ["boolean", "null"],
+                     "description": "The person's ruling on the quality of attention in these blocks: true = "
+                                    "focused, false = unfocused (which makes the block time away from a span "
+                                    "even on its own thread). Set it only when they have said so; null leaves "
+                                    "the evaluator's judgment."},
+         "self_distraction": {"type": ["boolean", "null"],
+                              "description": "With switch_label=shift only: true = they sought out stimulation "
+                                             "or distraction without a clear intent; false = a deliberate move."},
+         "next_task": {"type": ["boolean", "null"],
+                       "description": "With switch_label=shift only: true = this was the next task under the "
+                                      "same task-processing intention (part of a focused task block)."},
          "antecedent_id": {"type": ["integer", "null"]},
          "hybrid": {"type": ["boolean", "null"]},
          "focus_exception": {"type": ["boolean", "null"],
@@ -439,7 +459,7 @@ class DayChat:
                    f"{m['fully_absorbed_spans']} fully-absorbed span(s)); meetings/hybrid {m['meeting_focus_min']:.0f} min; "
                    f"correspondence {m['correspondence_min']:.0f} min; passive consumption {m['passive_min']:.0f} min; "
                    f"distracted {m['distracted_min']:.0f} min; interruptions inside spans {m['interruption_count']} "
-                   f"(self-distractions {m['distraction_count']}, bounce-aways all day {m['bounce_aways']}); "
+                   f"(bounce-aways, i.e. self-distractions during spans: {m['bounce_aways']}; self-distraction events all day: {m['self_distraction_events']}); "
                    f"{m['switches']} window switches; {m['short_breaks']} short inactivity breaks "
                    f"({m['short_break_min']:.0f} min).")
 
@@ -566,16 +586,15 @@ class DayChat:
 
         try:
             if name == "set_segment_judgment":
-                # the model is shown 'shift' / 'shift_kind'; the stored names are unchanged
-                args = dict(args, switch_label=stored_switch(args.get("switch_label")),
-                            interruption_kind=args.get("shift_kind", args.get("interruption_kind")))
+                # the model is shown 'shift'; the stored name is unchanged
+                args = dict(args, switch_label=stored_switch(args.get("switch_label")))
                 ids = [int(x) for x in (args.get("segment_ids") or ([args["segment_id"]] if "segment_id" in args else []))]
                 if not ids:
                     return "error: segment_ids is empty"
-                parts = [f"{k} -> {args[k]}" for k in ("content", "switch_label", "interruption_kind", "antecedent_id",
-                                                       "hybrid", "focus_exception") if args.get(k) is not None]
+                parts = [f"{k} -> {args[k]}" for k in ("content", "switch_label", "focused", "self_distraction",
+                                                       "next_task", "antecedent_id", "hybrid", "focus_exception")
+                         if args.get(k) is not None]
                 note = (args.get("note") or "").strip() or None
-                kind = args.get("interruption_kind") if args.get("switch_label") == "interruption" else None
                 done, errs = [], []
                 for sid in ids:
                     row = conn.execute("SELECT start, app FROM segments WHERE id=? AND start>=? AND start<?",
@@ -586,9 +605,10 @@ class DayChat:
                     try:
                         derive = edits.write_seg_review(
                             conn, sid, content=args.get("content"), switch_label=args.get("switch_label"),
-                            interruption_kind=kind, antecedent_id=args.get("antecedent_id"), hybrid=args.get("hybrid"),
+                            antecedent_id=args.get("antecedent_id"), hybrid=args.get("hybrid"),
                             note=note, chat_message_id=mid, focus_exception=args.get("focus_exception"),
-                            merge_existing=True)
+                            focused=args.get("focused"), self_distraction=args.get("self_distraction"),
+                            next_task=args.get("next_task"), merge_existing=True)
                     except edits.BadEdit as e:
                         errs.append(f"#{sid}: {e}")
                         continue

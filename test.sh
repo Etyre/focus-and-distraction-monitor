@@ -38,6 +38,9 @@ assert llm.llm_contact.extract({"content": [{"type": "text", "text": '{"ok": tru
 print("ok: preamble prepended once, tool present, marker + tool detected, clean output passes")
 PYEOF
 
+echo "--- span rules on hand-built days (Rules doc redesign, 2026-11-19)"
+$PY -m focus_monitor.span_selftest || fail=1
+
 echo "--- check (permissions; model lookup needs a key or network and may say FAILED)"
 run_to 60 $PY -m focus_monitor check 2>&1 | grep -v "^$" | sed 's/^/  /'
 

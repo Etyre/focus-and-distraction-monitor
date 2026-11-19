@@ -314,7 +314,7 @@ class FocusMenuBar(rumps.App):
             uncertain = conn.execute("""SELECT COUNT(*) FROM ensemble e LEFT JOIN reviews r ON r.switch_id=e.switch_id
                                         WHERE e.uncertain=1 AND r.switch_id IS NULL""").fetchone()[0]
             if self.cfg.count_events:
-                events = (f"{m['interruption_count']} interruptions · {m['distraction_count']} distractions "
+                events = (f"{m['interruption_count']} interruptions · {m['bounce_aways']} bounce-aways "
                           f"({_fmt_min(m['distracted_min'])})")
             else:
                 spans = stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())))

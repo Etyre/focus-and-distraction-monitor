@@ -67,9 +67,18 @@ def seg_line(s) -> str:
     bits = [t, "%4.1fm" % (s["duration"] / 60), s.get("state", ""), what, title]
     if s.get("content"):
         bits.append(f"<{s['content']}>" + (" <FOCUS EXCEPTION by ruling>" if s.get("focus_exception") else ""))
-    if s.get("label") and s["label"] != "continuation":
-        # the stored four-way label, in the words models are given: the three non-continuations
-        # are kinds of shift (attention moved); "interruption" is the span-level event only
+    if s.get("focused") is not None:
+        # judged under the 2026-11-19 redesign: a focus judgment per block, and the switch as
+        # continuation / shift / return with two yes-no flags on a shift
+        bits.append("<focused>" if s["focused"] else
+                    ("<unfocused, ruled by the person>" if s.get("user_unfocused") else "<unfocused>"))
+        if s.get("switch") == "interruption":
+            bits.append("<switch: shift" + (", self-distraction" if s.get("self_distraction") else "")
+                        + (", next task in the block" if s.get("next_task") else "") + ">")
+        elif s.get("switch") == "return":
+            bits.append("<switch: return>")
+    elif s.get("label") and s["label"] != "continuation":
+        # judged before the redesign: the stored four-way label, in the words models are given
         bits.append("<switch: " + {"interruption": "shift (detour)", "distraction": "shift (self_distraction)",
                                    "task_change": "shift (focus_start)"}.get(s["label"], s["label"]) + ">")
     if s.get("activity"):

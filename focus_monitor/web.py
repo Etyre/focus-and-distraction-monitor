@@ -112,7 +112,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception")} for s in segs]
+                                   "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
@@ -154,6 +154,8 @@ def api_day(day: str | None = None):
                              "focus_min": r["focus_min"], "detours": len(r["detours"]), "detour_min": r["detour_min"],
                              "subtype": r.get("subtype", "focus"), "fully_absorbed": r.get("fully_absorbed", False),
                              "hybrid": bool(r.get("hybrid")),
+                             "unfocused_min": r.get("unfocused_min", 0.0), "unfocused_max_min": r.get("unfocused_max_min", 0.0),
+                             "unfocused_ask": bool(r.get("unfocused_ask")), "unfocused_seg_ids": r.get("unfocused_seg_ids", []),
                              "mixed": r.get("mixed_read_create", False), "summary": _summary(r),
                              "coherence_issue": _coherence(r), "title": _title(r),
                              "events": [{"start": e["start"], "end": e["end"], "kind": e["state"]} for e in r["detours"]],
@@ -272,7 +274,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     row = _summ.lookup(c, sp["start"], sp["end"])
     coherence_issue = (row["issue"] if row is not None and not row["coherent"] else None)
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
-    keys = ("clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+    keys = ("clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
             "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
     in_span_ids = {id(s) for s in sp["segments"]}
     segs = []
@@ -289,6 +291,8 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "summary": row["summary"] if row else None,
             "title": row["title"] if row else None,
             "coherence_issue": coherence_issue,
+            "unfocused_min": sp.get("unfocused_min", 0.0), "unfocused_max_min": sp.get("unfocused_max_min", 0.0),
+            "unfocused_ask": bool(sp.get("unfocused_ask")), "unfocused_seg_ids": sp.get("unfocused_seg_ids", []),
             "apps": _apps_by_time(sp["segments"]),
             "toggl": _toggl_with_coverage(c, sp["start"], sp["end"]),
             "phone": phone.window(cfg, w0, w1),
@@ -350,6 +354,29 @@ def api_span_review(r: SpanReview):
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+class SpanUnfocused(BaseModel):
+    segment_ids: list[int]
+    unfocused: bool            # True = "yes, that time was unfocused"; False = "no, I was still on it"
+    note: str | None = None
+
+
+@app.post("/api/span/unfocused")
+def api_span_unfocused(r: SpanUnfocused):
+    """The person's answer to "the evaluator judged part of this span unfocused - was it?".
+    Stored as their focused/unfocused ruling on each of those blocks. Ruled unfocused, the time
+    becomes time away from the span (5 minutes of it ends the span there); ruled focused, it is
+    ordinary focus time. Either way the question is settled and stops being asked."""
+    c = conn()
+    note = (r.note or "").strip() or ("(answered: this time in the span was unfocused)" if r.unfocused
+                                      else "(answered: this time in the span was focus, not unfocused)")
+    try:
+        for sid in r.segment_ids[:500]:
+            edits.write_seg_review(c, int(sid), focused=not r.unfocused, note=note, merge_existing=True)
+    except edits.BadEdit as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "n": len(r.segment_ids)}
 
 
 @app.delete("/api/span/review")
@@ -491,7 +518,7 @@ def api_switch(switch_id: int):
     full["timeline"] = []
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
-        keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+        keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
                 "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
@@ -641,7 +668,7 @@ def api_questions_queue(limit: int = 1000):
     except Exception:
         log.exception("question scoring failed")
     out = []
-    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     rows = [dict(r) for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
                                  g.app, g.title, g.domain,
@@ -734,7 +761,7 @@ def api_question_context(qid: int):
     if not g:
         raise HTTPException(404)
     t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
-    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "app", "domain", "title",
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     timeline = [{k: s.get(k) for k in keys} for s in stats.labelled_segments(c, t0, t1) if s["duration"] > 0]
     return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
@@ -769,15 +796,16 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                  else (_json.loads(q["undo"]) if q["status"] in ("unsure", "none") and q["undo"] else {}))
         ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
         undo = {"uncertain": old_u.get("uncertain", ev0["uncertain"] if ev0 else None)}
-        if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None:
+        if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None:
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
             undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
             osw = o.get("switch_label")
             ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id"))
                     if osw in ("continuation", "return")
                     else (None if osw else (prev["antecedent_id"] if prev else None)))
-            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid, chat_message_id, focus_exception)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            _keep = lambda k: prev[k] if prev is not None and k in prev.keys() else None
+            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
+                      " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (o["segment_id"],
                        o.get("content") or (prev["content"] if prev else None),
                        osw or (prev["switch_label"] if prev else None),
@@ -786,7 +814,10 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
                        (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None)),
                        chat_message_id if chat_message_id is not None else o.get("proposed_from"),
-                       prev["focus_exception"] if prev else None))  # a question answer never touches the ruling
+                       prev["focus_exception"] if prev else None,  # a question answer never touches the ruling
+                       # the person's focused/unfocused ruling: set by the option, else kept
+                       (int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused")),
+                       (None if osw else _keep("self_distraction")), (None if osw else _keep("next_task"))))
             from . import propagation
             propagation.note_event(c, o["segment_id"])
             old = _NEW2OLD.get((o.get("switch_label"),
@@ -966,7 +997,7 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
             opts.append({"label": j["label"], "segment_id": segment_id,
                          "switch_label": j.get("switch_label"), "antecedent_id": j.get("antecedent_id"),
                          "interruption_kind": None, "content": j.get("content"), "hybrid": j.get("hybrid"),
-                         "proposed_from": mid})
+                         "focused": j.get("focused"), "proposed_from": mid})
             idx = len(opts) - 1
             with db.tx(c):
                 c.execute("UPDATE review_questions SET options=? WHERE id=?", (_json.dumps(opts), q["id"]))
@@ -978,6 +1009,7 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
     try:
         derive = edits.write_seg_review(c, segment_id, content=j.get("content"), switch_label=j.get("switch_label"),
                                         antecedent_id=j.get("antecedent_id"), hybrid=j.get("hybrid"),
+                                        focused=j.get("focused"),
                                         note=j.get("note") or j["label"], chat_message_id=mid)
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
@@ -1046,6 +1078,9 @@ class SegEvalReview(BaseModel):
     note: str | None = None
     hybrid: bool | None = None  # the activity was done inside a live discussion (None = no ruling)
     focus_exception: bool | None = None  # the person's explicit ruling: counts as independent focus anyway
+    focused: bool | None = None           # the person's ruling: attention was focused (True) / unfocused (False)
+    self_distraction: bool | None = None  # on a shift: sought out stimulation without a clear intent
+    next_task: bool | None = None         # on a shift: the next task under the same task-processing intention
 
 
 _valid_antecedent = edits.valid_antecedent
@@ -1069,7 +1104,9 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
     try:
         derive = edits.write_seg_review(c, segment_id, content=r.content, switch_label=r.switch_label,
                                         interruption_kind=r.interruption_kind, antecedent_id=r.antecedent_id,
-                                        note=r.note, hybrid=r.hybrid, focus_exception=r.focus_exception)
+                                        note=r.note, hybrid=r.hybrid, focus_exception=r.focus_exception,
+                                        focused=r.focused, self_distraction=r.self_distraction,
+                                        next_task=r.next_task)
     except edits.BadEdit as e:
         raise HTTPException(400 if "no segment" not in str(e) else 404, str(e))
     if derive:

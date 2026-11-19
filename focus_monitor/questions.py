@@ -38,7 +38,7 @@ class QOption(BaseModel):
     segment_id: int = Field(description="The segment this option's edit applies to.")
     switch_label: str | None = Field(default=None, description="continuation | shift | return, when the option settles the thread relation. (shift = attention moved to something new, a separate thread.)")
     antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (shift) and content-only options.")
-    shift_kind: str | None = Field(default=None, description="ALWAYS leave None. Kinds (detour vs focus_start vs self_distraction) are derived by the app from what the thread became - the person is never asked to choose them.")
+    focused: bool | None = Field(default=None, description="Only when the DOUBT is whether the person's attention was focused in the segment: true for the option saying it was focused, false for the option saying it was unfocused. None for every other option.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
     hybrid: bool | None = Field(default=None, description="True when the option says the activity was being done INSIDE a live discussion with someone (e.g. 'reading the bill with Dave on a call while taking notes') - content stays the activity; False when the option asserts solo work; None when the option says nothing about it.")
 
@@ -109,8 +109,8 @@ omit it.
 In general, do NOT ask the person whether something was "a quick detour or the start of a new \
 focus" - that answer mixes two facts: whether it was a separate thread (theirs to say) and \
 whether it went on long and coherently enough to be its own span (the app records the data and \
-derives this). Options therefore never set shift_kind; asserting 'shift' is \
-enough - the app derives the kind from what followed. The standing exception: a confusion or \
+derives this). Options therefore never say what kind of shift it was; asserting 'shift' is \
+enough - the app works out the rest from what followed. The standing exception: a confusion or \
 uncertainty the system genuinely cannot resolve from its data should always be surfaced to the \
 person - but then the question must name the actual confusion in its own terms, not launder it \
 into a label choice.
@@ -405,7 +405,7 @@ def _resolved_edit(conn, o: dict) -> tuple:
         ante = None
     content = o["content"] if o["content"] is not None else (cur["content"] if cur else None)
     hybrid = o["hybrid"] if o["hybrid"] is not None else (bool(cur["hybrid"]) if cur and cur["hybrid"] is not None else None)
-    return (o["segment_id"], sw, ante, content, hybrid)
+    return (o["segment_id"], sw, ante, content, hybrid, o.get("focused"))
 
 
 def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
@@ -422,7 +422,7 @@ def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
 STAKE_METRICS = {"total_focus_min": ("independent focus", 1.0),
                  "longest_focus_min": ("longest span", 1.0),
                  "longest_absorbed_min": ("longest fully absorbed", 1.0),
-                 "bounce_aways": ("bounce-aways", 10.0)}
+                 "self_distraction_events": ("self-distraction events", 10.0)}
 PRIORITY_CUT = 4.0   # minute-equivalents x uncertainty; at or above = the priority tier
 
 
@@ -487,7 +487,7 @@ def score_questions(conn, limit: int | None = None, only_stale: bool = True) -> 
         vals = {k: [base_cache[day][k]] for k in STAKE_METRICS}
         for o in opts:
             sid = o.get("segment_id") or r["segment_id"]
-            ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid")}}
+            ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid", "focused")}}
             if not any(v is not None for v in ov[sid].values()):
                 continue
             m = stats.daily_metrics(conn, day, ov)
@@ -515,10 +515,11 @@ def stakes_text(detail_json: str | None) -> str:
         return ""
     parts = []
     for k, (name, w) in STAKE_METRICS.items():
-        v = d.get(k, 0) or 0
-        if k == "bounce_aways" and v >= 1:
+        # stakes scored before 2026-11-19 stored the all-day count under its old name
+        v = d.get(k, d.get("bounce_aways", 0) if k == "self_distraction_events" else 0) or 0
+        if k == "self_distraction_events" and v >= 1:
             parts.append((v * w, f"{name} by {v:.0f}"))
-        elif k != "bounce_aways" and v >= 1:
+        elif k != "self_distraction_events" and v >= 1:
             parts.append((v * w, f"{name} by {v:.0f} min"))
     parts.sort(reverse=True)
     return ("could move " + ", ".join(t for _, t in parts[:2])) if parts else "no effect on the day's metrics"
@@ -622,10 +623,13 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                  + f"id={s['id']} " + summaries.seg_line(s)
                  + (f"  // {rats[s['id']][:90]}" if s["id"] in rats else "")
                  for s in seg_ctx if s["duration"] > 0]
-        ev = conn.execute("SELECT content, switch_label, interruption_kind, rationale FROM seg_evals WHERE segment_id=?",
+        ev = conn.execute("SELECT content, switch_label, focused, self_distraction, next_task, rationale FROM seg_evals WHERE segment_id=?",
                           (t["segment_id"],)).fetchone()
-        cur = (f"current judgment: content={ev['content']}, switch={shown_switch(ev['switch_label'])}, "
-               f"kind={ev['interruption_kind']} - {ev['rationale']}") if ev else "(no judgment)"
+        cur = (f"current judgment: content={ev['content']}, switch={shown_switch(ev['switch_label'])}"
+               + ("" if ev["focused"] is None else (", focused" if ev["focused"] else ", unfocused"))
+               + (", self-distraction" if ev["self_distraction"] else "")
+               + (", next task in the block" if ev["next_task"] else "")
+               + f" - {ev['rationale']}") if ev else "(no judgment)"
         parts.append(f"DOUBT {i + 1} - segment id={t['segment_id']} (source: {t['source']}; {t['reason']})\n"
                      f"{cur}\nSurrounding activity (>>> marks the segment in doubt):\n" + "\n".join(lines))
     unsure = conn.execute("""SELECT q.question, q.note, g.app, g.domain, g.title, COALESCE(g.end, g.start) - g.start AS secs
@@ -702,7 +706,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                 opts.append({"label": o.label, "segment_id": o.segment_id,
                              "switch_label": o.switch_label, "antecedent_id": ante,
                              "interruption_kind": None, "content": o.content,
-                             "hybrid": o.hybrid})
+                             "hybrid": o.hybrid, "focused": o.focused})
             # Options must differ in the EDIT they make, not just in their wording. The model
             # likes to split one reading by what came after it ("a one-off question" vs "the
             # start of a run of lookups") - both write the same new thread on this segment, and

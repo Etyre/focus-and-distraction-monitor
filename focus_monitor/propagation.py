@@ -27,12 +27,19 @@ LOOKBACK_DAYS = 4
 MAX_CANDIDATES = 80
 
 
+def _foc(row, unset: str = "?") -> str:
+    """A row's focused/unfocused judgment in words (rows judged before the redesign have none)."""
+    if row is None or "focused" not in row.keys() or row["focused"] is None:
+        return unset
+    return "focused" if row["focused"] else "unfocused"
+
+
 class PropVerdict(BaseModel):
     segment_id: int
     verdict: str = Field(description="'applies' (the correction clearly covers this segment too), 'does_not_apply', or 'uncertain' (plausible but the person should decide - it will be flagged for their review).")
     content: str | None = Field(default=None, description="When applies: the corrected content label.")
     switch_label: str | None = Field(default=None, description="When applies and the switch judgment changes: continuation, shift (attention moved to something new), or return.")
-    shift_kind: str | None = Field(default=None, description="When applies and switch_label is 'shift': self_distraction, focus_start, or detour.")
+    focused: bool | None = Field(default=None, description="When applies and the focus judgment changes: true = attention was focused in the segment, false = unfocused. null leaves it as judged.")
     note: str = Field(description="One short sentence.")
 
 
@@ -98,9 +105,9 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         correction = (f"The person corrected segment id={seg['id']} "
                       f"({seg['app']} {seg['domain'] or ''} | {(seg['title'] or '')[:70]}).\n"
                       f"Model had said: content={old['content'] if old else '?'}, "
-                      f"switch={shown_switch(old['switch_label']) if old else '?'}, kind={old['interruption_kind'] if old else '?'}.\n"
+                      f"switch={shown_switch(old['switch_label']) if old else '?'}, focus={_foc(old)}.\n"
                       f"The person set: content={rv['content'] or '(unchanged)'}, "
-                      f"switch={shown_switch(rv['switch_label']) or '(unchanged)'}, kind={rv['interruption_kind'] or '(unchanged)'}.\n"
+                      f"switch={shown_switch(rv['switch_label']) or '(unchanged)'}, focus={_foc(rv, '(unchanged)')}.\n"
                       f"Their note: {rv['note'] or '(none)'}")
         cands = conn.execute("""
             SELECT g.*, e.content AS e_content, e.switch_label AS e_switch,
@@ -166,11 +173,23 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                     if v.content in CONTENTS:
                         sets.append("content=?"); args.append(v.content)
                     v.switch_label = stored_switch(v.switch_label)  # tolerate the shown name 'shift'
+                    cur_row = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (v.segment_id,)).fetchone()
+                    foc = v.focused if v.focused is not None else (
+                        None if cur_row is None or cur_row["focused"] is None else bool(cur_row["focused"]))
+                    if v.focused is not None:
+                        sets.append("focused=?"); args.append(int(v.focused))
+                    sw_new = v.switch_label if v.switch_label in SWITCHES else (cur_row["switch_label"] if cur_row else None)
                     if v.switch_label in SWITCHES:
                         sets.append("switch_label=?"); args.append(v.switch_label)
-                        sets.append("interruption_kind=?")
-                        args.append(v.shift_kind if (v.switch_label == "interruption"
-                                    and v.shift_kind in KINDS) else None)
+                        if v.switch_label != "interruption":
+                            sets.append("self_distraction=0"); sets.append("next_task=0")
+                    if (v.switch_label in SWITCHES or v.focused is not None) and foc is not None:
+                        # the older per-shift kind follows from the fields (evaluator.kind_of)
+                        from .evaluator import kind_of
+                        sd = bool(cur_row["self_distraction"]) if cur_row is not None and sw_new == "interruption" else False
+                        sets.append("interruption_kind=?"); args.append(kind_of(sw_new, foc, sd))
+                    elif v.switch_label in SWITCHES and v.switch_label != "interruption":
+                        sets.append("interruption_kind=NULL")
                     if not sets:
                         continue
                     sets.append("uncertain=0")

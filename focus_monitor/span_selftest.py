@@ -1,0 +1,194 @@
+"""Self-test of the span rules on hand-built days (no database, no model calls).
+
+    python -m focus_monitor.span_selftest
+
+Each case builds a list of judged segments the way stats.labelled_segments would hand them to
+stats.spans_and_events, for segments judged under the 2026-11-19 redesign (a focused/unfocused
+field per segment; continuation / shift / return per switch; self-distraction and next-task
+flags on a shift), and checks the spans and events against the Rules doc. Run by ./test.sh.
+"""
+from __future__ import annotations
+
+import sys
+
+from . import stats
+
+T0 = 1_800_000_000.0   # any fixed start; the tests never look at the clock
+
+
+class Day:
+    def __init__(self):
+        self.segs: list[dict] = []
+        self.t = T0
+
+    def add(self, minutes, what, *, focused=True, switch="continuation", ante=None, sd=False,
+            nxt=False, toggl=None, content="creative", user_unfocused=False, domain=None):
+        """Append one segment. `what` names the window (app); returns its id."""
+        sid = len(self.segs) + 1
+        if ante is None and switch == "continuation" and self.segs:
+            ante = self.segs[-1]["id"]
+        if sd:
+            self._sd = True
+        elif switch in ("interruption", "return"):
+            self._sd = False
+        sd_live = getattr(self, "_sd", False)
+        state = "focus" if focused else ("distracted" if sd_live else "interrupted")
+        if content == "passive":
+            state = "distracted" if sd_live else "interrupted"
+        label = "continuation"
+        if switch == "interruption":
+            label = "distraction" if sd else ("task_change" if state == "focus" else "interruption")
+        dur = minutes * 60.0
+        self.segs.append({
+            "id": sid, "app": what, "domain": domain or "", "title": "", "url": "",
+            "start": self.t, "end": self.t + dur, "clip_start": self.t, "clip_end": self.t + dur,
+            "duration": dur, "state": state, "label": label, "content": content,
+            "focused": focused, "switch": switch, "self_distraction": bool(sd and switch == "interruption"),
+            "next_task": bool(nxt and switch == "interruption"), "user_unfocused": user_unfocused,
+            "antecedent_id": ante if switch != "interruption" else None, "antecedent_p": 1.0,
+            "toggl_id": toggl, "tg_near_a": toggl, "tg_near_b": toggl, "toggl_tags": "", "toggl_desc": "",
+            "source": "eval", "neutral": 0, "idle": 0, "hybrid": 0, "switch_id": sid, "uncertain": 0,
+        })
+        self.t += dur
+        return sid
+
+    def run(self):
+        return stats.spans_and_events(self.segs, min_focus_min=10, break_min=5)
+
+
+def _mins(sp):
+    return round(sp["focus_min"], 1)
+
+
+def cases():
+    out = []
+
+    def case(name):
+        def deco(fn):
+            out.append((name, fn))
+            return fn
+        return deco
+
+    @case("a quick focused purchase mid-writing is a diversion, not unfocused time")
+    def _():
+        d = Day()
+        a = d.add(12, "Essay")
+        d.add(2, "Amazon", switch="interruption", content="task")
+        d.add(10, "Essay", switch="return", ante=a)
+        se = d.run()
+        assert len(se["focus_spans"]) == 1, se["focus_spans"]
+        sp = se["focus_spans"][0]
+        assert _mins(sp) == 22 and len(sp["detours"]) == 1, (_mins(sp), sp["detours"])
+        assert d.segs[1]["state"] == "focus"            # no "unfocused" mark on the purchase
+        assert sp["detours"][0]["state"] == "interrupted"  # a diversion, not a self-distraction
+
+    @case("unfocused time on the span's own thread counts as focus; no question under the thresholds")
+    def _():
+        d = Day()
+        d.add(15, "Essay"); d.add(8, "Essay", focused=False); d.add(20, "Essay")
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 43, [(_mins(x)) for x in sp]
+        assert round(sp[0]["unfocused_min"]) == 8 and not sp[0]["unfocused_ask"]
+        assert not sp[0]["detours"]
+
+    @case("more than 20% unfocused, or a 10-minute unfocused stretch, raises the question")
+    def _():
+        d = Day()
+        d.add(15, "Essay"); d.add(12, "Essay", focused=False); d.add(20, "Essay")
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and sp[0]["unfocused_ask"] and len(sp[0]["unfocused_seg_ids"]) == 1
+        d = Day()
+        d.add(12, "Essay"); d.add(4, "Essay", focused=False); d.add(2, "Essay"); d.add(4, "Essay", focused=False)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and sp[0]["unfocused_ask"], sp   # 8 of 22 minutes = 36%
+
+    @case("the person ruling that time unfocused makes it time away, and 5 minutes of it ends the span")
+    def _():
+        d = Day()
+        d.add(12, "Essay"); d.add(8, "Essay", focused=False, user_unfocused=True); d.add(12, "Essay")
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [12, 12], [_mins(x) for x in sp]
+
+    @case("a span starts with 10 continuous FOCUSED minutes; unfocused time does not start one")
+    def _():
+        d = Day()
+        d.add(4, "Essay"); d.add(7, "Essay", focused=False); d.add(12, "Essay")
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 12, [_mins(x) for x in sp]
+        d = Day()
+        d.add(30, "Essay", focused=False)
+        se = d.run()
+        assert not se["focus_spans"] and not se["disqualified"], se
+
+    @case("moving to the next task joins a focused task block only under a running Toggl entry")
+    def _():
+        d = Day()
+        d.add(6, "Mail", content="task", toggl=7)
+        d.add(6, "Taxes", content="task", switch="interruption", nxt=True, toggl=7)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 12 and sp[0]["subtype"] == "focused_task", sp
+        d = Day()
+        d.add(6, "Mail", content="task")
+        d.add(6, "Taxes", content="task", switch="interruption", nxt=True)
+        se = d.run()
+        assert not se["focus_spans"], se["focus_spans"]
+
+    @case("a glance at a feed between tasks is a diversion from the block")
+    def _():
+        d = Day()
+        d.add(11, "Mail", content="task", toggl=7)
+        d.add(1, "Feed", switch="interruption", sd=True, focused=False, content="passive", toggl=7)
+        d.add(7, "Taxes", content="task", switch="interruption", nxt=True, toggl=7)
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 18 and len(sp[0]["detours"]) == 1, sp
+        assert sp[0]["detours"][0]["state"] == "distracted"   # the glance was a self-distraction
+        assert len(se["distractions"]) == 1
+
+    @case("a planned passive break after a span is not a self-distraction")
+    def _():
+        d = Day()
+        d.add(15, "Essay")
+        d.add(10, "Video", switch="interruption", focused=False, content="passive")
+        se = d.run()
+        assert len(se["focus_spans"]) == 1 and not se["distractions"] and len(se["interruptions"]) == 1, se
+        assert d.segs[1]["state"] == "interrupted"
+
+    @case("a shift inside the same window is a new thread (the pointer is read before the window)")
+    def _():
+        d = Day()
+        a = d.add(12, "Chrome", domain="docs.google.com")
+        d.add(6, "Chrome", domain="docs.google.com", switch="interruption", content="task")
+        d.add(11, "Chrome", domain="docs.google.com", switch="return", ante=a)
+        sp = d.run()["focus_spans"]
+        # 6 minutes away ends the first span where it was left; the essay then starts a new one
+        assert [_mins(x) for x in sp] == [12, 11], [_mins(x) for x in sp]
+
+    @case("several diversions in a row are still one event")
+    def _():
+        d = Day()
+        a = d.add(12, "Essay")
+        d.add(1, "Mail", switch="interruption", focused=False, content="correspondence")
+        d.add(2, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        d.add(10, "Essay", switch="return", ante=a)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and sp[0]["detours"][0]["state"] == "distracted", sp
+
+    return out
+
+
+def main() -> int:
+    failed = 0
+    for name, fn in cases():
+        try:
+            fn()
+            print(f"  ok    {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f"  FAIL  {name}\n        {str(e)[:400]}")
+    print(f"span self-test: {len(cases()) - failed} passed, {failed} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

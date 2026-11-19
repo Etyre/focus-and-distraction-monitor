@@ -371,6 +371,18 @@ def connect() -> sqlite3.Connection:
     srcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
     if srcols and "focus_exception" not in srcols:
         conn.execute("ALTER TABLE seg_reviews ADD COLUMN focus_exception INTEGER")
+    # Redesign 2026-11-19 (Rules doc): each segment carries focused/unfocused, and a shift
+    # carries two yes/no judgments. NULL = judged before the redesign (or by the local models),
+    # which stats.py reads through the older switch-kind path.
+    for t in ("seg_evals", "seg_reviews"):
+        tcols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
+        for col in ("focused", "self_distraction", "next_task"):
+            if tcols and col not in tcols:
+                conn.execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
+    conn.execute("""CREATE TABLE IF NOT EXISTS eval_holds (  -- the evaluator asked to judge these later
+        segment_id INTEGER PRIMARY KEY,   -- first segment it held back (everything after waits too)
+        until REAL NOT NULL,              -- do not ask again before this time
+        created REAL NOT NULL)""")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
         conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")

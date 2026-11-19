@@ -27,11 +27,27 @@ first commit 2026-08-29, in continuous development since.
   applies regardless.
 * **Learning**: reviews retrain the logistic model and the per-app/domain priors immediately, and
   the 40 most recent reviews (with your notes) are shown to Claude as examples.
-* **Labels** (on switches): `continuation` = the same state continues (reading↔notes, but also
-  feed→feed while distracted or Slack→Signal while on a detour); `interruption`; `distraction`;
-  `focus start` (internally `task_change`) = focused work begins or resumes here. A segment's state
-  (focus / interrupted / distracted / away) follows from the label of the switch into it. Focus spans =
-  maximal runs of focused segments; a distraction *event* = maximal run of distracted segments.
+* **Judgments** (redesigned 2026-11-19 to match the Rules doc). For every segment the evaluator
+  gives: its content type; whether attention in it was **focused or unfocused**; and the switch
+  into it, as `continuation`, `shift` (attention moved to something new) or `return`, with a
+  pointer to the earlier segment it continues. On a shift it adds two yes/no judgments:
+  **self-distraction** (sought out stimulation without a clear intent) and **next task** (the
+  next task under the same task-processing intention). From these the app works out the rest:
+  * A *thread* is a chain of segments linked by those pointers; a shift starts a new one.
+  * A *focus span* is focused time on one thread. It starts with 10 continuous focused minutes.
+  * A *diversion* (attention-interruption event) is any time inside a span that is off the
+    span's thread, focused or not. A quick purposeful purchase is a focused segment and still a
+    diversion. Under 5 minutes it is counted inside the span; at 5 minutes the span ended.
+  * Unfocused time on the span's own thread counts as focus ("I may still be thinking"). When
+    it is more than 20% of a span, or one stretch of 10+ minutes, the span panel asks whether
+    it really was unfocused; "yes" makes that time a diversion.
+  * A *focused task block* is several threads joined by next-task shifts, under a running Toggl
+    entry. Diversions are measured against the block.
+  * A *self-distraction event* is a self-distraction shift at any time of day; a *bounce-away*
+    is one during a focus span.
+  Segments judged before the redesign have no focused/unfocused field. They are read the older
+  way: a four-way label on the switch (`continuation`, `interruption` = detour, `distraction`,
+  `focus start`, internally `task_change`), with the state inherited through continuations.
 * **Phase 1 = focus spans.** `count_events = false` hides interruption/distraction counts everywhere;
   the labels are still produced because they decide where a span breaks. The Day view shows each
   span with what ended it (interrupted / distracted / away / new task) and the Toggl entries inside it.
@@ -41,6 +57,7 @@ first commit 2026-08-29, in continuous development since.
   of focus (`min_focus_span_min`; it was 15 until 2026-11-17, against the Rules doc's 10), including one
   continuous block of 10 min with no contained detour (`min_unbroken_min`). "Length" is wall-clock; "focused" excludes contained detours. The span
   starts at that block: a choppy opening before the first clean 10 minutes is cut off and kept as short focus.
+  The opening block has to be time judged focused.
 * **Toggl as intent**: set your Toggl Track API token from the menu (or Keychain account `toggl`).
   The synced table is also served read-only at `GET /api/toggl/current` and `GET /api/toggl/entries?days=N`
   (added 2026-11-11) so the executive assistant reads Toggl from here instead of polling Toggl itself; its
@@ -149,6 +166,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
 | `focus_monitor/efforts.py` | Effort-ladder shadow calls and the effort judge (which effort level is good enough). |
 | `focus_monitor/edits.py`, `seg_models.py`, `stats.py`, `toggl.py`, `db.py` | Edits with provenance, label space, metrics/spans, Toggl sync, SQLite schema and helpers. |
+| `focus_monitor/span_selftest.py` | Self-test of the span rules on hand-built days (`python -m focus_monitor.span_selftest`; run by `test.sh`). |
 | `focus_monitor/web.py` | FastAPI server for the dashboard and its API (port 8790). |
 | `focus_monitor/dashboard.html` | The whole dashboard (Day, Captures, Trends, Review, Models, Efforts). Drafts in every text field persist in `localStorage`. |
 | `focus_monitor/menubar.py`, `icons.py` | The menu bar eye (rumps) and its icons. |
@@ -199,6 +217,7 @@ export ANTHROPIC_API_KEY=sk-ant-...      # for dev runs from a shell (put this i
 
 .venv/bin/python -m focus_monitor check  # permissions + model access
 ./test.sh                                # end-to-end self-test in a temp data dir (no model calls, no port 8790)
+.venv/bin/python -m focus_monitor.span_selftest   # just the span rules, on hand-built days (a few seconds)
 
 ./build.sh                               # -> dist/Focus Monitor.app   (same as .venv/bin/python build_app.py)
 ./install.sh                             # build + Login Item + relaunch if running; safe to rerun
@@ -256,6 +275,41 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+* **The app's abstractions were rebuilt to match the Rules doc (2026-11-19).** Before, the
+  evaluator gave each shift a "kind" (focus start / detour / self-distraction) and every later
+  segment inherited that through continuations. That one field was doing four jobs: saying
+  whether time was focused, whether it was a diversion, whether it was a self-distraction, and
+  where a span could start. The doc keeps these apart, so the app now does too:
+  * `seg_evals` / `seg_reviews` have `focused`, `self_distraction`, `next_task` (NULL on rows
+    from before the change). `evaluator.SegJudgement` asks for them; `shift_kind` is gone from
+    the model's output. The old `interruption_kind` column is still written, derived by
+    `evaluator.kind_of`, so the local models, old corrections and old code paths keep working.
+  * `stats.labelled_segments` takes a segment's state from `focused` when it has one. "Passive
+    is never focus" and "correspondence without Toggl is never focus" are still vetoes.
+    A pass-through or input-idle segment keeps inheriting the state before it: a pause in
+    focused work stays focused, and only the collector's 10-minute idle ends a span.
+  * `stats._runs3` adds *soft* runs: unfocused time that continues a thread. `_assemble`
+    counts them as focus inside a running span on that thread; they cannot start a span or
+    count toward its opening 10 minutes. Time the person ruled unfocused is never soft.
+  * `stats._same_task` reads the evaluator's judgment before the "same window" shortcut for
+    these segments (Rules doc: hand-coded rules may veto, never affirm): a shift is a new
+    thread even in the same window, unless it is a next-task shift under a running Toggl entry.
+  * "Self-distraction" is about intent, not content. A planned video break is passive and
+    unfocused but not a self-distraction, so passive content no longer forces "distracted" on
+    redesigned rows; a stretch of time away counts as a self-distraction when it contains a
+    self-distraction shift.
+  * Names: the app had "bounce-aways" as the all-day count and "self-distractions" as the
+    in-span count; the doc has them the other way round. `daily_metrics` now returns
+    `self_distraction_events` (all day) and `bounce_aways` (in spans).
+  * A return to something left more than 10 minutes ago is stored as a shift (`RETURN_MAX_S`).
+  * Hold-off: the evaluator may answer with `hold_from`, leaving the end of a chunk to be
+    judged later (table `eval_holds`, retried after 15 minutes, allowed for an hour).
+  History is untouched: every daily number for the 28 days before the change came out
+  identical under the new code (checked field by field). Checked with `python -m
+  focus_monitor.span_selftest` (ten hand-built days), two real evaluator calls on a copy of the
+  database, and a simulated hold. Not checked with real model calls: the question generator,
+  day chat and propagation prompts, which were reworded to the new fields.
 
 * **"Shift" and "interruption" are two things (renamed 2026-11-17).** The Rules doc defines an
   attention-interruption event as leaving the object of a focus span. The evaluator's switch

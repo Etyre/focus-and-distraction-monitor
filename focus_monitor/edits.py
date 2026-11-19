@@ -38,10 +38,13 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
                      interruption_kind: str | None = None, antecedent_id: int | None = None,
                      note: str | None = None, hybrid: bool | None = None,
                      chat_message_id: int | None = None, focus_exception: bool | None = None,
-                     merge_existing: bool = False) -> bool:
+                     merge_existing: bool = False, focused: bool | None = None,
+                     self_distraction: bool | None = None, next_task: bool | None = None) -> bool:
     """Record the person's judgment of a segment (authoritative; replaces any earlier edit).
-    Returns True when an interruption was asserted without a kind - the caller then kicks the
-    evaluator's kind derivation."""
+    `focused` is their ruling on the quality of attention in the segment (True focused, False
+    unfocused, None no ruling); `self_distraction` and `next_task` are their rulings on a shift.
+    Returns True when a shift (a separate thread) was asserted with nothing said about what
+    followed - the caller then has the evaluator re-judge the stretch with that ruling in hand."""
     if content is not None and content not in CONTENTS:
         raise BadEdit(f"bad content label {content!r}")
     switch_label = stored_switch(switch_label)  # models are shown 'shift'
@@ -61,16 +64,25 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
             if switch_label is None:
                 switch_label, interruption_kind, antecedent_id = prev["switch_label"], prev["interruption_kind"], prev["antecedent_id"]
             hybrid = hybrid if hybrid is not None else (None if prev["hybrid"] is None else bool(prev["hybrid"]))
+            _pb = lambda k: None if prev[k] is None else bool(prev[k])
+            focused = focused if focused is not None else _pb("focused")
+            self_distraction = self_distraction if self_distraction is not None else _pb("self_distraction")
+            next_task = next_task if next_task is not None else _pb("next_task")
             focus_exception = (focus_exception if focus_exception is not None
                                else (None if prev["focus_exception"] is None else bool(prev["focus_exception"])))
             note = note or prev["note"]
     with db.tx(c):
         ante = valid_antecedent(c, segment_id, antecedent_id) if switch_label in ("continuation", "return") else None
+        _i = lambda v: None if v is None else int(bool(v))
+        if switch_label and switch_label != "interruption":
+            self_distraction = next_task = None   # the two shift judgments only mean something on a shift
         c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id,"
-                  " note, created, hybrid, chat_message_id, focus_exception) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  " note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
+                  " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (segment_id, content, switch_label, interruption_kind, ante, note, time.time(),
                    None if hybrid is None else int(hybrid), chat_message_id,
-                   None if focus_exception is None else int(focus_exception)))
+                   None if focus_exception is None else int(focus_exception),
+                   _i(focused), _i(self_distraction), _i(next_task)))
         if content or switch_label or hybrid is not None:
             from . import propagation
             propagation.note_event(c, segment_id)
@@ -80,7 +92,7 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
             c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
                       (sw["id"], old, note, time.time()))
             c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
-    return switch_label == "interruption" and not interruption_kind
+    return switch_label == "interruption" and not interruption_kind and focused is None
 
 
 def write_span_review(c, start: float, end: float, verdict: str, subtype: str | None = None,
@@ -126,7 +138,8 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
             continue
         opts.append({"label": label, "segment_id": int(sid), "switch_label": sw,
                      "antecedent_id": o.get("antecedent_id") if sw in ("continuation", "return") else None,
-                     "interruption_kind": None, "content": ct, "hybrid": o.get("hybrid")})
+                     "interruption_kind": None, "content": ct, "hybrid": o.get("hybrid"),
+                     "focused": o.get("focused")})
     if not opts:
         raise BadEdit("no valid option (each needs a label and known content/switch labels)")
     if passthrough_applies(c, segment_id):
