@@ -82,7 +82,7 @@ For each segment, the model does several different related evaluations:
 
 For  all of these juduements the model also offers it's epistemic confidence in that judgement, which are used to construct review questions for user oversight.
 
-The model evaluates these lazily with a 15 minute delay. That allows the model to evaluate the segments together in the context of all the nearby segments. The model can also choose to hold off on evaluating some segments for up to an hour, if it guesses that it will have more relevant information after more segments have been logged.
+The model evaluates these lazily with a 15 minute delay. That allows the model to evaluate the segments together in the context of all the nearby segments. The model can also choose to hold off on evaluating some segments for up to an hour, if it guesses that it will have more relevant information after more segments have been logged. (The hold-off is not built yet, as of 2026-11-19.)
 
 All of these jugdement  can be audited and edited by the user, and those edits should be used to adjust the model so that it learns over time.
 
