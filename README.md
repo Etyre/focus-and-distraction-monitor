@@ -447,8 +447,10 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   to the thing returned to (the prompt said "the segment they left when the interruption began").
   The evaluator prompt now says: the last segment of what they were on before the interruption,
   never a segment of the interruption itself. Earlier links were not rewritten.
-* The dashboard HTML is read once at startup: after editing it, `restart`. A restart wipes in-app state
-  mid-review, which is why the automatic Stop hook was disabled.
+* The dashboard HTML is read once at startup: after editing it, `restart`. A restart resets which page and
+  panel are open, which is why the automatic Stop hook was disabled. Typed text survives a restart: every
+  text field saves to localStorage as you type (`draftKey` in the dashboard) and chats reload from the
+  server. A new text field needs an id that `draftKey` handles, or a restart can lose what is in it.
 * `restart` refuses code that does not compile, so the launcher never crash-loops on a typo.
 * The subscription backend (Claude Code binary) takes exactly one user message, no tools, and would
   prefer `ANTHROPIC_API_KEY` over the login if it saw it, so the child gets it blanked; session
