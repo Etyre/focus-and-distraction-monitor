@@ -242,6 +242,16 @@ def cases():
         assert len(sp) == 1 and len(sp[0]["detours"]) == 3, sp
         assert stats.self_distraction_counts(d.segs, se) == (2, 2)
 
+    @case("one slow task inside a brisk task block does not split the block")
+    def _():
+        d = Day()
+        d.add(4, "Mail", content="task", toggl=7)
+        d.add(3, "Forms", content="task", switch="interruption", nxt=True, toggl=7)
+        d.add(25, "Taxes", content="task", switch="interruption", nxt=True, toggl=7)
+        d.add(3, "Returns", content="task", switch="interruption", nxt=True, toggl=7)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 35 and sp[0]["subtype"] == "focused_task", sp
+
     return out
 
 

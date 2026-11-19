@@ -200,7 +200,8 @@ intention of processing tasks - working from a todo list or tracker and returnin
 tasks, executing efficiently, one task after another. The app joins tasks linked this way into \
 one focused task block, and it applies the rule that a block needs a running Toggl entry; you \
 judge the intention. False when the shift is not the next task: a glance at a feed, a stray \
-question, drifting to something else.
+question, drifting to something else. How long a task takes does not matter: one task that turns \
+out fiddly and takes 25 slower minutes is still the next task, and so is the one after it.
 
 Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
 and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
