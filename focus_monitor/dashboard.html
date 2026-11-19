@@ -112,7 +112,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
   <div class="card"><b>Longest full-absorption block (min)</b><div id="c-longest"></div></div>
   <div class="card"><b>Total full-absorption time (min)</b><div id="c-total"></div></div>
   <div class="card"><b>Attention interruptions (count)</b><div id="c-int"></div></div>
-  <div class="card"><b>Bounce-aways: self-distraction events during focus spans (count)</b><div id="c-dis"></div></div>
+  <div class="card"><b>Self-distraction events, at any time of day (count)</b><div id="c-dis"></div></div>
   <div class="card"><b>Time self-distracted (min)</b><div id="c-dismin"></div></div>
   <div class="card"><b>Claude spend (USD)</b><div id="c-spend"></div></div>
 </section>
@@ -231,8 +231,8 @@ async function loadDay(){
   const overBudget=d.spend_avg_30d>=d.budget;
   // "± x" under a headline metric: how far open review questions could still move it.
   const sl=d.metric_slack||{},pm=(k,unit)=>sl[k]>=1?` <span class="muted small" style="white-space:nowrap" title="open review questions could still move this by up to this much — answer the ⚑ priority ones to settle it">± ${unit==='min'?fmtMin(sl[k]):Math.round(sl[k])}</span>`:'';
-  const tiles=[['Longest span',fmtMin(m.longest_focus_min)+pm('longest_focus_min','min')],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)+pm('longest_absorbed_min','min')],['Total independent focus time',fmtMin(m.total_focus_min)+pm('total_focus_min','min')],['Meeting & hybrid focus',fmtMin(m.meeting_focus_min||0)],['Self-distraction events',`${m.self_distraction_events||0}${pm('self_distraction_events','n')} <span class="muted small" title="self-distraction events today, at any time; a bounce-away is one that happened during a focus span">(${m.bounce_aways||0} bounce-away${m.bounce_aways===1?'':'s'})</span>`],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`],['Claude cost, 30-day avg',`${overBudget?'<span style="color:var(--distracted)">':''}$${d.spend_avg_30d.toFixed(2)}${overBudget?'</span>':''} <span class="muted small">/ day</span>`]];
-  if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Bounce-aways',m.bounce_aways],['Time distracted',fmtMin(m.distracted_min)]);
+  const tiles=[['Longest span',fmtMin(m.longest_focus_min)+pm('longest_focus_min','min')],['Longest fully-absorbed',fmtMin(m.longest_absorbed_min)+pm('longest_absorbed_min','min')],['Total independent focus time',fmtMin(m.total_focus_min)+pm('total_focus_min','min')],['Meeting & hybrid focus',fmtMin(m.meeting_focus_min||0)],['Self-distraction events',`${m.self_distraction_events||0}${pm('self_distraction_events','n')} <span class="muted small" title="self-distraction events today, at any time; a bounce-away is the shift that leaves a focus span, when that shift is a self-distraction">(${m.bounce_aways||0} bounce-away${m.bounce_aways===1?'':'s'})</span>`],['Focus spans',`${d.focus_spans.length} <span class="muted small">(${m.fully_absorbed_spans} absorbed)</span>`],['Claude cost, 30-day avg',`${overBudget?'<span style="color:var(--distracted)">':''}$${d.spend_avg_30d.toFixed(2)}${overBudget?'</span>':''} <span class="muted small">/ day</span>`]];
+  if(d.count_events)tiles.push(['Interruptions',m.interruption_count],['Time distracted',fmtMin(m.distracted_min)]);
   tiles.push(['Active time',fmtMin(m.active_min)],['Computer inactivity',`${m.short_breaks} <span class="muted small">(${fmtMin(m.short_break_min)})</span>`],['Switches',`${m.switches}`],['To review / reviewed',`${d.to_review} / ${d.reviewed}${d.priority_open?` <span class="small" style="color:var(--taskchange)" title="priority questions: an answer could move the day's headline metrics">⚑ ${d.priority_open}</span>`:''}`],['Claude spend',`$${m.spend_usd.toFixed(2)}`]);
   $('#tiles').innerHTML=tiles.map(([l,v])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   document.querySelector('#distractions').closest('.card').style.display=d.count_events?'':'none';
@@ -393,7 +393,7 @@ async function loadTrends(){
   barChart($('#c-longest'),data,'longest_focus_min','var(--focus)');
   barChart($('#c-total'),data,'total_focus_min','var(--focus)');
   barChart($('#c-int'),data,'interruption_count','var(--interrupted)');
-  barChart($('#c-dis'),data,'distraction_count','var(--distracted)');
+  barChart($('#c-dis'),data,'self_distraction_events','var(--distracted)');
   barChart($('#c-dismin'),data,'distracted_min','var(--distracted)');
   barChart($('#c-spend'),data,'spend_usd','var(--m-ensemble)',v=>'$'+v.toFixed(2));
 }

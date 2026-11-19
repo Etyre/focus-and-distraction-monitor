@@ -705,9 +705,18 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if r["cat"] == "focus" and _same_task(cur, r, away):
                 if away:
                     if away_s() < break_s:  # brief diversion -> contained interruption(s), span continues
-                        for ar in away:
-                            cur["runs"].append(dict(ar, cat="detour", soft=False, state=_detour_label(ar))
-                                               if ar["cat"] == "focus" else ar)
+                        # One attention-interruption event per time the person leaves the span,
+                        # however many things they pass through while away (a focused errand,
+                        # then a feed, then back = one event).
+                        segs_away = [sg for ar in away for sg in ar["segments"]]
+                        merged = {"cat": "detour", "soft": False, "focus_start": False, "gap_before": False,
+                                  "start": away[0]["start"], "end": away[-1]["end"],
+                                  "duration": sum(ar["duration"] for ar in away), "segments": segs_away,
+                                  "toggl_id": next((ar.get("toggl_id") for ar in away if ar.get("toggl_id")), None)}
+                        lab = _detour_label(merged)
+                        merged["state"] = lab if lab in ("distracted", "interrupted") else "interrupted"
+                        merged["parts"] = list(away)
+                        cur["runs"].append(merged)
                         away = []
                     else:                    # away >= 5 min -> span ended when we left the task
                         out.append(_finalize(cur, reason()))
@@ -840,6 +849,8 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     for sp in qualifying:
         for d in sp["detours"]:
             d["is_event"] = True; d["inside_span"] = True
+            for part in d.get("parts", ()):
+                part["inside_span"] = True   # not counted again below as time outside spans
             for sg in d["segments"]:
                 sg["diversion"] = True   # time off the span's thread, focused or not (for the timeline)
             (interruptions if d["state"] == "interrupted" else distractions).append(d)
@@ -854,21 +865,40 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             "interruptions": interruptions, "distractions": distractions}
 
 
+def _is_sd_shift(s: dict) -> bool:
+    return bool(s.get("redesign") and s.get("self_distraction") and s["duration"] > 0)
+
+
 def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
-    """(self-distraction events in the day, bounce-aways). Rules doc: a self-distraction event
-    is a SHIFT - a kind of switch, not a stretch of time - and a bounce-away is one that
-    happens during a focus span. So each self-distraction shift counts once, however the time
-    away is grouped: two of them inside one diversion are two bounce-aways and still one
-    attention-interruption event. A shift is "during a span" when it falls inside one, or is
-    the shift that left it. Stretches judged before the redesign have no per-shift flag and
-    keep the older count: one per stretch of mostly-distracted time."""
-    span_ends = [sp["end"] for sp in se["focus_spans"]]
-    events = bounces = 0
-    for s in segs:
-        if s.get("redesign") and s.get("self_distraction") and s["duration"] > 0:
-            events += 1
-            if s.get("diversion") or any(abs(s["clip_start"] - e) <= MAX_GAP for e in span_ends):
-                bounces += 1
+    """(self-distraction events in the day, bounce-aways).
+
+    A self-distraction event is a SHIFT made without clear intent, at any time of day; each one
+    counts once. A bounce-away is the one shift by which the person LEAVES a focus span, when
+    that shift is a self-distraction (Eli, 2026-11-19: writing -> email -> Bluesky -> writing
+    has one bounce-away at most, "the moment you go from writing to email"; a self-distraction
+    later in the same time away is a self-distraction event and not a bounce-away; leaving for
+    a deliberate errand and then drifting is no bounce-away). So bounce-aways <= events, and
+    at most one per leaving. The leaving shift is the first shift of a diversion inside a span,
+    or the first shift after a span's end. Stretches judged before the redesign have no
+    per-shift flag and keep the older count: one per stretch of mostly-distracted time."""
+    events = sum(1 for s in segs if _is_sd_shift(s))
+    bounces = 0
+    for sp in se["focus_spans"]:
+        for d in sp["detours"]:
+            first = next((sg for sg in d["segments"] if sg.get("switch") == "interruption"), None)
+            bounces += int(first is not None and _is_sd_shift(first))
+        prev_end = sp["end"]
+        for s in segs:                     # the shift that ended the span, if a shift ended it
+            if s["clip_start"] < sp["end"] - 1 or s["duration"] <= 0:
+                continue
+            if s["clip_start"] - prev_end > MAX_GAP or s["state"] == "idle":
+                break
+            if s.get("switch") == "interruption":
+                bounces += int(_is_sd_shift(s))
+                break
+            if s.get("switch") == "return":
+                break
+            prev_end = s["clip_end"]       # windows passed through on the way out
     for d in se["distractions"]:
         if not any(sg.get("redesign") for sg in d["segments"]):
             events += 1

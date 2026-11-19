@@ -164,23 +164,50 @@ def cases():
         # 6 minutes away ends the first span where it was left; the essay then starts a new one
         assert [_mins(x) for x in sp] == [12, 11], [_mins(x) for x in sp]
 
-    @case("several shifts in one diversion are one interruption; each self-distraction shift is a bounce-away")
+    def flag(d):
+        for sg in d.segs:
+            sg["redesign"] = True
+
+    @case("a bounce-away is the shift that leaves the span; later self-distractions are events only")
     def _():
-        d = Day()
+        d = Day()   # writing -> feed (self-distraction) -> shop (another) -> writing
         a = d.add(12, "Essay")
-        d.add(1, "Mail", switch="interruption", focused=False, content="correspondence")
         d.add(1, "Feed", switch="interruption", focused=False, sd=True, content="passive")
         d.add(1, "Shop", switch="interruption", focused=False, sd=True, content="passive")
         d.add(10, "Essay", switch="return", ante=a)
         d.add(8, "Video", switch="interruption", focused=False, sd=True, content="passive")   # leaves the span
         d.add(3, "Video2", switch="interruption", focused=False, sd=True, content="passive")  # after it ended
-        for sg in d.segs:
-            sg["redesign"] = True
+        flag(d)
         se = d.run()
         sp = se["focus_spans"]
         assert len(sp) == 1 and len(sp[0]["detours"]) == 1, sp     # one attention-interruption event
-        events, bounces = stats.self_distraction_counts(d.segs, se)
-        assert (events, bounces) == (4, 3), (events, bounces)       # 2 inside + the one that left the span
+        assert stats.self_distraction_counts(d.segs, se) == (4, 2)  # 4 events; 2 leavings, both bounce-aways
+
+    @case("leaving on a deliberate check and then drifting: no bounce-away, one self-distraction event")
+    def _():
+        d = Day()   # writing -> email (deliberate) -> Bluesky (self-distraction) -> writing
+        a = d.add(12, "Essay")
+        d.add(1, "Mail", switch="interruption", content="correspondence")
+        d.add(1, "Bluesky", switch="interruption", focused=False, sd=True, content="passive")
+        d.add(10, "Essay", switch="return", ante=a)
+        flag(d)
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 22, sp
+        assert len(sp[0]["detours"]) == 1, sp[0]["detours"]         # one leaving = one interruption
+        assert stats.self_distraction_counts(d.segs, se) == (1, 0)
+
+    @case("email was the self-distraction: one bounce-away, and Bluesky after it is a second event")
+    def _():
+        d = Day()
+        a = d.add(12, "Essay")
+        d.add(1, "Mail", switch="interruption", focused=False, sd=True, content="correspondence")
+        d.add(1, "Bluesky", switch="interruption", focused=False, sd=True, content="passive")
+        d.add(10, "Essay", switch="return", ante=a)
+        flag(d)
+        se = d.run()
+        assert len(se["focus_spans"][0]["detours"]) == 1
+        assert stats.self_distraction_counts(d.segs, se) == (2, 1)
 
     return out
 

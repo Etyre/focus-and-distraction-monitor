@@ -18,6 +18,7 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
   * Attention interruptions that are less than 5 minutes long do not break the focus span.
   * Once a focus span has started, all time on the span's thread counts as focus time, even if it looks like I'm not making progress: I may still be thinking or processing. The model still judges each segment as focused or unfocused. If more than 20% of a span was judged unfocused, or it contains one continuous unfocused stretch of 10 minutes or more, the app asks me whether that time was really unfocused and should break the span. (added 2026-11-19)
 * An **attention-interruption event** or a **diversion** is an instance when my focus shifts from the object of a focus span to something unrelated.
+  * It is one event per time I leave the focus object, however many things I pass through before I come back.
   * Looking at my phone should count as a diversion, unless what I'm looking at is clearly related to my current attentional thread.
   * Whether a segment is focused or unfocused is a separate question from whether it is a diversion. If I'm writing and I quickly jump to Amazon to buy a specific item, that segment is focused, and it is also a diversion from the writing span.
 * A **self-distraction event** is a shift in which I seek out stimulation or distraction without a clear intent.
@@ -27,7 +28,8 @@ Hand-coded rules may veto, never affirm; preserve the doc's logical form and sco
     * Absentmindedly opening bumble.
     * When I open Amazon without any particular objective and browse.
     * Opening my phone to look at a random app, unrelated to what I'm doing.
-* A **bounce-away** is a self-distraction event that occurs in a focus span.
+* A **bounce-away** is a self-distraction event by which I leave a focus span: the moment my attention goes from the focus object to something else, when that shift is a self-distraction.
+  * If I go from writing to email to Bluesky and back to writing, there is at most one bounce-away: the shift from writing to email, if that shift was a self-distraction. A self-distraction later in the same time away (email to Bluesky) is a self-distraction event, but not a bounce-away.
 * A **passive consumption span** is a period when I'm passively consuming or browsing: scrolling LessWrong, watching YouTube, reading comics, reading blogposts without taking notes.
   * This is important to track mainly because passive consumption time should never count toward a focus span.
 * A **correspondence span** is a period when I'm communicating with people in writing: talking on Signal, responding to email, replying to messages or comments.

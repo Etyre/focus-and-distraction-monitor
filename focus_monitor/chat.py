@@ -459,7 +459,7 @@ class DayChat:
                    f"{m['fully_absorbed_spans']} fully-absorbed span(s)); meetings/hybrid {m['meeting_focus_min']:.0f} min; "
                    f"correspondence {m['correspondence_min']:.0f} min; passive consumption {m['passive_min']:.0f} min; "
                    f"distracted {m['distracted_min']:.0f} min; interruptions inside spans {m['interruption_count']} "
-                   f"(bounce-aways, i.e. self-distractions during spans: {m['bounce_aways']}; self-distraction events all day: {m['self_distraction_events']}); "
+                   f"(bounce-aways, i.e. leaving a focus span by a self-distraction: {m['bounce_aways']}; self-distraction events all day: {m['self_distraction_events']}); "
                    f"{m['switches']} window switches; {m['short_breaks']} short inactivity breaks "
                    f"({m['short_break_min']:.0f} min).")
 
