@@ -46,7 +46,9 @@ first commit 2026-08-29, in continuous development since.
   * A *focused task block* is several threads joined by next-task shifts, under a running Toggl
     entry. Diversions are measured against the block.
   * A *self-distraction event* is a self-distraction shift at any time of day; a *bounce-away*
-    is one during a focus span.
+    is one during a focus span (inside it, or the shift that left it). Both are counted per
+    shift (`stats.self_distraction_counts`): two self-distraction shifts inside one diversion
+    are two bounce-aways and still one attention-interruption event.
   Segments judged before the redesign have no focused/unfocused field. They are read the older
   way: a four-way label on the switch (`continuation`, `interruption` = detour, `distraction`,
   `focus start`, internally `task_change`), with the state inherited through continuations.

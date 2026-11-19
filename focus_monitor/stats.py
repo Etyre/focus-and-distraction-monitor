@@ -191,6 +191,7 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None)
             elif vsw == "return":
                 sd_live = False
             s["switch"] = vsw
+            s["redesign"] = v_foc is not None   # judged with the 2026-11-19 fields
             s["focused"] = bool(v_foc) if by_field else None
             s["user_unfocused"] = bool(by_field and u_foc and not v_foc)
             s["self_distraction"] = bool(vsw == "interruption" and sd_live)
@@ -853,6 +854,28 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             "interruptions": interruptions, "distractions": distractions}
 
 
+def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
+    """(self-distraction events in the day, bounce-aways). Rules doc: a self-distraction event
+    is a SHIFT - a kind of switch, not a stretch of time - and a bounce-away is one that
+    happens during a focus span. So each self-distraction shift counts once, however the time
+    away is grouped: two of them inside one diversion are two bounce-aways and still one
+    attention-interruption event. A shift is "during a span" when it falls inside one, or is
+    the shift that left it. Stretches judged before the redesign have no per-shift flag and
+    keep the older count: one per stretch of mostly-distracted time."""
+    span_ends = [sp["end"] for sp in se["focus_spans"]]
+    events = bounces = 0
+    for s in segs:
+        if s.get("redesign") and s.get("self_distraction") and s["duration"] > 0:
+            events += 1
+            if s.get("diversion") or any(abs(s["clip_start"] - e) <= MAX_GAP for e in span_ends):
+                bounces += 1
+    for d in se["distractions"]:
+        if not any(sg.get("redesign") for sg in d["segments"]):
+            events += 1
+            bounces += int(bool(d.get("inside_span")))
+    return events, bounces
+
+
 def select_for_review(conn, t0: float, t1: float, n: int) -> list[int]:
     """The top-N switches worth reviewing in [t0,t1): ambiguous, focus-leaving, still unreviewed,
     ranked by stakes x uncertainty (importance x (1 - top probability)). Recomputed each call, so
@@ -896,6 +919,7 @@ def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
     meetings = [s for s in focus if s.get("subtype") == "meeting" or s.get("hybrid")]
     hybrid_in_work = sum(min(s.get("hybrid_min", 0.0), s["focus_min"]) for s in work)
     breaks = short_breaks(conn, t0, t1)
+    sd_events, bounces = self_distraction_counts(segs, se)
     return {
         "short_breaks": len(breaks),
         "short_break_min": sum(b["end"] - b["start"] for b in breaks) / 60,
@@ -911,12 +935,12 @@ def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
         # An attention-interruption event = any diversion inside a focus span (self-distraction included).
         "interruption_count": (sum(1 for r in se["interruptions"] if r.get("inside_span"))
                                + sum(1 for r in se["distractions"] if r.get("inside_span"))),
-        "distraction_count": sum(1 for r in se["distractions"] if r.get("inside_span")),
+        "distraction_count": bounces,   # older name for bounce_aways, kept for callers
         # Rules doc: a self-distraction event can happen at any time of day; a BOUNCE-AWAY is
         # one that happens during a focus span. (Until 2026-11-19 the app had these two names
         # the other way round.)
-        "self_distraction_events": len(se["distractions"]),
-        "bounce_aways": sum(1 for r in se["distractions"] if r.get("inside_span")),
+        "self_distraction_events": sd_events,
+        "bounce_aways": bounces,
         "distracted_min": sum(d["duration"] for d in se["distractions"]) / 60,
         "interrupted_min": sum(d["duration"] for d in se["interruptions"]) / 60,
         "active_min": sum(s["duration"] for s in segs if s["state"] != "idle") / 60,

@@ -164,15 +164,23 @@ def cases():
         # 6 minutes away ends the first span where it was left; the essay then starts a new one
         assert [_mins(x) for x in sp] == [12, 11], [_mins(x) for x in sp]
 
-    @case("several diversions in a row are still one event")
+    @case("several shifts in one diversion are one interruption; each self-distraction shift is a bounce-away")
     def _():
         d = Day()
         a = d.add(12, "Essay")
         d.add(1, "Mail", switch="interruption", focused=False, content="correspondence")
-        d.add(2, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        d.add(1, "Feed", switch="interruption", focused=False, sd=True, content="passive")
+        d.add(1, "Shop", switch="interruption", focused=False, sd=True, content="passive")
         d.add(10, "Essay", switch="return", ante=a)
-        sp = d.run()["focus_spans"]
-        assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and sp[0]["detours"][0]["state"] == "distracted", sp
+        d.add(8, "Video", switch="interruption", focused=False, sd=True, content="passive")   # leaves the span
+        d.add(3, "Video2", switch="interruption", focused=False, sd=True, content="passive")  # after it ended
+        for sg in d.segs:
+            sg["redesign"] = True
+        se = d.run()
+        sp = se["focus_spans"]
+        assert len(sp) == 1 and len(sp[0]["detours"]) == 1, sp     # one attention-interruption event
+        events, bounces = stats.self_distraction_counts(d.segs, se)
+        assert (events, bounces) == (4, 3), (events, bounces)       # 2 inside + the one that left the span
 
     return out
 
