@@ -73,6 +73,7 @@ For each segment, the model does several different related evaluations:
   * a **shift**: the user's attention moved to something new.
     * Note: A shift is not the same thing as an attention-interruption event, as defined above. An attention-interruption event is a shift that happens during a focus span. The model labels every shift; the app works out which shifts are attention-interruption events.
   * a **return**: the user's attention moved back to something it was on recently (within the past 10 minutes).
+    * Coming back to something after more than 10 minutes is a shift, not a return.
 * If a switch is labeled as a continuation or as a return, evaluate which earlier segment does this segment continue.
   * This is used to alogirthmically consturct threads.
 * If a switch is labeled as a _shift_, then a model additionally evaluates is that shift was a **self-distraction event**?
