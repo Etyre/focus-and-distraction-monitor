@@ -43,6 +43,7 @@ from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # si
 
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
+CONTACT_HOLD_S = 24 * 3600   # after the evaluator asks for Eli, how long its chunk is left alone
 CTX_S = 10 * 60           # context shown on each side of the chunk
 RETURN_MAX_S = 10 * 60    # Rules doc: a return is to something left within the past 10 minutes
 HOLD_MAX_S = 60 * 60      # Rules doc: the model may hold a segment back for up to an hour
@@ -424,6 +425,13 @@ class ChunkEvaluator:
         segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S, phone=False)  # pickups are shown as their own lines
         target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
                   and not s.get("neutral") and s["duration"] > 0]
+        if extra is None and not phone_only:
+            # First pass: only segments that ended at least LAZY_S ago. A long segment starting
+            # just after a short one used to be judged along with it, on its first ten minutes
+            # and sometimes before it had ended (a 33-minute segment judged at minute 15,
+            # 2026-11-19); the judgment was final. It waits for the next cycle instead.
+            settled = time.time() - LAZY_S
+            target = [s for s in target if (s.get("end") or time.time()) <= settled]
         if phone_only:
             # Phone data that arrived late: judge the pickups against the activity already
             # judged, and leave the computer segments' judgments alone. Re-judging them too was
@@ -585,13 +593,23 @@ class ChunkEvaluator:
             system=self._system_blocks(conn),
             messages=[{"role": "user", "content": content}],
             output_format=ChunkJudgement,
-            output_config={"effort": "low"},
+            # The configured effort. From 2026-08-31 to 2026-11-20 this said "low" outright while
+            # config.toml asked for "high" ("accuracy is the only priority"), and the shadow
+            # calls below, told the primary was "high", compared low against low.
+            output_config={"effort": self.cfg.claude_effort},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default")
         cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
                 + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
                 + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
         n = n_held = n_phone = 0
+        if resp.stop_reason == "contact_eli" and target and extra is None:
+            # The model asked for Eli and the task stops there: no retry. Without a hold the
+            # next cycle (15 s later) would select the same chunk and send the same prompt again.
+            conn.execute("INSERT OR REPLACE INTO eval_holds(segment_id, until, created) VALUES (?,?,?)",
+                         (min(target, key=lambda s: s["clip_start"])["id"], time.time() + CONTACT_HOLD_S, time.time()))
+            log.warning("chunk %s: the evaluator contacted Eli; this stretch is held for %d h",
+                        dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"), CONTACT_HOLD_S // 3600)
         if resp.parsed_output is not None:
             now = time.time()
             per_seg_cost = cost / max(len(target), 1)
@@ -659,7 +677,9 @@ class ChunkEvaluator:
                     if rsw == "interruption":
                         cands = []  # a new thread has no antecedent
                     else:
-                        sd = nxt = False
+                        nxt = False
+                        if rsw != "return":   # a return carries its own self-distraction judgment (always stored 0 until 2026-11-20)
+                            sd = False
                     rk = kind_of(rsw, foc, sd)
                     cands.sort(key=lambda x: -x[1])
                     # The candidates' probabilities are conditional on same-thread and must sum
@@ -785,9 +805,15 @@ def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> in
     n = 0
     for r in rows:
         conn.execute("UPDATE span_summaries SET refined=1 WHERE id=?", (r["id"],))
-        prior = conn.execute(
-            "SELECT COUNT(*) FROM span_summaries WHERE refined=1 AND id != ? AND start < ? AND end > ? AND created >= ?",
-            (r["id"], r["end"], r["start"], time.time() - 86400)).fetchone()[0]
+        # Counted in kv, not in span_summaries: re-summarising a span deletes its older rows,
+        # so a count kept there stayed at 0 and the bound never fired (two spans were re-judged
+        # five times each in 23 minutes on 2026-11-19).
+        try:
+            past = [x for x in json.loads(db.kv_get(conn, "refine.log") or "[]") if x[2] >= time.time() - 86400]
+        except (ValueError, TypeError, IndexError):
+            past = []
+        prior = sum(1 for a, b, _ in past if a < r["end"] and b > r["start"])
+        db.kv_set(conn, "refine.log", json.dumps(past + [[r["start"], r["end"], time.time()]]))
         if prior >= 2:
             log.info("refinement budget exhausted for %s - leaving for the user",
                      dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"))
@@ -1133,6 +1159,9 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
                          resp, _acall, _acmp, prompt_text=AUDIT_PROMPT.format(log="(day log, see audit)")[:200])
     n = 0
     ids = {s["id"] for s in evaluated}
+    if resp.parsed_output is None and resp.stop_reason != "contact_eli" and _attempt(conn, f"audit.fail.{key}") < 3:
+        log.warning("daily audit %s: no answer (%s) - will try again", key, resp.stop_reason)
+        return 0   # not recorded as run, so the next pass retries (it used to count as done)
     with db.tx(conn):
         if resp.parsed_output is not None:
             for f in resp.parsed_output.flags:
@@ -1278,6 +1307,13 @@ def queue_wrong_display_rejudge(conn) -> int:
     return n
 
 
+def _attempt(conn, key: str) -> int:
+    """Count one more failed attempt at something, and return the total so far."""
+    n = int(db.kv_get(conn, key) or 0) + 1
+    db.kv_set(conn, key, str(n))
+    return n
+
+
 def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> int:
     """Re-judge stretches whose upstream data changed after they were evaluated (reeval_queue -
     e.g. a Toggl entry the person corrected later). Same evaluator, same context, plus a note
@@ -1324,7 +1360,8 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             n = _get().evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
         except Exception:
             log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
-            conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            if _attempt(conn, f"reeval.fail.{q['id']}") >= 3:   # a failed call is not a finished one: try again later, three times
+                conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
             break
         # (a phone re-judgment leaves the segments' judgments, and so their questions, as they were)
         nq, _ = _invalidate_derived(conn, start, c1, questions=not phone_q, summaries=False)
@@ -1349,9 +1386,12 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
     cfg = cfg or load_config()
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
-    if lookback_s is None:  # default scope: the current logical day only (user 2026-09-01)
+    if lookback_s is None:
+        # Default scope: the current logical day (user 2026-09-01) and the one before it. With
+        # today alone, whatever was still unjudged at the 4am rollover was never judged: the
+        # last minutes before sleep, or a night of failed calls (162 segments in 30 days).
         from .config import day_bounds, logical_date
-        lookback_s = time.time() - day_bounds(logical_date())[0]
+        lookback_s = time.time() - day_bounds(logical_date() - dt.timedelta(days=1))[0]
     horizon = time.time() - LAZY_S
     done = 0
     for _ in range(max_chunks):

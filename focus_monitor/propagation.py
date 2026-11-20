@@ -86,6 +86,15 @@ def note_event(conn, segment_id: int) -> None:
                  (segment_id, time.time()))
 
 
+
+def _retry_later(conn, event_id: int) -> None:
+    """Put a feedback event back in the queue after a failed call, at most three times."""
+    n = int(db.kv_get(conn, f"prop.fail.{event_id}") or 0) + 1
+    db.kv_set(conn, f"prop.fail.{event_id}", str(n))
+    if n < 3:
+        conn.execute("UPDATE feedback_events SET processed=0 WHERE id=?", (event_id,))
+
+
 def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int:
     from . import efforts, stats, summaries
     from .classifiers.claude_vision import _b64, _rules_doc
@@ -96,6 +105,8 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                           (max_events,)).fetchall()
     done = 0
     for ev in events:
+        # Marked processed here, and un-marked below if the call fails: a failed call is not a
+        # propagated correction (event 501 on 2026-11-14 was lost that way).
         conn.execute("UPDATE feedback_events SET processed=1 WHERE id=?", (ev["id"],))
         seg = conn.execute("SELECT * FROM segments WHERE id=?", (ev["segment_id"],)).fetchone()
         rv = conn.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (ev["segment_id"],)).fetchone()
@@ -156,8 +167,11 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
             resp = _call(cfg.claude_effort)
         except Exception:
             log.exception("propagation call failed for event %d", ev["id"])
+            _retry_later(conn, ev["id"])
             continue
         if resp.parsed_output is None:
+            if resp.stop_reason != "contact_eli":   # (a contact stops the task for good: no retry)
+                _retry_later(conn, ev["id"])
             continue
         cost = efforts.call_cost(resp.usage)
         cand_ids = {c2["id"] for c2 in cands}
@@ -182,11 +196,13 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                     if v.switch_label in SWITCHES:
                         sets.append("switch_label=?"); args.append(v.switch_label)
                         if v.switch_label != "interruption":
-                            sets.append("self_distraction=0"); sets.append("next_task=0")
+                            sets.append("next_task=0")
+                            if v.switch_label != "return":   # a return keeps its own self-distraction judgment
+                                sets.append("self_distraction=0")
                     if (v.switch_label in SWITCHES or v.focused is not None) and foc is not None:
                         # the older per-shift kind follows from the fields (evaluator.kind_of)
                         from .evaluator import kind_of
-                        sd = bool(cur_row["self_distraction"]) if cur_row is not None and sw_new == "interruption" else False
+                        sd = bool(cur_row["self_distraction"]) if cur_row is not None and sw_new in ("interruption", "return") else False
                         sets.append("interruption_kind=?"); args.append(kind_of(sw_new, foc, sd))
                     elif v.switch_label in SWITCHES and v.switch_label != "interruption":
                         sets.append("interruption_kind=NULL")
