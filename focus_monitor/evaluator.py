@@ -616,6 +616,27 @@ class ChunkEvaluator:
                          (min(target, key=lambda s: s["clip_start"])["id"], time.time() + CONTACT_HOLD_S, time.time()))
             log.warning("chunk %s: the evaluator contacted Eli; this stretch is held for %d h",
                         dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"), CONTACT_HOLD_S // 3600)
+        if resp.parsed_output is None and resp.stop_reason != "contact_eli" and extra is None and target:
+            # No judgments and no message for Eli (cut off, unparsable). Nothing was stored, so
+            # the next cycle sent the same chunk again, every 15 seconds, with the cost unseen
+            # by the budget. The call is recorded; the chunk waits ten minutes; after three
+            # empty answers its segments get a flagged default so the queue moves on.
+            first = min(target, key=lambda s: s["clip_start"])
+            with db.tx(conn):
+                conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created, model) VALUES (?,?,?,?,?,?)",
+                             (t0, t1, 0, cost, time.time(), self.cfg.claude_model))
+                if _attempt(conn, f"eval.empty.{first['id']}") < 3:
+                    conn.execute("INSERT OR REPLACE INTO eval_holds(segment_id, until, created) VALUES (?,?,?)",
+                                 (first["id"], time.time() + 600, time.time()))
+                else:
+                    for s in target:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created)"
+                            " VALUES (?,?,?,?,?,?,?)",
+                            (s["id"], "other", "continuation", None, 1,
+                             "(the evaluator gave no answer for this stretch in three tries; defaulted, please review)", time.time()))
+            log.warning("chunk %s: no judgments came back (stop_reason %s)",
+                        dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"), resp.stop_reason)
         if resp.parsed_output is not None:
             now = time.time()
             per_seg_cost = cost / max(len(target), 1)
@@ -1213,6 +1234,7 @@ WRONG_DISPLAY_REASON = "screenshots shown were of the wrong display"
 # judged before that restart is judged again at the configured effort, newest day first.
 LOW_EFFORT_REASON = "judged at low effort"
 LOW_EFFORT_FIXED_AT = dt.datetime(2026, 11, 20, 3, 34, 17).timestamp()
+REEVAL_BACKOFF_S = 300.0         # after a re-evaluation call fails or comes back empty
 HISTORY_EVERY_S = 60.0           # at least this long between two history calls (kv rejudge.history.every_s overrides)
 PHONE_REASON = "phone data arrived"
 PHONE_LOOKBACK_S = 3 * 86400     # the phone pushes its log hours to a day late
@@ -1367,6 +1389,9 @@ def history_status(conn) -> dict:
             "working_on": dt.datetime.fromtimestamp(left[-1]["done_to"] or left[-1]["t0"]).strftime("%Y-%m-%d %H:%M") if left else None,
             "paused": db.kv_get(conn, "rejudge.history.paused") == "1",
             "calls": int(db.kv_get(conn, "rejudge.history.calls") or 0),
+            "skipped_chunks": sum(int(db.kv_get(conn, f"reeval.skipped.{r['id']}") or 0) for r in rows),
+            "waiting": (None if not left else "paused" if db.kv_get(conn, "rejudge.history.paused") == "1"
+                        else "the subscription is not available" if not llm.subscription_available(load_config()) else None),
             "last_call": db.kv_get(conn, "rejudge.history.last")}
 
 
@@ -1375,8 +1400,7 @@ def _history_may_run(conn) -> bool:
     while the subscription is at its limit, and for HISTORY_EVERY_S after the last call."""
     if db.kv_get(conn, "rejudge.history.paused") == "1":
         return False
-    cfg = load_config()
-    if cfg.llm_backend == "subscription" and not llm.subscription_available(cfg):
+    if not llm.subscription_available(load_config()):   # at its limit, or the backend is set to "api"
         return False
     every = float(db.kv_get(conn, "rejudge.history.every_s") or HISTORY_EVERY_S)
     return time.time() - float(db.kv_get(conn, "rejudge.history.last") or 0) >= every
@@ -1399,6 +1423,8 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     done = 0
+    if time.time() < float(db.kv_get(conn, "reeval.retry_after") or 0):
+        return 0
     for _ in range(max_chunks):
         # Newest first: recent days are the ones still under review. The history re-judgment
         # comes after everything else, and only when it may run (_history_may_run).
@@ -1445,7 +1471,11 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
         ev = _get()
         ev.last_answer = "parsed"   # (a chunk with nothing to send returns before the call)
         try:
-            n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
+            llm.only_subscription(history)   # a history call that cannot run on the subscription fails; it never goes to the API key
+            try:
+                n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
+            finally:
+                llm.only_subscription(False)
             if history:
                 # Outside the daily budget: 2,500 history calls must not stop today's judging
                 # (spend_today leaves these runs out). The pacing clock counts real calls only.
@@ -1456,27 +1486,42 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                     db.kv_set(conn, "rejudge.history.calls", str(int(db.kv_get(conn, "rejudge.history.calls") or 0) + 1))
         except Exception:
             log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
-            if _attempt(conn, f"reeval.fail.{q['id']}") >= 3:   # a failed call is not a finished one: try again later, three times
-                conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
-            break
+            ev.last_answer = "failed"
+        skipped = False
         if ev.last_answer != "parsed":
             # No judgments came back, so nothing was re-judged: the old judgments and the
-            # questions written from them stand. This used to count as done and retired the
-            # open questions. A message for Eli stops the task for good; anything else is
-            # tried again later, three times.
-            if ev.last_answer == "contact" or _attempt(conn, f"reeval.fail.{q['id']}") >= 3:
-                conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            # questions written from them stand. Wait five minutes before any re-evaluation
+            # (an outage used to fail every 15 seconds). An empty answer is counted per chunk:
+            # after three, or when the model asked for Eli (that stops the task: no retry),
+            # this chunk alone is passed over. The count used to be per queue row, and three
+            # failures closed a whole day as "done" with nothing re-judged.
+            db.kv_set(conn, "reeval.retry_after", str(time.time() + REEVAL_BACKOFF_S))
             log.warning("re-evaluation of %s got no judgments (%s)", dt.datetime.fromtimestamp(start), ev.last_answer)
-            break
+            if history and not llm.subscription_available(load_config()):
+                break   # the subscription hit its limit during the call: not this chunk's failure
+            if ev.last_answer == "failed":
+                break   # an error (offline, the SDK down) is retried for as long as it lasts: no chunk is given up for it
+            if ev.last_answer != "contact" and _attempt(conn, f"reeval.fail.{q['id']}.{int(start)}") < 3:
+                break
+            skipped = True
+            n = 0
+            db.kv_set(conn, f"reeval.skipped.{q['id']}", str(int(db.kv_get(conn, f"reeval.skipped.{q['id']}") or 0) + 1))
         # (a phone re-judgment leaves the segments' judgments, and so their questions, as they were)
-        nq, _ = _invalidate_derived(conn, start, c1, questions=not phone_q, summaries=False)
+        nq = 0
+        if not skipped:
+            nq, _ = _invalidate_derived(conn, start, c1, questions=not phone_q, summaries=False)
         finished = c1 >= end
         if finished:
-            _, ns = _invalidate_derived(conn, q["t0"], q["t1"], questions=False, summaries=True)
+            # ensure_summaries rewrites only the last 7 days: an older day's span summaries
+            # would be deleted for good, so they are left (written from the earlier judgments).
+            recent = q["t1"] >= time.time() - 6 * 86400
+            _, ns = _invalidate_derived(conn, q["t0"], q["t1"], questions=False, summaries=recent)
             conn.execute("UPDATE reeval_queue SET done_to=?, done_at=? WHERE id=?", (c1, time.time(), q["id"]))
         else:
             ns = 0
             conn.execute("UPDATE reeval_queue SET done_to=? WHERE id=?", (c1, q["id"]))
+        if skipped:
+            break
         log.info("re-evaluated %s-%s (%s): %d segments, %d stale question(s) retired%s",
                  dt.datetime.fromtimestamp(start).strftime("%m-%d %H:%M"),
                  dt.datetime.fromtimestamp(c1).strftime("%H:%M"), q["reason"], n, nq,
@@ -1536,8 +1581,9 @@ def repair_outvoted(conn) -> int:
         conn.execute("INSERT OR IGNORE INTO seg_evals_outvoted VALUES (?,?,?,?,?,?,?,?)",
                      (e["segment_id"], e["switch_label"], e["interruption_kind"], e["self_distraction"],
                       e["next_task"], e["antecedent_id"], e["uncertain"], time.time()))
+        # (the flag stays as it was: raising it on all 492 rows asked 339 new questions, most about September)
         conn.execute("UPDATE seg_evals SET switch_label=?, interruption_kind=?, self_distraction=?, next_task=?,"
-                     " antecedent_id=?, uncertain=1 WHERE segment_id=?",
+                     " antecedent_id=? WHERE segment_id=?",
                      (sw, kind, int(sd), int(nxt), ante, e["segment_id"]))
         n += 1
     return n
@@ -1596,7 +1642,7 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
                                WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0
                                  AND COALESCE(g.end, g.start) > g.start AND e.segment_id IS NULL""",
                             (time.time() - back, time.time() - lookback_s)).fetchone()[0]
-        if left == 0 or (done == 0 and _attempt(conn, "backfill.unjudged.idle") >= 200):
+        if left == 0:   # (an idle-cycle limit here called it finished after 50 minutes offline)
             db.kv_set(conn, "backfill.unjudged", f"finished {dt.datetime.now():%Y-%m-%d %H:%M}, {left} left")
             log.info("backfill of unjudged segments finished (%d left)", left)
     return done

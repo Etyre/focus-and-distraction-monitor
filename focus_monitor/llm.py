@@ -161,6 +161,15 @@ def _log(site: str, backend: str, model: str, effort: str | None, usage, latency
         usage_log.append(now, site, backend, model, usage, call_cost(usage))
 
 
+_only = threading.local()
+
+
+def only_subscription(on: bool) -> None:
+    """While on (for this thread), parse() raises instead of falling back to the API key. For
+    bulk work that must not be billed per token (the history re-judgment)."""
+    _only.on = bool(on)
+
+
 # ---------------------------------------------------------------- the door
 def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
     """Drop-in for client.beta.messages.parse(**kw). Picks the backend; returns an object with
@@ -181,11 +190,17 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
             _block(e.until, str(e))
             _log(site, "subscription", model, effort, None, int((time.time() - t0) * 1000), False,
                  f"limit: {e}"[:300])
+            if getattr(_only, "on", False):
+                raise
         except Exception as e:  # noqa: BLE001 - any SDK failure: this call goes to the API
             global _last_error
             _last_error = f"{type(e).__name__}: {e}"[:300]
-            log.warning("subscription call failed at %s (%s) - using the API for this call", site, _last_error)
             _log(site, "subscription", model, effort, None, int((time.time() - t0) * 1000), False, _last_error)
+            if getattr(_only, "on", False):
+                raise
+            log.warning("subscription call failed at %s (%s) - using the API for this call", site, _last_error)
+    elif getattr(_only, "on", False):
+        raise RuntimeError("subscription not available, and this call may not use the API key")
     # The API backend takes tools alongside structured output, so contact_eli rides along; a
     # call to it comes back without parsed output, which every caller already treats as "no
     # answer" and does not retry. note_to_eli rides along too: a note is recorded and answered

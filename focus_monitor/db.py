@@ -511,14 +511,21 @@ def connect() -> sqlite3.Connection:
         # only by the mark they left in the rationale. Record the ones that are still there, as
         # the row stands now, so a later re-judgment cannot erase them either.
         import re as _re
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")   # two connections opening at once: the second waits here
         k = 0
+        src_rv = {r["segment_id"]: r for r in conn.execute("SELECT * FROM seg_reviews")}
         for r in conn.execute("SELECT * FROM seg_evals WHERE rationale LIKE '%feedback on segment %'"
                               " OR rationale LIKE '%does your correction of segment %'").fetchall():
             for m in _re.finditer(r" \| corrected via your feedback on segment (\d+): ([^|]*)", r["rationale"] or ""):
+                # Only the fields that ruling itself set: recording the whole row "as it stands"
+                # would put the old switch back over a new judgment for a content-only correction.
+                rv = src_rv.get(int(m.group(1)))
+                if rv is None:
+                    continue    # the ruling is gone; reapply would skip it anyway
+                keep = lambda f: r[f] if rv[f] is not None else None
                 conn.execute("INSERT OR IGNORE INTO seg_propagated VALUES (?,?,?,?,?,?,?,?)",
-                             (r["segment_id"], int(m.group(1)), "applies", r["content"], r["switch_label"],
-                              r["focused"], m.group(2).strip(), r["created"]))
+                             (r["segment_id"], int(m.group(1)), "applies", keep("content"), keep("switch_label"),
+                              keep("focused"), m.group(2).strip(), r["created"]))
                 k += 1
             for m in _re.finditer(r" \| does your correction of segment (\d+) apply here\? ([^|]*)", r["rationale"] or ""):
                 if r["uncertain"]:

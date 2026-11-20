@@ -782,7 +782,10 @@ def _undo_question_answer(c, undo_json: str | None) -> dict:
         cur = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (u["seg_id"],)).fetchone()
         if u.get("seg_written") is not None and cur is not None and abs(cur["created"] - u["seg_written"]) > 1e-3:
             # The ruling was edited by hand after this answer: it is no longer the answer's to
-            # take back. (Clearing the answer used to delete the hand edit with it.)
+            # take back. (Clearing the answer used to delete the hand edit with it.) The legacy
+            # switch review written with that ruling stays too; a phone review is still restored.
+            if u.get("phone_key") is not None:
+                _restore_rows(c, "phone_reviews", "seg_key", u["phone_key"], u.get("phone_review"))
             return u
         _restore_rows(c, "seg_reviews", "segment_id", u["seg_id"], u.get("seg_review"))
     if u.get("phone_key") is not None:

@@ -459,6 +459,17 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * Second pass the same day (a review of that day's own fixes). Re-evaluations: a failed call
+    waits five minutes (`kv` `reeval.retry_after`) and is retried for as long as the error lasts;
+    three empty answers pass over that one chunk, not the day's whole queue row (an hour offline
+    would have closed every day of the history re-judgment as done). History calls never fall
+    back to the API key (`llm.only_subscription`). `repair_outvoted` no longer raises the doubt
+    flag (it would have asked 339 questions about September). The `seg_propagated` migration
+    records only the fields the source ruling set, a ruling's old records are dropped when it
+    propagates again, and marks are not stacked. An empty first-pass answer is recorded, held ten
+    minutes, and after three tries the stretch gets a flagged default instead of a call every 15
+    seconds. An older day's span summaries are kept when it is re-judged (`ensure_summaries`
+    rewrites only the last 7 days).
   * Everything judged before the 03:34 restart on 2026-11-20 was judged at low effort. The
     history re-judgment is built but not started: `python -m focus_monitor rejudge-history --start`
     queues one `reeval_queue` row per day (reason "judged at low effort"); the running app then

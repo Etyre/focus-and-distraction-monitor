@@ -99,9 +99,11 @@ def _apply(conn, rec) -> bool:
     """Write one propagated verdict (a seg_propagated row, or the same fields as a dict) onto the
     segment's stored judgment. False when it changes nothing."""
     sid, src, note = rec["segment_id"], rec["from_segment_id"], rec["note"]
+    had = (conn.execute("SELECT rationale FROM seg_evals WHERE segment_id=?", (sid,)).fetchone() or [None])[0] or ""
     if rec["verdict"] == "uncertain":
+        mark = f" | does your correction of segment {src} apply here? {note}"
         conn.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
-                     (f" | does your correction of segment {src} apply here? {note}", sid))
+                     ("" if mark in had else mark, sid))
         return True
     sets, args = [], []
     if rec["content"] in CONTENTS:
@@ -131,7 +133,8 @@ def _apply(conn, rec) -> bool:
         return False
     sets.append("uncertain=0")
     sets.append("rationale = COALESCE(rationale,'') || ?")
-    args.append(f" | corrected via your feedback on segment {src}: {note}")
+    mark = f" | corrected via your feedback on segment {src}: {note}"
+    args.append("" if mark in had else mark)   # (a re-judgment that kept the old row would stack the mark)
     args.append(sid)
     conn.execute(f"UPDATE seg_evals SET {', '.join(sets)} WHERE segment_id=?", args)
     return True
@@ -148,6 +151,10 @@ def reapply(conn, segment_ids) -> int:
         for rec in conn.execute("""SELECT p.* FROM seg_propagated p
                                    JOIN seg_reviews r ON r.segment_id = p.from_segment_id
                                    WHERE p.segment_id=? ORDER BY p.created""", (sid,)).fetchall():
+            if rec["verdict"] == "uncertain" and conn.execute(
+                    "SELECT 1 FROM review_questions WHERE segment_id=? AND status != 'open' AND COALESCE(answered_at, created) >= ?",
+                    (sid, rec["created"])).fetchone():
+                continue   # the person has dealt with that doubt already: it is not raised again
             n += int(_apply(conn, rec))
     return n
 
@@ -243,6 +250,9 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         n_applied = n_flagged = 0
         now = time.time()
         with db.tx(conn):
+            # this ruling's earlier verdicts are replaced by the ones just given: a target it
+            # no longer applies to must not get the old correction back at its next re-judgment
+            conn.execute("DELETE FROM seg_propagated WHERE from_segment_id=?", (seg["id"],))
             for v in resp.parsed_output.verdicts:
                 if v.segment_id not in cand_ids:
                     continue

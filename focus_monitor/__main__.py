@@ -113,7 +113,8 @@ def main():
         st = evaluator.history_status(c)
         print(f"{st['days'] - st['days_left']} of {st['days']} days done, {st['calls']} calls so far"
               + (f"; now at {st['working_on']}" if st["working_on"] else "")
-              + ("; PAUSED" if st["paused"] else ""))
+              + (f"; {st['skipped_chunks']} chunk(s) passed over after failed calls" if st["skipped_chunks"] else "")
+              + (f"; waiting: {st['waiting']}" if st["waiting"] else ""))
     elif args.cmd == "rejudge-wrong-display":
         from . import db, evaluator
         print("queued", evaluator.queue_wrong_display_rejudge(db.connect()), "stretch(es); the running app works through them")

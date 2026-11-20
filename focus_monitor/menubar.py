@@ -317,7 +317,7 @@ class FocusMenuBar(rumps.App):
                 events = (f"{m['interruption_count']} interruptions · {m['self_distraction_events']} self-distractions "
                           f"({_fmt_min(m['distracted_min'])})")
             else:
-                spans = stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())))
+                spans = stats.spans_and_events(stats.labelled_segments(conn, *stats.day_bounds(logical_date())), conn=conn)  # conn: span reviews and the whole-span rule, as on the dashboard
                 events = f"{len(spans['focus_spans'])} focus spans today"
         finally:
             conn.close()

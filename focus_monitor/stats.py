@@ -735,7 +735,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
 WHOLE_PAD_S = 8 * 3600   # how far past the edge of a window a span crossing that edge is followed
 
 
-def _whole_spans(conn, segs: list[dict], min_focus_min: float, break_min: float) -> list[dict]:
+def _whole_spans(conn, segs: list[dict], min_focus_min: float, break_min: float, overrides: dict | None = None) -> list[dict]:
     """The qualifying spans that cross the first or last moment of `segs`, as assembled from a
     wider window. A day's segments stop at 4am, and a span running past it used to be judged as
     two separate pieces, each of which had to qualify on its own (twice in 60 days). Eli,
@@ -752,14 +752,15 @@ def _whole_spans(conn, segs: list[dict], min_focus_min: float, break_min: float)
         (w1 - 86400, w1 + MAX_GAP, w1 + 1)).fetchone() is not None
     if not before and not after:
         return []
-    wide = labelled_segments(conn, w0 - (WHOLE_PAD_S if before else 0), w1 + (WHOLE_PAD_S if after else 0))
+    wide = labelled_segments(conn, w0 - (WHOLE_PAD_S if before else 0), w1 + (WHOLE_PAD_S if after else 0), overrides)
     se = spans_and_events(wide, min_focus_min, break_min, conn=conn, whole=[])
-    return [{"start": sp["start"], "end": sp["end"], "subtype": sp["subtype"], "focus_min": sp["focus_min"]}
+    return [{"start": sp["start"], "end": sp["end"], "subtype": sp["subtype"], "focus_min": sp["focus_min"],
+             "seg_ids": sorted({g["id"] for r in sp["runs"] if r["cat"] == "focus" for g in r["segments"]})}
             for sp in se["focus_spans"] if sp["start"] < w0 < sp["end"] or sp["start"] < w1 < sp["end"]]
 
 
 def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break_min: float | None = None,
-                     conn=None, whole: list[dict] | None = None) -> dict:
+                     conn=None, whole: list[dict] | None = None, overrides: dict | None = None) -> dict:
     """Unified model (Rules and heuristics doc). A focus span holds attention on one task/project.
     ONE threshold governs every diversion: any contiguous time AWAY from the span's task - whether a
     distraction, an interruption, or a hop to different work - ends the span only if it reaches
@@ -774,7 +775,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     # Spans that run past the edge of this window, qualified as a whole (_whole_spans). `whole`
     # is given by the self-test, and as [] by the wider pass itself.
     if whole is None:
-        whole = _whole_spans(conn, segs, min_focus_min, break_min) if conn is not None and min_focus_min > 0 else []
+        whole = _whole_spans(conn, segs, min_focus_min, break_min, overrides) if conn is not None and min_focus_min > 0 else []
     _real = [s for s in segs if s["duration"] > 0]
     win0, win1 = (_real[0]["clip_start"], _real[-1]["clip_end"]) if _real else (0.0, 0.0)
     # Spans are LAZILY evaluated, like segments (user rule 2026-09-01): never assemble a span
@@ -1001,6 +1002,11 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if not ((w["start"] < win0 and sp["start"] <= win0 + break_s)
                     or (w["end"] > win1 and sp["end"] >= win1 - break_s)):
                 continue
+            # it has to be the whole span's own focus time, not a short visit to other work
+            # during one of its diversions that happens to sit at the edge of the window
+            if "seg_ids" in w and not set(w["seg_ids"]) & {g["id"] for r_ in sp["runs"] if r_["cat"] == "focus"
+                                                            for g in r_["segments"]}:
+                continue
             if sp["start"] < w["start"] - 1:
                 head = [r_ for r_ in sp["runs"] if r_["end"] <= w["start"] + 1]
                 rest = sp["runs"][len(head):]
@@ -1213,7 +1219,7 @@ def short_breaks(conn, t0: float, t1: float) -> list[dict]:
 def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
     t0, t1 = day_bounds(day)
     segs = labelled_segments(conn, t0, t1, overrides)
-    se = spans_and_events(segs, conn=conn)
+    se = spans_and_events(segs, conn=conn, overrides=overrides)
     focus = se["focus_spans"]
     # Meetings are focus, but their own kind: counted separately, never in "total focus".
     # Hybrid time (an activity carried on inside a live discussion) goes with them, minute by
