@@ -732,8 +732,34 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
     return keep_q, keep_d
 
 
+WHOLE_PAD_S = 8 * 3600   # how far past the edge of a window a span crossing that edge is followed
+
+
+def _whole_spans(conn, segs: list[dict], min_focus_min: float, break_min: float) -> list[dict]:
+    """The qualifying spans that cross the first or last moment of `segs`, as assembled from a
+    wider window. A day's segments stop at 4am, and a span running past it used to be judged as
+    two separate pieces, each of which had to qualify on its own (twice in 60 days). Eli,
+    2026-11-20: each day keeps its own minutes, and the span is qualified as a whole."""
+    real = [s for s in segs if s["duration"] > 0]
+    if not real:
+        return []
+    w0, w1 = real[0]["clip_start"], real[-1]["clip_end"]
+    before = real[0]["state"] != "idle" and conn.execute(
+        "SELECT 1 FROM segments WHERE idle=0 AND start > ? AND start < ? AND COALESCE(end, start) >= ? LIMIT 1",
+        (w0 - 86400, w0 - 1, w0 - MAX_GAP)).fetchone() is not None
+    after = real[-1]["state"] != "idle" and conn.execute(
+        "SELECT 1 FROM segments WHERE idle=0 AND start > ? AND start <= ? AND COALESCE(end, start) > ? LIMIT 1",
+        (w1 - 86400, w1 + MAX_GAP, w1 + 1)).fetchone() is not None
+    if not before and not after:
+        return []
+    wide = labelled_segments(conn, w0 - (WHOLE_PAD_S if before else 0), w1 + (WHOLE_PAD_S if after else 0))
+    se = spans_and_events(wide, min_focus_min, break_min, conn=conn, whole=[])
+    return [{"start": sp["start"], "end": sp["end"], "subtype": sp["subtype"], "focus_min": sp["focus_min"]}
+            for sp in se["focus_spans"] if sp["start"] < w0 < sp["end"] or sp["start"] < w1 < sp["end"]]
+
+
 def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break_min: float | None = None,
-                     conn=None) -> dict:
+                     conn=None, whole: list[dict] | None = None) -> dict:
     """Unified model (Rules and heuristics doc). A focus span holds attention on one task/project.
     ONE threshold governs every diversion: any contiguous time AWAY from the span's task - whether a
     distraction, an interruption, or a hop to different work - ends the span only if it reaches
@@ -745,6 +771,12 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         cfg = load_config()
         min_focus_min = min_focus_min if min_focus_min is not None else cfg.min_focus_span_min
         break_min = break_min if break_min is not None else cfg.break_min
+    # Spans that run past the edge of this window, qualified as a whole (_whole_spans). `whole`
+    # is given by the self-test, and as [] by the wider pass itself.
+    if whole is None:
+        whole = _whole_spans(conn, segs, min_focus_min, break_min) if conn is not None and min_focus_min > 0 else []
+    _real = [s for s in segs if s["duration"] > 0]
+    win0, win1 = (_real[0]["clip_start"], _real[-1]["clip_end"]) if _real else (0.0, 0.0)
     # Spans are LAZILY evaluated, like segments (user rule 2026-09-01): never assemble a span
     # over not-yet-evaluated segments - wait for their verdicts instead of guessing and later
     # shrinking the span. Truncate assembly at the evaluation frontier: the last segment with a
@@ -958,6 +990,29 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if abs(sp["end"] - frontier_ts) <= MAX_GAP and sp["ended_by"] in ("ongoing", "gap (not recorded)"):
                 sp["ended_by"] = "awaiting evaluation"
 
+    # The piece of a whole span that lies in this window: it starts where the whole span starts
+    # (not at a choppy opening the whole span left out) and is exempt from the gates below,
+    # which the whole span has already passed.
+    pieces_cut = []
+    for w in whole:
+        for sp in spans:
+            if min(sp["end"], w["end"]) - max(sp["start"], w["start"]) <= 0 or sp.get("whole"):
+                continue
+            if not ((w["start"] < win0 and sp["start"] <= win0 + break_s)
+                    or (w["end"] > win1 and sp["end"] >= win1 - break_s)):
+                continue
+            if sp["start"] < w["start"] - 1:
+                head = [r_ for r_ in sp["runs"] if r_["end"] <= w["start"] + 1]
+                rest = sp["runs"][len(head):]
+                if not rest or rest[0]["cat"] != "focus":
+                    continue
+                if any(r_["cat"] == "focus" for r_ in head):
+                    pieces_cut.append(_finalize({"start": sp["start"], "runs": head}, "interrupted"))
+                sp["runs"], sp["start"] = rest, rest[0]["start"]
+                _finalize(sp, sp["ended_by"])
+            sp["whole"] = w
+    spans = sorted(spans + pieces_cut, key=lambda x: x["start"])
+
     from .config import load_config as _lc
     _cfg = _lc()
     # A focus span STARTS with its continuous block (user rule 2026-11-19: "every focus span
@@ -970,7 +1025,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         _rev = conn.execute("SELECT * FROM span_reviews").fetchall() if conn is not None else []
         cut = []
         for sp in spans:
-            if sp["focus_min"] < min_focus_min or span_subtype(dict(sp), _cfg) == "meeting":
+            if sp["focus_min"] < min_focus_min or sp.get("whole") or span_subtype(dict(sp), _cfg) == "meeting":
                 continue
             rv = _span_review_for(_rev, sp)
             if rv is not None and rv["verdict"] == "focus":
@@ -995,10 +1050,13 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             sp["trimmed_start_min"] = (sp["start"] - head_runs[0]["start"]) / 60
             _finalize(sp, sp["ended_by"])
         spans = sorted(spans + cut, key=lambda x: x["start"])
-    qualifying = [sp for sp in spans if sp["focus_min"] >= min_focus_min]
-    short = [sp for sp in spans if sp["focus_min"] < min_focus_min]
+    qualifying = [sp for sp in spans if sp["focus_min"] >= min_focus_min or sp.get("whole")]
+    short = [sp for sp in spans if sp["focus_min"] < min_focus_min and not sp.get("whole")]
     for sp in qualifying:
         sp["subtype"] = span_subtype(sp, _cfg)
+        if sp["subtype"] is None and sp.get("whole"):   # the whole span passed the Toggl / reading gates
+            sp["subtype"] = sp["whole"]["subtype"]
+            sp.pop("disq_reason", None)
         # Hybrid span: the activity (reading, task, ...) happened inside a live discussion for
         # most of it. It keeps its activity subtype but is not INDEPENDENT focus - it is counted
         # with meetings, and can never be fully absorbed.
@@ -1053,7 +1111,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         # reaches 5 minutes; a stretch with no 10-minute continuous block is not a focus span.
         # Decided here, not by the evaluator: the honest switch labels (left A, returned to A)
         # are exactly what assembles that span.
-        if best < unbroken_s and sp["subtype"] not in (None, "meeting"):  # a meeting is a meeting
+        if best < unbroken_s and sp["subtype"] not in (None, "meeting") and not sp.get("whole"):  # a meeting is a meeting
             sp["subtype"] = None
             sp["disq_reason"] = f"no continuous block of {_cfg0.min_unbroken_min:g} minutes"
     # Spans disqualified by the Toggl gate (task churn, no entry) are unfocused time, not spans.

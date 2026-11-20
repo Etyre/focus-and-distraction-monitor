@@ -459,6 +459,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * A focus span running past 4am was assembled as two pieces, one per day, and each had to
+    qualify alone. `spans_and_events` now looks up to 8 hours past the edge of its window when
+    activity crosses it (`_whole_spans`), and the piece of a qualifying span that lies inside the
+    window skips the length, opening-block and Toggl gates. Each day still counts only its own
+    minutes (Eli, 2026-11-20). Two days in 90 changed, by about 6 focus minutes each.
   * Undoing a chat's edit deleted the whole ruling, including one the person had made before the
     chat touched it. What a chat replaces is now kept in `review_undo` (blocks and span verdicts),
     and undo puts it back; a second undo then removes that earlier ruling too.

@@ -364,6 +364,28 @@ def cases():
         assert [_mins(x) for x in sp] == [44], [_mins(x) for x in sp]
         assert [g["domain"] for g in d.segs if g.get("phone")] == ["Phone"]
 
+    @case("a span that runs past the end of the day is qualified as a whole; each day keeps its own minutes")
+    def _():
+        d = Day()
+        d.add(4, "Mail", focused=False, switch="interruption", content="correspondence")
+        d.add(16, "Essay", switch="interruption")
+        w = d.run()["focus_spans"]
+        assert [_mins(x) for x in w] == [16], [_mins(x) for x in w]
+        cut = T0 + 12 * 60.0    # "4am", 8 minutes into the essay
+        def half(a, b):
+            out = []
+            for g in d.segs:
+                ca, cb = max(g["clip_start"], a), min(g["clip_end"], b)
+                if cb > ca:
+                    out.append(dict(g, clip_start=ca, clip_end=cb, duration=cb - ca))
+            return out
+        whole = [{"start": w[0]["start"], "end": w[0]["end"], "subtype": w[0]["subtype"], "focus_min": w[0]["focus_min"]}]
+        for a, b in ((T0, cut), (cut, d.t)):
+            alone = stats.spans_and_events(half(a, b), min_focus_min=10, break_min=5)["focus_spans"]
+            assert alone == [], [_mins(x) for x in alone]              # 8 minutes does not qualify alone
+            sp = stats.spans_and_events(half(a, b), min_focus_min=10, break_min=5, whole=whole)["focus_spans"]
+            assert [_mins(x) for x in sp] == [8], [_mins(x) for x in sp]
+
     @case("phone time away from the Mac is distracted when its pickup began as a self-distraction, and only then")
     def _():
         def day(sd):
