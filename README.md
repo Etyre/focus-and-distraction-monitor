@@ -468,6 +468,29 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   * The review queue leaves out questions not written yet. If ALL of them were unwritten the tab
     said "Nothing to review" for good; it now loads the first one that becomes ready. And after
     a late question was shown, "next" replayed every card after its place in time (`qPastEnd`).
+  * **The evaluator ran at effort "low" from 2026-08-31 to 2026-11-20** while `config.toml` asked
+    for "high": the call had the level written into it. Its shadow calls were told the primary was
+    "high" and ran "low" and "medium", so the Efforts tab's evaluator rows from that period compare
+    low with low, not with high. Judgments from before the fix were made at low effort.
+  * Whatever was unjudged at the 4am rollover was never judged (the evaluator looked back to the
+    start of today only): 162 segments in 30 days. It now looks back one more day.
+  * A long segment starting just after a short one was judged with it, on its first ten minutes.
+    A first pass now takes only segments that ended 15 minutes ago.
+  * A span could bridge idle time when the person had left the task just before going away
+    (27 spans since August). `span_selftest` has the case.
+  * A model answering in a fixed JSON shape can only write `@ELI:` inside a field; the contact
+    check reads response text line by line and missed it. `llm.contacted` now hands such fields
+    over as text of their own.
+  * Pause was kept in memory only; any restart resumed recording. It is in `kv` now.
+  * The block editor on a capture card sent the evaluator's content, switch and hybrid as the
+    person's ruling with every click, and dropped the thread pointer and note of an earlier
+    answer. It sends only what the person has ruled.
+  * Keys 1-4 on a span card reviewed whichever capture had been opened last (`current` was not
+    cleared). 1,008 captures without a first screenshot could not be opened at all.
+  * Mini-timeline blocks opened the capture of their transition GROUP (`switch_id`), not their own
+    (`own_switch_id`): a different segment for 27% of blocks.
+  * `git add <folder>` is not safe here when another Claude session is working in the same
+    checkout: stage files (or hunks) by name.
 * **Signals (2026-11-19): what was tried and what the data showed.**
   * A listen-only event tap on mouse clicks can be created without any permission, but macOS
     delivers it no events unless the app has Input Monitoring. The click and key COUNTERS and

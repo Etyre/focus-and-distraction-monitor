@@ -76,7 +76,10 @@ def index():
 
 @app.get("/api/day")
 def api_day(day: str | None = None):
-    d = dt.date.fromisoformat(day) if day else logical_date()
+    try:
+        d = dt.date.fromisoformat(day) if day else logical_date()
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
     c = conn()
     t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
@@ -278,7 +281,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     coherence_issue = (row["issue"] if row is not None and not row["coherent"] else None)
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
     keys = ("clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
-            "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+            "url", "activity", "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
     in_span_ids = {id(s) for s in sp["segments"]}
     segs = []
     for s in (day_segs or sp["segments"]):
@@ -526,7 +529,7 @@ def api_switch(switch_id: int):
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
         keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
-                "url", "activity", "content", "hybrid", "switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
+                "url", "activity", "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
         tl_ids = [s["id"] for s in full["timeline"]]
@@ -676,7 +679,7 @@ def api_questions_queue(limit: int = 1000):
         log.exception("question scoring failed")
     out = []
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
-            "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
+            "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     rows = [dict(r) for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
                                  g.app, g.title, g.domain,
                                  (SELECT id FROM switches WHERE to_segment = q.segment_id LIMIT 1) AS switch_id
@@ -769,6 +772,11 @@ def _undo_question_answer(c, undo_json: str | None) -> dict:
     import json as _json
     u = _json.loads(undo_json) if undo_json else {}
     if u.get("seg_id") is not None:
+        cur = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (u["seg_id"],)).fetchone()
+        if u.get("seg_written") is not None and cur is not None and abs(cur["created"] - u["seg_written"]) > 1e-3:
+            # The ruling was edited by hand after this answer: it is no longer the answer's to
+            # take back. (Clearing the answer used to delete the hand edit with it.)
+            return u
         _restore_rows(c, "seg_reviews", "segment_id", u["seg_id"], u.get("seg_review"))
     if u.get("phone_key") is not None:
         _restore_rows(c, "phone_reviews", "seg_key", u["phone_key"], u.get("phone_review"))
@@ -788,7 +796,7 @@ def api_question_context(qid: int):
         raise HTTPException(404)
     t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
-            "content", "hybrid", "switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
+            "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     timeline = [{k: s.get(k) for k in keys} for s in stats.labelled_segments(c, t0, t1) if s["duration"] > 0]
     return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
             "phone": phone.window(cfg, t0, t1),
@@ -853,6 +861,9 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                        # the person's focused/unfocused ruling: set by the option, else kept
                        (int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused")),
                        (None if osw else _keep("self_distraction")), (None if osw else _keep("next_task"))))
+            # which row this answer wrote, so clearing the answer later can tell whether the
+            # ruling is still that one or has been edited by hand since (see _undo_question_answer)
+            undo["seg_written"] = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()[0]
             from . import propagation
             propagation.note_event(c, o["segment_id"])
             old = _NEW2OLD.get((o.get("switch_label"),
@@ -1231,6 +1242,17 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
 @app.delete("/api/segment/{segment_id}/eval-review")
 def api_seg_eval_unreview(segment_id: int):
     c = conn()
+    # If this ruling is the one a question's answer wrote, "undo edits" is clearing that answer:
+    # the question goes back to open and the doubt flag comes back with it. Deleting the row alone
+    # left the question marked answered with no ruling behind it, so the doubt just vanished.
+    import json as _json
+    cur = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+    if cur is not None:
+        for q in c.execute("SELECT id, undo FROM review_questions WHERE status='answered' AND undo LIKE ?"
+                           " ORDER BY answered_at DESC", (f'%"seg_id": {segment_id},%',)).fetchall():
+            u = _json.loads(q["undo"] or "{}")
+            if u.get("seg_id") == segment_id and u.get("seg_written") is not None and abs(u["seg_written"] - cur["created"]) <= 1e-3:
+                return api_question_reopen(q["id"])
     with db.tx(c):
         c.execute("DELETE FROM seg_reviews WHERE segment_id=?", (segment_id,))
     return {"ok": True}

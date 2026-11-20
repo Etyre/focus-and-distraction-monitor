@@ -247,14 +247,14 @@ async function loadDay(){
   drawTimeline(d);
   syncDayChat();
   const spansSorted=d.focus_spans.slice().sort((a,b)=>a.start-b.start);
-  $('#spans').innerHTML='<tr><th>Type</th><th>Focus</th><th>Start</th><th>End</th><th>Length</th><th>Interruptions</th><th>Ended by</th><th>Toggl</th><th>Apps</th></tr>'+spansSorted
-    .map((s,i)=>`<tr><td title="${subName[s.subtype]}"><span class="sw" style="background:${subColor[s.subtype]}"></span>${s.fully_absorbed?' <span title="fully absorbed (0 interruptions)">◆</span>':''}${s.unfocused_ask?' <span title="the evaluator judged a large part of this span unfocused — open the span to say whether it was" style="color:var(--interrupted)">⚠</span>':''}${s.review_chat_mid?` <span title="verdict set in a chat with Claude — click to open that conversation" style="cursor:pointer" onclick="openChatMsg(${s.review_chat_mid})">💬</span>`:''}</td><td class="focdesc" data-sp="${i}">${s.title?esc(s.title):'<span class="muted small">(pending)</span>'}</td><td>${fmtT(s.start)}</td><td>${fmtT(s.end)}</td><td><b>${fmtMin(s.duration/60)}</b>${s.detour_min>0.5?` <span class="muted small">(${fmtMin(s.focus_min)} focused)</span>`:''}</td><td class="small">${s.detours?s.detours+' ('+fmtMin(s.detour_min)+')':'–'}</td><td class="small" style="color:${s.ended_by==='distracted'?'var(--distracted)':s.ended_by==='interrupted'?'var(--interrupted)':'var(--muted)'}">${esc(s.ended_by)}</td><td class="small">${esc(s.toggl.join(' · '))}</td><td class="small muted">${esc(s.apps.join(', '))}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
+  $('#spans').innerHTML='<tr><th>Type</th><th>Focus</th><th>Start</th><th>End</th><th>Length</th><th>Interruptions</th><th>Ended by</th><th>Toggl</th><th>Apps</th></tr>'+(spansSorted
+    .map((s,i)=>`<tr><td title="${subName[s.subtype]}"><span class="sw" style="background:${subColor[s.subtype]}"></span>${s.fully_absorbed?' <span title="fully absorbed (0 interruptions)">◆</span>':''}${s.unfocused_ask?' <span title="the evaluator judged a large part of this span unfocused — open the span to say whether it was" style="color:var(--interrupted)">⚠</span>':''}${s.review_chat_mid?` <span title="verdict set in a chat with Claude — click to open that conversation" style="cursor:pointer" onclick="openChatMsg(${s.review_chat_mid})">💬</span>`:''}</td><td class="focdesc" data-sp="${i}">${s.title?esc(s.title):'<span class="muted small">(pending)</span>'}</td><td>${fmtT(s.start)}</td><td>${fmtT(s.end)}</td><td><b>${fmtMin(s.duration/60)}</b>${s.detour_min>0.5?` <span class="muted small">(${fmtMin(s.focus_min)} focused)</span>`:''}</td><td class="small">${s.detours?s.detours+' ('+fmtMin(s.detour_min)+')':'–'}</td><td class="small" style="color:${s.ended_by==='distracted'?'var(--distracted)':s.ended_by==='interrupted'?'var(--interrupted)':'var(--muted)'}">${esc(s.ended_by)}</td><td class="small">${esc(s.toggl.join(' · '))}</td><td class="small muted">${esc(s.apps.join(', '))}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>');
   $('#spans').querySelectorAll('td.focdesc').forEach(td=>{const s=spansSorted[+td.dataset.sp];
     if(!s.summary&&!s.title)return;
     td.addEventListener('mousemove',e=>showTT(e,`${s.title?'<b>'+esc(s.title)+'</b><br>':''}${s.summary?esc(s.summary):'<span class="muted">(no summary yet)</span>'}`));
     td.addEventListener('mouseleave',hideTT);});
-  $('#distractions').innerHTML='<tr><th>Start</th><th>Length</th><th>Where</th><th></th></tr>'+d.distractions
-    .map(s=>`<tr${s.is_event?'':' style="opacity:.55"'}><td>${fmtT(s.start)}</td><td>${fmtMin(s.duration/60)}</td><td class="small">${esc(s.where.join(', '))}</td><td class="muted small">${s.is_event?'':'not an event (no 5-min focus before it)'}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>';
+  $('#distractions').innerHTML='<tr><th>Start</th><th>Length</th><th>Where</th><th></th></tr>'+(d.distractions
+    .map(s=>`<tr${s.is_event?'':' style="opacity:.55"'}><td>${fmtT(s.start)}</td><td>${fmtMin(s.duration/60)}</td><td class="small">${esc(s.where.join(', '))}</td><td class="muted small">${s.is_event?'':'not an event (no 5-min focus before it)'}</td></tr>`).join('')||'<tr><td class="muted">none</td></tr>');
 }
 function drawTimeline(d){
   if(!d.segments.length){$('#timeline').innerHTML='<div class="muted">No data for this day.</div>';TL.d=null;return;}
@@ -333,7 +333,7 @@ function renderTimeline(){
     else if(mk&&g.focused!=null)s+=`<path d="M${x0-3},9 L${x0+3},9 L${x0},14 Z" fill="var(--${mk==='sd'?'distracted':'interrupted'})"/>`;});
   (d.short_breaks||[]).forEach(b=>{if(!vis(b.start,b.end))return;s+=`<rect x="${xc(b.start)}" y="14" width="${Math.max(1,xc(b.end)-xc(b.start))}" height="46" fill="url(#hatch)" pointer-events="none"/>`;});
   (d.disqualified||[]).forEach(q=>{if(!vis(q.start,q.end))return;s+=`<rect data-spb="${(q.start+q.end)/2}" x="${xc(q.start)}" y="4" width="${Math.max(2,xc(q.end)-xc(q.start))}" height="5" rx="2" fill="var(--interrupted)" opacity="0.8" style="cursor:pointer"><title>disqualified span (${esc(q.reason||'')}) — click to review</title></rect>`;});
-  d.focus_spans.forEach(sp=>{if(!vis(sp.start,sp.end))return;s+=`<rect data-spb="${(sp.start+sp.end)/2}" x="${xc(sp.start)}" y="4" width="${Math.max(2,xc(sp.end)-xc(sp.start))}" height="5" rx="2" fill="${sp.subtype==='meeting'?'var(--f-meeting)':'var(--focus)'}" style="cursor:pointer"><title>${sp.title?sp.title+' — ':''}${sp.subtype==='meeting'?'meeting ':(sp.hybrid?'hybrid (with others) ':'span ')}${fmtMin(sp.duration/60)} — ${sp.detours} interruption(s) inside — click to review</title></rect>`;
+  d.focus_spans.forEach(sp=>{if(!vis(sp.start,sp.end))return;s+=`<rect data-spb="${(sp.start+sp.end)/2}" x="${xc(sp.start)}" y="4" width="${Math.max(2,xc(sp.end)-xc(sp.start))}" height="5" rx="2" fill="${sp.subtype==='meeting'?'var(--f-meeting)':'var(--focus)'}" style="cursor:pointer"><title>${sp.title?esc(sp.title)+' — ':''}${sp.subtype==='meeting'?'meeting ':(sp.hybrid?'hybrid (with others) ':'span ')}${fmtMin(sp.duration/60)} — ${sp.detours} interruption(s) inside — click to review</title></rect>`;
     (sp.events||[]).forEach(e=>{if(!vis(e.start,e.end))return;const cx=xc((e.start+e.end)/2);s+=`<path d="M${cx-4},2 L${cx+4},2 L${cx},10 Z" fill="var(--interrupted)"><title>${e.kind} ${fmtMin((e.end-e.start)/60)} (inside the span)</title></path>`;});});
   // oversight flags: uncertain, unresolved switches — click to resolve
   const flags=[],seen=new Set();
@@ -378,7 +378,7 @@ function el_render(el,s,d,segs,flags){
     c.addEventListener('mouseleave',hideTT);
     c.addEventListener('click',()=>{hideTT();openQuestionFor(seg,id);});});
   el.querySelectorAll('rect[data-spb]').forEach(b=>b.addEventListener('click',()=>{hideTT();openSpanReview(+b.dataset.spb);}));
-  el.querySelectorAll('rect[data-p]').forEach(r=>{const e=d.phone.segments[+r.dataset.p];r.addEventListener('mousemove',ev=>showTT(ev,`<b>📱 ${esc(e.app)}</b><br>${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?'<br>opened from '+e.how:''}${e.open?'<br>still open at last sync':''}${e.put_down?'<br>'+putDownNote(d.phone):''}`));r.addEventListener('mouseleave',hideTT);});
+  el.querySelectorAll('rect[data-p]').forEach(r=>{const e=d.phone.segments[+r.dataset.p];r.addEventListener('mousemove',ev=>showTT(ev,`<b>📱 ${esc(e.app)}</b><br>${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?'<br>opened from '+esc(e.how):''}${e.open?'<br>still open at last sync':''}${e.put_down?'<br>'+putDownNote(d.phone):''}`));r.addEventListener('mouseleave',hideTT);});
   el.querySelectorAll('rect[data-t]').forEach(r=>{const e=d.toggl[+r.dataset.t];r.addEventListener('mousemove',ev=>showTT(ev,`<b>Toggl:</b> ${esc(e.description)||'(untitled)'}<br>${fmtT(e.start)}–${fmtT(e.end)}${e.project?'<br>project: '+esc(e.project):''}${e.tags?'<br>tags: '+esc(e.tags):''}`));r.addEventListener('mouseleave',hideTT);});
 }
 
@@ -542,7 +542,7 @@ function spanTLBind(sp){
   document.querySelectorAll('#spanTL rect[data-si]').forEach(r=>{const g=sp.segments[+r.dataset.si];
     r.addEventListener('mousemove',e=>showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'?'var(--focus)':'var(--interrupted)'}">${g.state}</span>${g.label?' · <span class="muted small">switch: '+swText(g)+'</span>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,90))+'</span>':''}${g.toggl_id?'<br><span class="small">⏱ Toggl: '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':''}`));
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.own_switch_id||g.switch_id);});});
 }
 function togglTrack(entries,x,t0,t1,L,yText,yBar,emptyMsg){
   // Toggl track under a review timeline: whichever entry was running, same idiom as spanTL
@@ -569,12 +569,12 @@ function phoneTrack(ph,x,t0,t1,L,yText,yBar,attr){
   const segs=(ph&&ph.segments)||[];
   segs.forEach((e,i)=>{if(e.end<=t0||e.start>=t1)return;
     const x0=x(Math.max(e.start,t0)),w=Math.max(2,x(Math.min(e.end,t1))-x0-1);
-    const tip=`📱 ${esc(e.app)} — ${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?' · opened from '+e.how:''}${e.open?' · still open at last sync':''}${e.put_down?' · '+putDownNote(ph):''}`;
+    const tip=`📱 ${esc(e.app)} — ${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?' · opened from '+esc(e.how):''}${e.open?' · still open at last sync':''}${e.put_down?' · '+putDownNote(ph):''}`;
     const look=e.put_down?'fill="var(--m-heuristic)" fill-opacity="0.18" stroke="var(--m-heuristic)" stroke-width="1" stroke-dasharray="3,2"':'fill="var(--m-heuristic)" opacity="0.75"';
     s+=`<rect ${attr?attr+'="'+i+'"':''} x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" ${look}>${attr?'':'<title>'+tip+'</title>'}</rect>`;
     if(w>60)s+=`<text x="${x0+4}" y="${yBar+9}" font-size="9" fill="${e.put_down?'var(--m-heuristic)':'#fff'}" pointer-events="none">${esc(e.app.slice(0,Math.floor(w/6)))}</text>`;});
   ((ph&&ph.unlocks)||[]).forEach(u=>{if(u.ts<t0||u.ts>=t1)return;const xu=x(u.ts);
-    s+=`<path d="M${xu-3},${yBar-2} L${xu+3},${yBar-2} L${xu},${yBar+3} Z" fill="var(--ink)" opacity="0.8"><title>unlock → ${esc(u.app)} at ${fmtT(u.ts)} after ${u.gap_min} min locked${u.notification!=='unknown'?' · notification: '+u.notification:''}</title></path>`;});
+    s+=`<path d="M${xu-3},${yBar-2} L${xu+3},${yBar-2} L${xu},${yBar+3} Z" fill="var(--ink)" opacity="0.8"><title>unlock → ${esc(u.app)} at ${fmtT(u.ts)} after ${u.gap_min} min locked${u.notification!=='unknown'?' · notification: '+esc(u.notification):''}</title></path>`;});
   if(!segs.length)s+=`<text x="${L+44}" y="${yBar+10}" font-size="10" fill="var(--muted)">${phoneEmpty(ph,t0,t1)}</text>`;
   return s;
 }
@@ -624,7 +624,7 @@ function qTLBind(q){
   document.querySelectorAll('#qTL rect[data-qi]').forEach(r=>{const g=q.timeline[+r.dataset.qi];
     r.addEventListener('mousemove',e=>showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''}${g.content?' · <b>'+g.content+'</b>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title)+'':''}${g.toggl_id?'<br><span class="small">⏱ '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':''}`));
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();openSegment(g.own_switch_id||g.switch_id);});});
 }
 let currentQSeg=null,qPollTimer=null;
 function pollPendingQuestion(q){
@@ -738,8 +738,8 @@ function renderQChat(){const log=$('#qchatlog');if(!log)return;const k='q'+curre
 async function sendQChat(){if(currentQSeg==null)return;const k='q'+currentQSeg,inp=$('#qchatinput'),t=inp.value.trim();if(!t)return;
   CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:t});draftClear(inp);renderQChat();
   const log=$('#qchatlog');log.innerHTML+='<div class="cmsg pending2">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k],question_id:(qQueue[qqi]||{}).id||null})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#qchatinput');if(i2&&!i2.value){i2.value=t;draftSave(i2);}}
+  try{const r=await api(`/api/segment/${currentQSeg}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[k].filter(m=>!m.err),question_id:(qQueue[qqi]||{}).id||null})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
+  catch(e){chatFailed(CHAT[k],e);const i2=$('#qchatinput');if(i2&&!i2.value){i2.value=t;draftSave(i2);}}
   renderQChat();}
 async function answerCardQuestion(id,idx){
   const note=qNoteVal(id);
@@ -818,7 +818,7 @@ async function noneQuestion(id){
   let inp=null;
   if(reviewMode==='question'){renderQuestion();inp=$('#qchatinput');}
   else if(current){if(current.question&&current.question.id===id){Object.assign(current.question,{status:'none',answer_index:null,note:note});}renderSwitch(current.switch.id);inp=$('#chatinput');}
-  if(inp){if(!inp.value.trim())inp.value=note?`None of those options fit. What actually happened: ${note}`:'None of those options fit. What actually happened was: ';inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}}
+  if(inp){if(!inp.value.trim())inp.value=note?`None of those options fit. What actually happened: ${note}`:'None of those options fit. What actually happened was: ';draftSave(inp);inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}}
 async function dismissQuestion(id){
   await api(`/api/questions/${id}/dismiss`,{method:'POST'});
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
@@ -831,6 +831,7 @@ function renderSpanReview(){
   renderSpanCard(sp,false);
 }
 function renderSpanCard(sp,oneOff){
+  current=null; // keys 1-4 and the arrows must not act on a capture opened earlier (they reviewed an unrelated switch)
   currentSpan=sp;spanOneOff=!!oneOff;
   const subs=['creative_work','focused_task','reading','planning','other_focused','meeting'];
   const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${sqi+1}/${spanQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button>`;
@@ -906,8 +907,8 @@ async function sendDayChat(){const day=$('#daypick').value,k=dayChatKey(),inp=$(
   CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});draftClear(inp);renderDayChat();
   const log=$('#daychatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
   let changed=false;
-  try{const r=await api('/api/day/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({day,messages:CHAT[k]})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});changed=!!(r.applied&&r.applied.length);}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});if(!inp.value){inp.value=q;draftSave(inp);}}
+  try{const r=await api('/api/day/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({day,messages:CHAT[k].filter(m=>!m.err)})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});changed=!!(r.applied&&r.applied.length);}
+  catch(e){chatFailed(CHAT[k],e);if(!inp.value){inp.value=q;draftSave(inp);}}
   renderDayChat();if(changed)loadDay();}
 async function undoChatSpanEdit(start,end){try{await api(`/api/span/review?start=${start}&end=${end}`,{method:'DELETE'});}catch(e){alert('could not undo: '+e.message);return;}loadDay();}
 // A 💬 flag anywhere opens the conversation the judgment came from.
@@ -925,13 +926,16 @@ function renderSpanChat(){const log=$('#spanchatlog');if(!log)return;
 async function sendSpanChat(){if(!currentSpan)return;const k='sp'+spanChatKey(),inp=$('#spanchatinput'),q=inp.value.trim();if(!q)return;
   CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});draftClear(inp);renderSpanChat();
   const log=$('#spanchatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api('/api/span/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:currentSpan.start,end:currentSpan.end,messages:CHAT[k]})});CHAT[k].push({role:'assistant',text:r.reply});}
-  catch(e){CHAT[k].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#spanchatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
+  try{const r=await api('/api/span/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:currentSpan.start,end:currentSpan.end,messages:CHAT[k].filter(m=>!m.err)})});CHAT[k].push({role:'assistant',text:r.reply});}
+  catch(e){chatFailed(CHAT[k],e);const i2=$('#spanchatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
   renderSpanChat();}
 async function spanUnfocused(yes){
   const sp=currentSpan;
   await api('/api/span/unfocused',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({segment_ids:sp.unfocused_seg_ids,unfocused:yes,note:($('#spanNote')&&$('#spanNote').value)||null})});
-  loadQueue();
+  draftClear($('#spanNote'),false); // the note went with this answer; it must not ride along with the next one
+  // Stay on this span: it still needs its verdict (this used to jump back to the first question of the day).
+  try{const again=await api('/api/span/at?ts='+(sp.start+sp.end)/2);if(!spanOneOff&&spanQueue[sqi]===sp)spanQueue[sqi]=again;renderSpanCard(again,spanOneOff);}
+  catch(e){loadQueue();} // answering changed the span out of existence
 }
 async function spanReview(verdict,subtype){
   const sp=currentSpan;
@@ -969,7 +973,7 @@ function switchTL(f){
   segs.forEach((g,i)=>{const x0=x(Math.max(g.clip_start,t0)),w=Math.max(1.5,x(Math.min(g.clip_end,t1))-x0-1);
     const pend2=!g.content&&g.state!=='idle';
     const fill=(g.content&&g.state!=='idle')?(contentColor[g.content]||'var(--f-other)'):(g.state==='idle'?'var(--idle)':'var(--pending)');
-    const isCur=g.switch_id===f.switch.id;
+    const isCur=(g.own_switch_id||g.switch_id)===f.switch.id;
     const unfB2=g.content&&(g.state==='interrupted'||g.state==='distracted')&&!isCur?'stroke="var(--interrupted)" stroke-width="2"':'';
     s+=`<rect data-ti="${i}" x="${x0}" y="24" width="${w}" height="44" rx="2" fill="${fill}" opacity="${g.source==='neutral'?0.4:(isCur?1:0.75)}" ${isCur?'stroke="var(--ink)" stroke-width="1.5"':unfB2} style="cursor:${g.switch_id?'pointer':'default'}"/>`+hybridBand(g,x0,24,w,44);});
   s+=togglTrack(f.toggl_entries,x,t0,t1,L,98,102,'no Toggl entry in this window');
@@ -1046,19 +1050,23 @@ function switchTLBind(f){
   document.querySelectorAll('#swTL rect[data-ti]').forEach(r=>{const g=f.timeline[+r.dataset.ti];
     r.addEventListener('mousemove',e=>showTT(e,`${g.first_screenshot?`<img src="/shot/${g.first_screenshot}" style="width:100%;border-radius:5px;margin-bottom:5px;display:block">`:''}<b>${esc(g.app)}</b>${g.domain?' · '+esc(g.domain):''} — <span style="color:${g.state==='focus'?'var(--focus)':'var(--interrupted)'}">${g.state}</span>${g.label&&g.label!=='continuation'?' · <span class="muted small">switch: '+swText(g)+'</span>':''}<br><span class="muted">${fmtT(g.clip_start)}–${fmtT(g.clip_end)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title):''}${g.toggl_id?'<br><span class="small">⏱ '+esc(g.toggl_desc||'(unnamed entry)')+'</span>':''}<br><span class="muted small">${g.switch_id?'click to view this capture':''}</span>`));
     r.addEventListener('mouseleave',hideTT);
-    if(g.switch_id)r.addEventListener('click',()=>{hideTT();renderSwitch(g.switch_id);});});
+    if(g.switch_id)r.addEventListener('click',()=>{hideTT();renderSwitch(g.own_switch_id||g.switch_id);});});
 }
 let segEvalSel=null;
+let segEvalShow={},segEvalKeptNote=null;
 function evalBtns(cur,vals,names,field){return vals.map(v=>`<button class="small" style="${cur===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEdit('${field}','${v}')">${names[v]||v}</button>`).join(' ');}
-async function segEditBool(field,val){segEvalSel[field]=segEvalSel[field]===val?null:val;return segEdit('hybrid-toggle',null);}
-async function segEditHybrid(){segEvalSel.hybrid=!segEvalSel.hybrid;return segEdit('hybrid-toggle',null);}
-async function segEditException(){segEvalSel.focus_exception=!segEvalSel.focus_exception;return segEdit('hybrid-toggle',null);}
+async function segEditBool(field,val){segEvalSel[field]=segEvalSel[field]===val?null:val;
+  if(field!=='focused'&&!segEvalSel.switch_label)segEvalSel.switch_label=segEvalShow.switch_label; // a ruling about a shift is a ruling that it was one
+  return segEdit('hybrid-toggle',null);}
+async function segEditHybrid(){segEvalSel.hybrid=!segEvalShow.hybrid;return segEdit('hybrid-toggle',null);}
+async function segEditException(){segEvalSel.focus_exception=!segEvalShow.focus_exception;return segEdit('hybrid-toggle',null);}
 async function segEdit(field,val){
   if(field!=='note'&&field!=='hybrid-toggle'){
     segEvalSel[field]=segEvalSel[field]===val?null:val;
     if(field==='switch_label'&&val!=='interruption'){segEvalSel.self_distraction=null;segEvalSel.next_task=null;}
+    if(field==='switch_label'){segEvalSel.antecedent_id=null;segEvalSel.interruption_kind=null;} // they belonged to the old switch
   }
-  const note=($('#segNoteEv')&&$('#segNoteEv').value.trim())||null;
+  const note=($('#segNoteEv')&&$('#segNoteEv').value.trim())||segEvalKeptNote||null;
   await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...segEvalSel,note:note})});
   draftClear($('#segNoteEv'),false);
   renderSwitch(current.switch.id);
@@ -1077,19 +1085,27 @@ async function renderSwitch(id){
   const b3=v=>v==null?null:!!v;  // a yes/no ruling that may be unset
   // focused / self_distraction / next_task hold YOUR ruling only (null = you have not ruled): saving
   // some other field must not turn the evaluator's "unfocused" into a ruling of yours.
-  segEvalSel={content:(evr&&evr.content)||(ev&&ev.content)||null,switch_label:(evr&&evr.switch_label)||(ev&&ev.switch_label)||null,
+  // EVERY field here is your ruling only. Until 2026-11-20 content, switch and hybrid started from
+  // the evaluator's values, so one click on any button stored its content as your ruling, and the
+  // thread pointer and note of an earlier answer (never loaded here) were wiped by the save.
+  segEvalSel={content:(evr&&evr.content)||null,switch_label:(evr&&evr.switch_label)||null,
     focused:evr?b3(evr.focused):null,self_distraction:evr?b3(evr.self_distraction):null,next_task:evr?b3(evr.next_task):null,
-    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:!!(ev&&ev.hybrid),focus_exception:!!(evr&&evr.focus_exception)};
+    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:null,focus_exception:(evr&&evr.focus_exception!=null)?!!evr.focus_exception:null,
+    antecedent_id:(evr&&evr.antecedent_id)||null,interruption_kind:(evr&&evr.interruption_kind)||null};
+  segEvalKeptNote=(evr&&evr.note&&evr.note.startsWith('('))?evr.note:null; // a note the app wrote ("(answered review question ...)"): not shown in the box, so kept on save
+  // what the buttons show: your ruling where there is one, else the evaluator's judgment
+  segEvalShow={content:segEvalSel.content||(ev&&ev.content)||null,switch_label:segEvalSel.switch_label||(ev&&ev.switch_label)||null,
+    hybrid:segEvalSel.hybrid!=null?segEvalSel.hybrid:!!(ev&&ev.hybrid),focus_exception:!!segEvalSel.focus_exception};
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?(evr.chat_message_id?` · <b>edited in a chat with Claude</b> <a href="#" onclick="event.preventDefault();openChatMsg(${evr.chat_message_id})">open conversation</a>`:' · <b>edited by you</b>'):''):'not yet evaluated — runs ~15 min behind'}${evr&&evr.note?` · <span title="${esc(evr.note)}">note: ${esc(evr.note.slice(0,80))}${evr.note.length>80?'…':''}</span>`:''}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
     ${(f.to_signals||[]).length?`<div class="muted small" style="margin:4px 0" title="What the Mac recorded beside the capture: how this app came forward, how the page was reached, input rates, audio / microphone / camera. The evaluator reads these too.">Signals: ${f.to_signals.map(esc).join(' · ')}</div>`:''}
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalSel.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalSel.switch_label,['continuation','interruption','return'],{interruption:'shift',return:'return'},'switch_label')}</div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalSel.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalSel.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalSel.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalSel.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalShow.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalShow.switch_label,['continuation','interruption','return'],{interruption:'shift',return:'return'},'switch_label')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalShow.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalShow.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalShow.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalShow.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The quality of attention in this block, separate from which thread it belongs to. Ruling a block unfocused makes it time away from a span, even on the span's own thread.">attention:</span> ${[[true,'focused'],[false,'unfocused']].map(([v,n])=>`<button class="small" style="${segEvalSel.focused===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('focused',${v})">${n}</button>`).join(' ')} <span class="muted">${ev&&ev.focused!=null?'evaluator: '+(ev.focused?'focused':'unfocused'):'evaluator: no focus judgment (judged before 19 Nov 2026)'}${segEvalSel.focused==null?'':' · your ruling: '+(segEvalSel.focused?'focused':'unfocused')}</span></div>
-    ${segEvalSel.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
+    ${segEvalShow.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
     <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
@@ -1110,7 +1126,7 @@ async function renderSwitch(id){
     ${SCRUB.moments.length?`<div class="muted small" style="margin:2px 0 6px">red line = the switch under review (fixed) · drag the ▾ marker or ←/→ to scrub captures${scrubDisplays().length>1?' · ↑/↓ switch monitor':''} · ${detailTarget==='#reviewCard'?'⌥←/⌥→ jump spans · ⌘←/⌘→ previous/next review item':'⌘←/⌘→ jump spans'}</div>`:''}
     <div class="shots" style="margin:10px 0">
       <div><div class="cap">Before – ${segLine(f.from)}</div>${f.from?.last_screenshot?`<img src="/shot/${f.from.last_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
-      <div><div class="cap">After – ${segLine(f.to)}</div>${(f.to.first_screenshot||SCRUB.shots.length)?`<img id="afterShot" src="/shot/${f.to.first_screenshot||SCRUB.shots[0].path}">`:'<div class="muted">no screenshot</div>'}
+      <div><div class="cap">After – ${segLine(f.to)}</div>${(f.to.first_screenshot||scrubShot())?`<img id="afterShot" src="/shot/${f.to.first_screenshot||scrubShot().path}">`:'<div class="muted">no screenshot</div>'}
       <div class="small" id="scrubCap" style="margin-top:2px"></div>
       ${filmstripMarkup()}</div>
     </div>
@@ -1128,8 +1144,14 @@ async function renderSwitch(id){
   chatLoad(id,'evaluator',f.to.id,()=>renderChat(id));
 }
 // Conversations are stored server-side; pull one in the first time its panel opens this session.
-async function chatLoad(key,kind,ref,paint){if(CHAT[key])return;
-  try{const h=await api(`/api/chat/${kind}/${ref}`);if(h.length&&!CHAT[key]){CHAT[key]=h;paint();}}catch(e){}}
+// Always asks the server: the same evaluator conversation is shown on the question card and on
+// the capture card under two cache keys, and a cached copy went stale when the other was used
+// (the stale thread was then sent back as the conversation). The server's copy wins when it has more.
+async function chatLoad(key,kind,ref,paint){
+  try{const h=await api(`/api/chat/${kind}/${ref}`);const mine=(CHAT[key]||[]).filter(m=>!m.err);if(h.length>mine.length||(h.length&&!CHAT[key])){CHAT[key]=h;paint();}}catch(e){}}
+// A failed send: the error line and the message that failed stay on screen but are never sent
+// to the model as part of the conversation (the text goes back into the box to send again).
+function chatFailed(list,e){const u=list[list.length-1];if(u&&u.role==='user')u.err=true;list.push({role:'assistant',err:true,text:'(error: '+e.message+')'});}
 async function review(label){if(!current)return;const nEl=$('#note');const note=nEl?nEl.value||null:null;const id=current.switch.id;await api(`/api/switch/${id}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label,note})});draftClear(nEl,false);if(detailTarget==='#segCard')renderSwitch(id);else next();}
 async function unreview(id){await api(`/api/switch/${id}/review`,{method:'DELETE'});renderSwitch(id);}
 function skip(){reviewStep(1);}
@@ -1140,8 +1162,8 @@ function renderChat(id){const log=$('#chatlog');if(!log)return;
 async function sendChat(){if(!current)return;const id=current.switch.id,inp=$('#chatinput'),q=inp.value.trim();if(!q)return;
   CHAT[id]=CHAT[id]||[];CHAT[id].push({role:'user',text:q});draftClear(inp);renderChat(id);
   const log=$('#chatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id],question_id:(current.question||{}).id||null})});CHAT[id].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
-  catch(e){CHAT[id].push({role:'assistant',text:'(error: '+e.message+')'});const i2=$('#chatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
+  try{const r=await api(`/api/segment/${current.to.id}/evaluator-chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:CHAT[id].filter(m=>!m.err),question_id:(current.question||{}).id||null})});CHAT[id].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});}
+  catch(e){chatFailed(CHAT[id],e);const i2=$('#chatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
   renderChat(id);}
 document.addEventListener('keydown',e=>{const h=location.hash;if((h!=='#review'&&h!=='#segments')||e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')return;const m={'1':'continuation','2':'interruption','3':'distraction','4':'task_change'};if(m[e.key]){review(m[e.key]);e.preventDefault();}else if(h==='#review'&&e.key==='s'){skip();e.preventDefault();}else if(h==='#review'&&(e.metaKey||e.ctrlKey)&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){reviewStep(e.key==='ArrowRight'?1:-1);e.preventDefault();}else if((h==='#segments'||h==='#review')&&(current||reviewMode==='question')&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){
     const dir=e.key==='ArrowRight'?1:-1;
