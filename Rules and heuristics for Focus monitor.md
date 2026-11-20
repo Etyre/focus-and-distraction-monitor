@@ -156,6 +156,7 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * Amazon is sometimes intentionally ordering something, and sometimes absent-minded browsing of my orders.
 * Phone time can count as part of a focus span if it's on track: a continuation of the thread I'm on (a call that is the task, looking something up for it). That holds even if the computer sits idle meanwhile.
 * Phone time never forms a focus span on its own. The only phone-only focus I can think of is meditation and cardio interval training, which should be tracked via toggl.
+  * Future (not built yet): meditation and cardio interval training should be tracked as their own separate categories of focus time, which don't get aggregated with the others.
 * Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it.
 * Evaluating phone segments is low priority compared to everything else. For the most part the phone is secondary.
   * The main thing to evaluate on the phone is interruptions and self-distraction events.
