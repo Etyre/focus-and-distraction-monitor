@@ -123,6 +123,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <span id="queueCount" class="muted small"></span>
     <span class="muted small">Keys: 1 continuation · 2 detour · 3 distraction · 4 focus start · s next · ⌘←/⌘→ previous / next review item</span>
   </div>
+  <div id="ruleDrafts"></div>
   <div id="reviewCard" class="card"></div>
 </section>
 
@@ -160,6 +161,7 @@ function draftKey(el){
   if(id==='daychatinput')rec=$('#daypick').value||'';
   else if(id==='qchatinput')rec=currentQSeg??'';
   else if(id.startsWith('qNote')){field='qNote';rec=id.slice(5);}
+  else if(id.startsWith('ruleDraft')){field='ruleDraft';rec=id.slice(9);}
   else if(id==='spanNote'||id==='spanchatinput')rec=(typeof spanChatKey==='function'&&spanChatKey())||'';
   else if(id==='segNoteEv')rec=(typeof current!=='undefined'&&current)?current.to.id:'';
   else if(id==='chatinput'||id==='note')rec=(typeof current!=='undefined'&&current)?current.switch.id:'';
@@ -427,7 +429,20 @@ async function reviewStep(dir){
       if(k<0||k>=RV_ORDER.length){$('#queueCount').textContent=dir>0?'that was the last review item — ⌘← goes back':'this is the first review item';return;}
       m=RV_ORDER[k];await reviewEnsure(m);i=dir>0?0:rvList(m).length-1;}
   }finally{rvBusy=false;}}
+// Rules the app drafted from several of your answers that agree (rule_drafts.py). The wording is
+// editable; nothing is in the rules document until "add to my rules" is clicked.
+async function loadRuleDrafts(){
+  let ds=[];try{ds=await api('/api/rule-drafts');}catch(e){}
+  $('#ruleDrafts').innerHTML=ds.map(d=>`<div class="card" style="border:1.5px dashed var(--taskchange)"><b>Proposed rule</b> <span class="muted small">— drafted from ${d.support.length} of your review answers that agree. ${esc(d.why||'')}</span>
+    <textarea id="ruleDraft${d.id}" spellcheck="true" rows="3" style="width:100%;margin:6px 0;box-sizing:border-box">${esc(d.rule)}</textarea>
+    <div class="row" style="gap:6px"><button class="primary" onclick="decideRule(${d.id},'add')">add to my rules</button><button onclick="decideRule(${d.id},'reject')">no, not a rule</button><span class="muted small">you can edit the wording first</span></div></div>`).join('');}
+async function decideRule(id,action){
+  const el=$('#ruleDraft'+id);
+  try{await api(`/api/rule-drafts/${id}/decide`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,text:el?el.value:null})});}
+  catch(e){alert('could not save that: '+e.message);return;}
+  draftClear(el,false);loadRuleDrafts();}
 async function loadQueue(){
+  loadRuleDrafts();
   detailTarget='#reviewCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
   if(pendingQSeg!=null&&pendingQSw){const seg=pendingQSeg,sw=pendingQSw;pendingQSw=null;

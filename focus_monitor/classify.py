@@ -248,6 +248,11 @@ class ClassifierService:
         except Exception:
             log.exception("feedback propagation failed")
         try:
+            from . import rule_drafts
+            rule_drafts.run(self.conn, self.cfg)   # repeated rulings -> a drafted rule; a fast no-op until due
+        except Exception:
+            log.exception("rule drafting failed")
+        try:
             from . import questions
             # Drain the whole backlog: a burst of flags (audit sweep, propagation) must have
             # its questions composed this cycle, not 6 per cycle - the review page needs them.

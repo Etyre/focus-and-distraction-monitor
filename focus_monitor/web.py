@@ -1048,6 +1048,48 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
     return {"ok": True, "segment_id": segment_id, "proposal": prop}
 
 
+def _append_rule(rule: str, origin: str) -> None:
+    """Add one line to the rules document under 'Lessons from reviews', dated."""
+    from .classifiers.claude_vision import RULES_PATH
+    heading = "### Lessons from reviews"
+    text = RULES_PATH.read_text() if RULES_PATH.exists() else ""
+    if heading not in text:
+        text = text.rstrip("\n") + "\n\n" + heading + "\n\n"
+    RULES_PATH.write_text(text.rstrip("\n") + "\n" + f"* {rule} (added {dt.date.today().isoformat()} {origin})\n")
+
+
+@app.get("/api/rule-drafts")
+def api_rule_drafts():
+    """Rules the app drafted from repeated rulings, waiting for a yes or no (rule_drafts.py)."""
+    from . import rule_drafts
+    return rule_drafts.open_drafts(conn())
+
+
+class RuleDecision(BaseModel):
+    action: str               # add | reject
+    text: str | None = None   # the wording to add, if the person edited it
+
+
+@app.post("/api/rule-drafts/{did}/decide")
+def api_rule_draft_decide(did: int, body: RuleDecision):
+    c = conn()
+    d = c.execute("SELECT * FROM rule_drafts WHERE id=?", (did,)).fetchone()
+    if not d or body.action not in ("add", "reject"):
+        raise HTTPException(404 if not d else 400)
+    if d["status"] != "open":
+        return {"ok": True, "status": d["status"]}
+    rule = " ".join((body.text or d["rule"]).split())
+    if body.action == "add":
+        if not rule:
+            raise HTTPException(400, "empty rule")
+        import json as _json
+        _append_rule(rule, f"drafted from {len(_json.loads(d['support'] or '[]'))} of your review answers")
+    with db.tx(c):
+        c.execute("UPDATE rule_drafts SET status=?, decided_at=?, final_text=? WHERE id=?",
+                  ("added" if body.action == "add" else "rejected", time.time(), rule if body.action == "add" else None, did))
+    return {"ok": True, "status": "added" if body.action == "add" else "rejected"}
+
+
 @app.post("/api/chat/message/{mid}/apply-rule")
 def api_chat_apply_rule(mid: int):
     """Append a rule the evaluator proposed to the rules document, under a 'Lessons from

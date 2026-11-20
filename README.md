@@ -124,6 +124,13 @@ first commit 2026-08-29, in continuous development since.
   can be flagged, at most `max_reviews_per_day` (8) per day, highest-stakes first (longer preceding
   focus = higher stakes). Everything else is auto-accepted. Model accuracy is likewise weighted toward
   focus-leaving switches.
+* **Rules drafted from your answers** (`rule_drafts.py`): once 8 new rulings have come in (and at
+  most every 6 hours, one model call, about $0.20), the evaluator model reads your newest 150
+  rulings next to the Rules doc and drafts up to 3 lines for patterns that at least three rulings
+  share and the doc does not state. Drafts appear at the top of the Review page as "Proposed
+  rule" cards: edit the wording if you like, then "add to my rules" (appended under "Lessons from
+  reviews" in the Rules doc, which every model reads) or "no, not a rule". Rejected drafts are
+  shown to later runs so they are not proposed again; no new drafts while 5 are waiting.
 * **Spot checks** (`questions.spot_checks`, `spot_checks_per_day`, default 3): a few times a day
   a segment whose judgment the evaluator was confident of is drawn at random (chance proportional
   to its length; at most one per 2 hours) and asked about in the review queue: "Is that judgment
@@ -267,6 +274,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
 | `focus_monitor/efforts.py` | Effort-ladder shadow calls and the effort judge (which effort level is good enough). |
 | `focus_monitor/edits.py`, `seg_models.py`, `stats.py`, `toggl.py`, `db.py` | Edits with provenance, label space, metrics/spans, Toggl sync, SQLite schema and helpers. |
+| `focus_monitor/rule_drafts.py` | Drafts Rules-doc lines from repeated review rulings; you approve each (tables `rule_drafts`, `rule_draft_runs`). |
 | `focus_monitor/span_selftest.py` | Self-test of the span rules on hand-built days (`python -m focus_monitor.span_selftest`; run by `test.sh`). |
 | `focus_monitor/web.py` | FastAPI server for the dashboard and its API (port 8790). |
 | `focus_monitor/dashboard.html` | The whole dashboard (Day, Captures, Trends, Review, Models, Efforts). Drafts in every text field persist in `localStorage`. |

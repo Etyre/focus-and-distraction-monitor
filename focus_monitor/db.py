@@ -396,6 +396,15 @@ def connect() -> sqlite3.Connection:
         antecedent TEXT,                  -- what a continuation/return attaches to: "P<seg_key>" or a Mac segment id
         away INTEGER,                     -- 1 = time away from what was on the Mac (carved out by stats._carve_phone)
         rationale TEXT, created REAL NOT NULL, run_id INTEGER)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS rule_drafts (  -- rules drafted from repeated rulings (rule_drafts.py)
+        id INTEGER PRIMARY KEY, rule TEXT NOT NULL, why TEXT,
+        support TEXT,                     -- JSON list of the segment ids whose rulings it rests on
+        created REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',   -- open | added (in the Rules doc) | rejected
+        decided_at REAL, final_text TEXT)""")  # final_text: the wording as added, if the person edited it
+    conn.execute("""CREATE TABLE IF NOT EXISTS rule_draft_runs (
+        id INTEGER PRIMARY KEY, created REAL NOT NULL, reviews_seen INTEGER, n_drafts INTEGER,
+        cost_usd REAL NOT NULL DEFAULT 0)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS agreement_samples (  -- daily spot checks (questions.spot_checks)
         segment_id INTEGER PRIMARY KEY,   -- a confident judgment drawn at random
         day TEXT NOT NULL,                -- logical day of the segment
@@ -541,5 +550,6 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     arow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM audit_runs WHERE created >= ?", (start,)).fetchone()
     crow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM chat_messages WHERE created >= ?", (start,)).fetchone()
+    drow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM rule_draft_runs WHERE created >= ?", (start,)).fetchone()
     return (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
-            + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]))
+            + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]) + float(drow[0]))
