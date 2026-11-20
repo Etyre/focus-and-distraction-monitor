@@ -83,6 +83,21 @@ def autolock_s(c, t: float) -> int | None:
     setting), while deliberate locks spread out. The option whose band holds the most lock-ended
     segments wins, if it has at least 3 and stands clear of the surrounding durations. Two days
     either side of t, so a setting change shows up within a couple of days of self-locks."""
+    # Worked out per six hours and kept for ten minutes: the four-day scan takes 0.1 s, and the
+    # span review queue asked for it once per span (6 of that page's 7 seconds, 2026-11-20).
+    part = int(t // 21600)
+    hit = _AUTOLOCK_CACHE.get(part)
+    if hit is not None and hit[0] > time.time():
+        return hit[1]
+    val = _autolock_s(c, part * 21600 + 10800.0)
+    _AUTOLOCK_CACHE[part] = (time.time() + 600, val)
+    return val
+
+
+_AUTOLOCK_CACHE: dict = {}
+
+
+def _autolock_s(c, t: float) -> int | None:
     durs = _lock_ended_durations(c, t - AUTOLOCK_HALF_WINDOW_S, t + AUTOLOCK_HALF_WINDOW_S)
     if len(durs) < 3:
         return None

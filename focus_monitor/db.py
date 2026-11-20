@@ -225,6 +225,15 @@ CREATE TABLE IF NOT EXISTS feedback_events (  -- user corrections queued for pro
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS review_undo (     -- the ruling(s) a chat's edit replaced, so undoing
+    kind TEXT NOT NULL,                       --  that edit puts them back: 'seg' | 'span'
+    key TEXT NOT NULL,                        -- segment id, or "start:end" of the span verdict
+    chat_message_id INTEGER NOT NULL,
+    rows TEXT NOT NULL,                       -- JSON list of the replaced rows
+    created REAL NOT NULL,
+    PRIMARY KEY (kind, key, chat_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS seg_propagated (  -- corrections carried over to similar segments
     segment_id INTEGER NOT NULL,              --  (propagation.py); applied to seg_evals, and
     from_segment_id INTEGER NOT NULL,         --  applied again after the evaluator re-judges

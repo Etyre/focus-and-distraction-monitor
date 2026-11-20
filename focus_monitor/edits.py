@@ -78,6 +78,14 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
             next_task = None
         if switch_label and switch_label not in ("interruption", "return"):
             self_distraction = None   # the two shift judgments only mean something on a shift
+        if chat_message_id is not None:
+            # What a chat replaces is kept, so undoing the chat's edit puts back the ruling that
+            # was there before it (undo_seg_review). The first copy per reply wins: a reply that
+            # edits the block twice still goes back to what the person had.
+            was = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+            if was is not None and was["chat_message_id"] != chat_message_id:
+                c.execute("INSERT OR IGNORE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('seg',?,?,?,?)",
+                          (str(segment_id), chat_message_id, json.dumps([dict(was)]), time.time()))
         c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id,"
                   " note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
                   " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -106,14 +114,57 @@ def write_span_review(c, start: float, end: float, verdict: str, subtype: str | 
     if subtype is not None and subtype not in SUBTYPES:
         raise BadEdit(f"bad subtype {subtype!r}")
     with db.tx(c):
+        if chat_message_id is not None:   # kept for undo, like a block ruling (write_seg_review)
+            was = [dict(r) for r in c.execute("SELECT * FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60))
+                   if r["chat_message_id"] != chat_message_id]
+            if was:
+                c.execute("INSERT OR IGNORE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('span',?,?,?,?)",
+                          (f"{start:.0f}:{end:.0f}", chat_message_id, json.dumps(was), time.time()))
         c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60))
         c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created, chat_message_id)"
                   " VALUES (?,?,?,?,?,?,?)", (start, end, verdict, subtype, note, time.time(), chat_message_id))
 
 
+def _put_back(c, table: str, rows: list[dict]) -> None:
+    for row in rows:
+        cols = list(row)
+        c.execute(f"INSERT OR REPLACE INTO {table}({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                  [row[k] for k in cols])
+
+
 def delete_span_review(c, start: float, end: float) -> int:
+    """Withdraw the verdict on a span. A verdict a chat wrote over an earlier one goes back to
+    that earlier one (it used to be lost: the span went back to the app's own call)."""
     with db.tx(c):
-        return c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60)).rowcount
+        cur = c.execute("SELECT * FROM span_reviews WHERE start >= ? AND end <= ? ORDER BY created DESC",
+                        (start - 60, end + 60)).fetchall()
+        n = c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60)).rowcount
+        for r in cur:
+            if r["chat_message_id"] is None:
+                continue
+            u = c.execute("SELECT rowid, rows FROM review_undo WHERE kind='span' AND key=? AND chat_message_id=?",
+                          (f"{r['start']:.0f}:{r['end']:.0f}", r["chat_message_id"])).fetchone()
+            if u is not None:
+                _put_back(c, "span_reviews", json.loads(u["rows"]))
+                c.execute("DELETE FROM review_undo WHERE rowid=?", (u["rowid"],))
+                break
+        return n
+
+
+def undo_seg_review(c, segment_id: int) -> bool:
+    """Undo the ruling on a block. One a chat wrote over an earlier ruling goes back to that
+    earlier ruling (True); anything else is deleted, back to the evaluator's own judgment."""
+    with db.tx(c):
+        cur = c.execute("SELECT chat_message_id FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+        u = None
+        if cur is not None and cur["chat_message_id"] is not None:
+            u = c.execute("SELECT rowid, rows FROM review_undo WHERE kind='seg' AND key=? AND chat_message_id=?",
+                          (str(segment_id), cur["chat_message_id"])).fetchone()
+        c.execute("DELETE FROM seg_reviews WHERE segment_id=?", (segment_id,))
+        if u is not None:
+            _put_back(c, "seg_reviews", json.loads(u["rows"]))
+            c.execute("DELETE FROM review_undo WHERE rowid=?", (u["rowid"],))
+        return u is not None
 
 
 def open_question(c, segment_id: int, source: str, context: str, question: str, options: list[dict],

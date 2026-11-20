@@ -459,6 +459,16 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * Undoing a chat's edit deleted the whole ruling, including one the person had made before the
+    chat touched it. What a chat replaces is now kept in `review_undo` (blocks and span verdicts),
+    and undo puts it back; a second undo then removes that earlier ruling too.
+  * `/api/span/queue` took 6 to 7 seconds: `phone.autolock_s` scanned four days of the phone log
+    once per span. It is cached per six hours of the day for ten minutes (2 s cold, 0.2 s warm).
+  * The dashboard had the day's start hour written in as 4; it now asks `/api/day-start`.
+  * A ruling that agrees with the model was described to the propagation judge as a correction.
+    It is now called a confirmation.
+  * Segments left unjudged at a 4am rollover before the one-day look-back existed are judged by a
+    one-off backfill in `run_pending` (one chunk per quiet cycle; `kv` `backfill.unjudged` when done).
   * A new judgment replaces the whole `seg_evals` row, and a correction propagated from a ruling
     on a similar segment lived only in that row, so every re-judgment erased it. Propagated
     corrections are now also kept in `seg_propagated` and applied again after the evaluator writes

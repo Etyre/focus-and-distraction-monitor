@@ -308,6 +308,13 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "segments": segs}
 
 
+@app.get("/api/day-start")
+def api_day_start():
+    """The hour the logical day starts at (config day_start_hour), for the dashboard's "today"."""
+    from .config import day_start_hour
+    return {"hour": day_start_hour()}
+
+
 @app.get("/api/span/queue")
 def api_span_queue(days: int = 7):
     """Every finished, unconfirmed hypothesized span of the last N days: today's first
@@ -1253,9 +1260,7 @@ def api_seg_eval_unreview(segment_id: int):
             u = _json.loads(q["undo"] or "{}")
             if u.get("seg_id") == segment_id and u.get("seg_written") is not None and abs(u["seg_written"] - cur["created"]) <= 1e-3:
                 return api_question_reopen(q["id"])
-    with db.tx(c):
-        c.execute("DELETE FROM seg_reviews WHERE segment_id=?", (segment_id,))
-    return {"ok": True}
+    return {"ok": True, "restored": edits.undo_seg_review(c, segment_id)}
 
 
 class Review(BaseModel):

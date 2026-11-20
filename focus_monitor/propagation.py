@@ -170,7 +170,11 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         if not seg or not rv:
             continue
         old = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (ev["segment_id"],)).fetchone()
-        correction = (f"The person corrected segment id={seg['id']} "
+        # A ruling that sets nothing different from the model's judgment is a confirmation.
+        # Calling it a correction told the judge that something had been wrong.
+        same = old is not None and all(
+            rv[k] is None or rv[k] == old[k] for k in ("content", "switch_label", "focused"))
+        correction = (f"The person {'confirmed the judgment of' if same else 'corrected'} segment id={seg['id']} "
                       f"({seg['app']} {seg['domain'] or ''} | {(seg['title'] or '')[:70]}).\n"
                       f"Model had said: content={old['content'] if old else '?'}, "
                       f"switch={shown_switch(old['switch_label']) if old else '?'}, focus={_foc(old)}.\n"
@@ -206,6 +210,10 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                 content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         prompt = (correction + "\n\nCANDIDATE segments (same app/site, past few days) with their "
                   "current judgments:\n" + "\n".join(lines)
+                  + ("\n\nThe person agreed with the model here, so nothing was wrong in this segment. A candidate "
+                     "that is clearly the same kind of case but is judged differently should get the confirmed "
+                     "judgment ('applies'); one already judged the same way is 'does_not_apply'."
+                     if same else "")
                   + "\n\nFor every candidate: does the correction apply, not apply, or uncertain?")
         content_blocks.append({"type": "text", "text": prompt})
         system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")

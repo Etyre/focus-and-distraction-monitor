@@ -1473,6 +1473,7 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
             db.kv_set(conn, "migrated.outvoted", str(repair_outvoted(conn)))
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
+    default_scope = lookback_s is None
     if lookback_s is None:
         # Default scope: the current logical day (user 2026-09-01) and the one before it. With
         # today alone, whatever was still unjudged at the 4am rollover was never judged: the
@@ -1506,4 +1507,17 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
             log.exception("chunk evaluation failed (%s)", dt.datetime.fromtimestamp(t0))
             break
         done += 1
+    if default_scope and done == 0 and db.kv_get(conn, "backfill.unjudged") is None:
+        # One-off (2026-11-20): segments left unjudged at a 4am rollover before the look-back
+        # above existed (162 in the last 30 days). Judged one chunk per quiet cycle, oldest
+        # first, until none is left.
+        back = 31 * 86400
+        done = run_pending(conn, cfg, max_chunks=1, lookback_s=back)
+        left = conn.execute("""SELECT COUNT(*) FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+                               WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0
+                                 AND COALESCE(g.end, g.start) > g.start AND e.segment_id IS NULL""",
+                            (time.time() - back, time.time() - lookback_s)).fetchone()[0]
+        if left == 0 or (done == 0 and _attempt(conn, "backfill.unjudged.idle") >= 200):
+            db.kv_set(conn, "backfill.unjudged", f"finished {dt.datetime.now():%Y-%m-%d %H:%M}, {left} left")
+            log.info("backfill of unjudged segments finished (%d left)", left)
     return done

@@ -220,7 +220,8 @@ function moveTT(e){const x=Math.min(e.clientX+14,innerWidth-440),y=Math.min(e.cl
 function hideTT(){tt.style.display='none';}
 
 // ---- day view
-const DAY_START_HOUR=4;
+let DAY_START_HOUR=4;   // replaced by the configured hour as soon as /api/day-start answers
+fetch('/api/day-start').then(r=>r.json()).then(j=>{if(Number.isFinite(j.hour))DAY_START_HOUR=j.hour;}).catch(()=>{});
 async function togglResync(){const b=$('#togglSync'),m=$('#togglSyncMsg');b.disabled=true;m.textContent='syncing…';
   try{const r=await api('/api/toggl/resync?days=7',{method:'POST'});
     m.textContent=`${r.fetched} entries in the last ${Math.round(r.hours/24)} days · ${r.changed} changed · ${r.deleted} deleted${r.reevaluate?` · ${r.reevaluate} stretch(es) queued for re-evaluation`:''}`;
@@ -895,7 +896,7 @@ function dayAppliedHtml(m){const p=m.proposal||{};let h='';const ch=p.applied_ch
   if(p.rule){const done=!!(p.applied&&p.applied.rule);
     h+=`<div class="proposal${done?' done':''}"><div class="muted small">${done?'✓ added to your rules document':'Proposed general rule — add it to your rules?'}</div><div style="margin:4px 0">${esc(p.rule)}</div>${done?'':`<button onclick="applyRule(${m.id},'${dayChatKey()}')">add to my rules</button>`}</div>`;}
   return h;}
-async function undoChatSegEdits(ids){if(!confirm(`Undo ${ids.length} block edit${ids.length>1?'s':''}? The blocks go back to the evaluator's own judgment.`))return;
+async function undoChatSegEdits(ids){if(!confirm(`Undo ${ids.length} block edit${ids.length>1?'s':''}? Each block goes back to what it was before this reply: your earlier ruling if you had one, otherwise the evaluator's own judgment.`))return;
   for(const id of ids){try{await api(`/api/segment/${id}/eval-review`,{method:'DELETE'});}catch(e){alert('could not undo block '+id+': '+e.message);break;}}
   loadDay();}
 function renderDayChat(){const log=$('#daychatlog');if(!log)return;
