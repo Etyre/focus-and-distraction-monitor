@@ -95,8 +95,10 @@ def _phone_on_track(rows: list[dict], segs: list[dict]) -> list[dict]:
     idle_s = load_config().idle_seconds
     out, base = [], None
     for s in segs:
-        if s.get("state") != "idle" or s["duration"] <= 0:
-            if s["duration"] > 0 and not s.get("phone"):
+        # an idle Mac: time away, or a raw idle segment short enough to be a pause (2026-11-20)
+        mac_idle = s.get("state") == "idle" or (s.get("pause") and s.get("idle"))
+        if not mac_idle or s["duration"] <= 0:
+            if s["duration"] > 0 and not s.get("phone") and not s.get("pause"):   # a pause is not the thread
                 base = s
             out.append(s)
             continue
@@ -112,8 +114,8 @@ def _phone_on_track(rows: list[dict], segs: list[dict]) -> list[dict]:
         left = s["duration"] - sum(b - a for a, b, _ in ps)
         cur = s["clip_start"]
         for a, b, p in ps + [(s["clip_end"], s["clip_end"], None)]:
-            if a > cur:      # idle time the phone does not cover
-                out.append(dict(cont, clip_start=cur, clip_end=a, duration=a - cur) if left < idle_s
+            if a > cur:      # idle time the phone does not cover: a short pause, like any other
+                out.append(dict(cont, clip_start=cur, clip_end=a, duration=a - cur, pause=True) if left < idle_s
                            else dict(s, clip_start=cur, clip_end=a, duration=a - cur))
             if p is not None and b > max(a, cur):
                 a = max(a, cur)
@@ -165,8 +167,14 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float, overrides: dict |
             continue
         prev = last.get(p["pickup_key"])
         shift = p["switch_label"] == "interruption" or prev is None
-        sd = bool(p["self_distraction"]) and shift
-        sd_live = sd if shift else prev[1]
+        # Going back to a distraction counts again (Rules doc), on the phone as on the Mac. A
+        # phone "return" judged a self-distraction that was not the first carved segment of its
+        # pickup used to become a plain continuation and was not counted: 11 of 19 such rows,
+        # 4 events missing on 2026-11-19 (found 2026-11-20). A return without the flag stays a
+        # continuation of the pickup, so it does not reset how the pickup began.
+        back = not shift and p["switch_label"] == "return" and bool(p["self_distraction"])
+        sd = bool(p["self_distraction"]) and (shift or back)
+        sd_live = sd if (shift or back) else prev[1]
         content, focused = p["content"] or "other", bool(p["focused"])
         state = "distracted" if sd_live else "interrupted"
         ph = dict(base)
@@ -174,10 +182,10 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float, overrides: dict |
             ph.pop(k, None)
         ph.update(id=-int(p["seg_key"]), phone=True, app="iPhone", domain=p["app"] or "",
                   title=p["app"] or "", url="", clip_start=a, clip_end=b, duration=b - a, idle=0, neutral=0,
-                  state=state, content=content, focused=focused, redesign=True, user_unfocused=False,
+                  pause=False, state=state, content=content, focused=focused, redesign=True, user_unfocused=False,
                   label=("continuation" if not shift else "distraction" if sd else
                          "task_change" if state == "focus" else "interruption"),
-                  switch="interruption" if shift else "continuation", self_distraction=sd,
+                  switch="interruption" if shift else "return" if back else "continuation", self_distraction=sd,
                   next_task=bool(p["next_task"]) and shift,
                   antecedent_id=None if shift else prev[0], antecedent_p=1.0,
                   source="review" if p["reviewed"] else "eval", switch_id=None, own_switch_id=None, uncertain=0,
@@ -189,6 +197,31 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float, overrides: dict |
         out.sort(key=lambda s: s["clip_start"])   # stable: equal starts keep their order
         segs = out
     return segs
+
+
+def _toggl_cover(entries, a: float, b: float, now: float):
+    """(the entry covering most of [a,b), the stretches of [a,b) under any entry). `entries` is
+    ordered by start; of two entries covering the same amount the later-started one wins."""
+    best, best_ov, ivs = None, 0.0, []
+    for e in entries:
+        x, y = max(e["start"], a), min(e["stop"] if e["stop"] is not None else now, b)
+        if y <= x:
+            continue
+        if y - x >= best_ov:
+            best, best_ov = e, y - x
+        if ivs and x <= ivs[-1][1]:     # overlapping entries are counted once
+            ivs[-1] = (ivs[-1][0], max(ivs[-1][1], y))
+        else:
+            ivs.append((x, y))
+    return best, ivs
+
+
+def _toggl_s(s: dict) -> float:
+    """Seconds of this segment (as clipped, or as cut by a phone pickup) under a Toggl entry."""
+    ivs = s.get("toggl_ivs")
+    if ivs is None:     # a hand-built segment (self-test): covered or not, as a whole
+        return s["duration"] if s.get("toggl_id") else 0.0
+    return sum(max(0.0, min(y, s["clip_end"]) - max(x, s["clip_start"])) for x, y in ivs)
 
 
 def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
@@ -267,6 +300,20 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
         foc, u_foc = g2("focused")
         sd, _ = g2("self_distraction")
         nxt, _ = g2("next_task")
+        if foc is not None and not u_foc and u is not None:
+            # The person's rulings predate the focused field: none of them sets it. They said
+            # the same thing with the shift's kind (focus start / detour / self-distraction)
+            # or with "counts as focus anyway". Once such a segment is judged again, the
+            # evaluator's new row has a focused value and the state was taken from that alone:
+            # 25 of 33 kind rulings and all 116 focus_exception rulings (2026-10-31, 141
+            # minutes) would have stopped deciding anything (found 2026-11-20). So their ruling
+            # is read as the fields it implies, and counts as theirs.
+            if u_kind and u["interruption_kind"] in ("focus_start", "detour", "self_distraction"):
+                foc, u_foc = int(u["interruption_kind"] == "focus_start"), True
+                if "self_distraction" not in u.keys() or u["self_distraction"] is None:
+                    sd = int(u["interruption_kind"] == "self_distraction")
+            if fex:
+                foc, u_foc = 1, True
         sw_, kind_ = g("switch_label"), g("interruption_kind")
         if sw_ == "interruption" and foc is not None and not u_kind:
             # Under the redesign the older per-shift kind is not a judgment of its own: it
@@ -278,7 +325,9 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
     def toggl_at(ts):
-        for e in tg:
+        # the latest-started of the entries running at ts, as toggl.entry_at answers it: 10
+        # pairs of entries overlap, and this used to name the earlier one (2026-11-20)
+        for e in reversed(tg):
             if e["start"] <= ts and (e["stop"] is None or e["stop"] > ts):
                 return e
         return None
@@ -289,6 +338,34 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
                 return e
         return None
     by_to = {r["to_segment"]: r for r in sw}
+    # SHORT PAUSES (2026-11-20). Three things are all "the person paused briefly": a raw idle
+    # segment shorter than the idle threshold (the collector wrote one whenever the screen
+    # locked, on battery 2 minutes after the last input: 807 of 1,541 idle segments are under 10
+    # minutes, and each ended the focus span), and a segment whose content the evaluator or the
+    # person called "idle" (it inherited "focus", counted as hard focus time and could open or
+    # make up a whole span: 2026-09-14 19:50-20:04, all idle content, was a 14.5-minute creative
+    # span). One rule: stretches of such time are added up; one that reaches idle_seconds is
+    # real time away (state "idle", ends the span); a shorter one is a pause, marked
+    # pause=True, which takes the state of what came before it and is soft time for the spans
+    # (_runs3). The raw `idle` field is left as recorded. Only these segments change: what
+    # FOLLOWS one gets its state exactly as before (a continuation after any raw idle segment
+    # still starts from "focus"; making the pause transparent to that as well was tried, and
+    # it moved 115 focus minutes on 2026-09-25 through a 6-second lock), so the states of
+    # pauses are filled in after the loop.
+    pause_of: dict[int, bool] = {}     # index in segs -> True: a short pause, False: time away
+    grp: list[int] = []
+    grp_s, grp_end = 0.0, 0.0
+    for j, s in enumerate(segs + [None]):
+        a, b = (s["start"], s["end"] or now) if s is not None else (0.0, 0.0)
+        if s is not None and b <= a:
+            continue
+        cand = s is not None and (bool(s["idle"]) or (not s["neutral"] and (verdict(s["id"]) or (None,))[0] == "idle"))
+        if grp and not (cand and a - grp_end <= MAX_GAP):
+            pause_of.update((k, grp_s < cfg.idle_seconds) for k in grp)
+            grp, grp_s = [], 0.0
+        if cand:
+            grp.append(j)
+            grp_s, grp_end = grp_s + (b - a), b
     prev_state = "focus"
     sd_live = False  # the thread being followed began with a self-distraction shift
     last_focus_ctx = None  # (app, domain) of the most recent focused segment
@@ -296,11 +373,18 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
     # distraction/interruption context. A mere "continuation" back into it RESUMES the detour -
     # a brief flip to notes must not launder a video session into focus. Cleared by a deliberate
     # focus start (task_change) in that same context.
-    for s in segs:
+    for j, s in enumerate(segs):
         s["end_eff"] = s["end"] or now
         s["clip_start"], s["clip_end"] = max(s["start"], t0), min(s["end_eff"], t1)
         s["duration"] = max(0.0, s["clip_end"] - s["clip_start"])
-        _te = toggl_at(s["start"])
+        # Toggl coverage is measured in seconds of overlap, and toggl_id is the entry covering
+        # most of the segment. Until 2026-11-20 it was the entry running at the segment's START
+        # instant, so a segment that began a moment before the timer did counted as uncovered
+        # whole: two spans (2026-08-28 22:39, 2026-10-01 03:29) were thrown out as "task
+        # activity without a Toggl entry" with real coverage above the 60% bar.
+        _te, s["toggl_ivs"] = _toggl_cover(tg, s["start"], s["end_eff"], now)
+        if s["end_eff"] <= s["start"]:
+            _te = toggl_at(s["start"])
         s["toggl_id"] = _te["id"] if _te else None
         s["toggl_tags"] = (_te["tags"] or "") if _te else ""
         s["toggl_desc"] = (_te["description"] or "") if _te else ""
@@ -370,11 +454,13 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
                 # self-distraction is about intent (a planned video is not one), so under the
                 # redesign the colour follows the shift, not the content.
                 st = ("distracted" if sd_live else "interrupted") if by_field else "distracted"
-            elif content == "correspondence" and st == "focus" and not s.get("toggl_id") and not v_fex:
+            elif (content == "correspondence" and st == "focus" and not v_fex
+                  and (_toggl_s(s) < 0.5 * s["duration"] or not s.get("toggl_id"))):
                 # Rules doc: focus spans are independent work, never interactive - chatting or
                 # answering mail is a diversion, not focus. The one exception is correspondence
                 # processed inside a Toggl-covered task block, which rides along with that span -
                 # unless the person explicitly ruled this block an exception (focus_exception).
+                # "Under an entry" = an entry ran for at least half of the segment.
                 st = "interrupted"
             label = ("continuation" if vsw in ("continuation", "return") else
                      {"self_distraction": "distraction", "focus_start": "task_change",
@@ -456,6 +542,20 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
         elif s["state"] in ("interrupted", "distracted"):
             last_detour = ((s["app"], s["domain"]), s["state"])
         prev_state = s["state"]
+    carry = "focus"     # the state a pause takes: that of the last segment that was not one
+    for j, s in enumerate(segs):
+        if j not in pause_of:
+            carry = s["state"] if s["state"] != "idle" else "focus"
+            continue
+        if not s["idle"]:
+            # Content "idle": nothing was happening, so the switch into it is no event. (The
+            # person's "I wasn't at the computer" on segment 16768, 11 minutes, used to read
+            # as a return to focus and made a span.)
+            s.update(self_distraction=False, next_task=False)
+        if pause_of[j]:
+            s.update(state=carry, pause=True, content="idle")
+        else:
+            s["state"] = "idle"
     return segs
 
 
@@ -511,17 +611,23 @@ def span_subtype(sp: dict, cfg) -> str | None:
     - reading requires interleaved note-taking (notes surfaces >= reading_notes_frac of
       focus time); passive essay/post-hopping without notes is unfocused."""
     from collections import Counter
-    fsegs = [s for r in sp["runs"] if r["cat"] == "focus" for s in r["segments"]]
+    # a pause is not work of any kind: it is left out of the shares the gates are measured in
+    fsegs = [s for r in sp["runs"] if r["cat"] == "focus" and not r.get("pause") for s in r["segments"]]
     tot = sum(s["duration"] for s in fsegs) or 1.0
 
-    toggl_s = sum(s["duration"] for s in fsegs if s.get("toggl_id"))
+    toggl_s = sum(_toggl_s(s) for s in fsegs)   # seconds actually under an entry (2026-11-20)
     task_ok = toggl_s / tot >= cfg.task_toggl_frac
 
     def _is_notes(s):
         dom = s.get("domain") or ""
         return (s["app"] in cfg.notes_apps or cfg.is_authoring(s["app"], s.get("title") or "", s.get("url") or "")
                 or any(dom == d or dom.endswith("." + d) for d in cfg.focus_domains))
-    notes_s = sum(s["duration"] for s in fsegs if _is_notes(s))
+    # Time labelled "creative" (by the evaluator or the person) is working with the material
+    # too (Rules doc: "making comments in a google doc, or taking notes in roam, otherwise
+    # working with the material"), whatever window it happened in. Counting notes by app or
+    # site alone threw out 2026-11-08 17:47-18:46 with a notes share of 0.00: reading a post on
+    # lesswrong.com and writing a long comment on it in the same tab, 43% of it creative (2026-11-20).
+    notes_s = sum(s["duration"] for s in fsegs if _is_notes(s) or s.get("content") == "creative")
     reading_ok = notes_s / tot >= cfg.reading_notes_frac
 
     # 1) Content signal: the evaluator's per-segment content label (preferred), falling back
@@ -630,7 +736,14 @@ def _runs3(segs: list[dict]) -> list[dict]:
         by_field = s.get("focused") is not None
         sw = s.get("switch") if by_field else None
         soft = False
-        if s["state"] == "focus":
+        pause = bool(s.get("pause")) and s["state"] != "idle"
+        if pause:
+            # A short pause (labelled_segments) is soft time whatever came before it: inside a
+            # running span it counts, it never opens one or counts toward an opening block, and
+            # it is neither a diversion nor unfocused time. It leaves what is being followed
+            # (in_detour, last_soft) as it was.
+            cat, soft, sw = "focus", True, None
+        elif s["state"] == "focus":
             cat, in_detour = "focus", False
         elif s["state"] == "idle":
             cat = "idle"
@@ -649,9 +762,11 @@ def _runs3(segs: list[dict]) -> list[dict]:
                 in_detour = True          # judged the older way: a detour is a detour
             if soft:
                 cat = "focus"
-        last_soft = soft
+        if not pause:
+            last_soft = soft
         gap = cur is not None and s["clip_start"] - cur["end"] > MAX_GAP
         new = (cur is None or cur["cat"] != cat or gap or cur.get("soft", False) != soft
+               or cur.get("pause", False) != pause
                or (cat == "focus" and not soft and s["label"] == "task_change")
                # a shift or a return is a thread boundary: the next run may or may not belong
                # to the span, and _same_task has to be asked about it on its own
@@ -659,7 +774,7 @@ def _runs3(segs: list[dict]) -> list[dict]:
         if new:
             cur = {"cat": cat, "start": s["clip_start"], "end": s["clip_end"], "segments": [s],
                    "focus_start": cat == "focus" and not soft and s["label"] == "task_change",
-                   "gap_before": gap, "soft": soft}
+                   "gap_before": gap, "soft": soft, "pause": pause}
             runs.append(cur)
         else:
             cur["end"] = s["clip_end"]
@@ -680,16 +795,17 @@ def _span_review_for(rows, sp):
     span and the reviewed range: a verdict is about the span as it was shown, and must not
     chase a substantially re-bounded span - e.g. "not a focus span" on a badly-assembled 41
     minutes must not demote the genuine 30-minute span later corrected out of its middle."""
-    best, best_ov = None, 0.0
+    # Among the verdicts that pass the test, the newest. Taking the single best overlap first
+    # and testing it afterwards let a stale, wider verdict (more seconds of overlap, but under
+    # 80% of its own range) hide a newer one sitting exactly on the re-bounded span (2026-11-20).
+    best = None
     for r in rows:
         ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
-        if ov > best_ov:
-            best, best_ov = r, ov
-    if best is None:
-        return None
-    ok = (best_ov >= 0.8 * (sp["end"] - sp["start"])
-          and best_ov >= 0.8 * (best["end"] - best["start"]))
-    return best if ok else None
+        if ov <= 0 or ov < 0.8 * (sp["end"] - sp["start"]) or ov < 0.8 * (r["end"] - r["start"]):
+            continue
+        if best is None or (r["created"] or 0) >= (best["created"] or 0):
+            best = r
+    return best
 
 
 def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) -> tuple[list, list]:
@@ -733,6 +849,9 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
 
 
 WHOLE_PAD_S = 8 * 3600   # how far past the edge of a window a span crossing that edge is followed
+# An unjudged segment this old is not waiting for the evaluator any more (it judges 15 minutes
+# behind, holds off for an hour at most, and looks back one day for stragglers).
+FRONTIER_RECENT_S = 4 * 3600
 
 
 def _whole_spans(conn, segs: list[dict], min_focus_min: float, break_min: float, overrides: dict | None = None) -> list[dict]:
@@ -783,18 +902,28 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     # shrinking the span. Truncate assembly at the evaluation frontier: the last segment with a
     # verdict (eval or user review). Windows with no verdicts at all (legacy history) keep the
     # legacy behavior.
+    # That is for the live edge only: a tail still waiting for the evaluator. It used to be
+    # applied to every window, and 32 of 87 past days have segments after the last judged one
+    # that were never judged: everything after it was dropped from spans and from the unfocused
+    # minutes for good, while active time still counted it (2026-09-15: 376 active minutes
+    # behind the frontier, 0 focus reported; found 2026-11-20). An old tail is assembled the
+    # legacy way, like a window with no verdicts.
     frontier_ts = None
     last_v = None
+    tail_segs: list[dict] = []
     for i, s in enumerate(segs):
         if s.get("source") in ("eval", "review"):
             last_v = i
     if last_v is not None and last_v < len(segs) - 1:
         tail = segs[last_v + 1:]
-        if any(s.get("source") not in ("eval", "review") and s["state"] != "idle"
-               and not s.get("neutral") and s["duration"] > 0 for s in tail):
+        waiting = [s for s in tail if s.get("source") not in ("eval", "review") and s["state"] != "idle"
+                   and not s.get("idle") and not s.get("neutral") and s["duration"] > 0]
+        if waiting and time.time() - waiting[0]["clip_end"] <= FRONTIER_RECENT_S:
             frontier_ts = segs[last_v]["clip_end"]
-            segs = segs[:last_v + 1]
+            segs, tail_segs = segs[:last_v + 1], tail
     runs = _runs3(segs)
+    # Time behind the frontier forms no span yet, but its unfocused minutes are counted.
+    tail_runs = _runs3(tail_segs)
     break_s = break_min * 60
     from .config import load_config as _lc0
     _cfg0 = _lc0()
@@ -808,9 +937,11 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     def _same_task(sp, r, away=()):
         """Is focus run r the same task as span sp? (returning to the exact window/site, a
         continuation-type focus, or a task-change the model is not confident about -> same task.)"""
-        focus_runs = [x for x in sp["runs"] if x["cat"] == "focus"]
+        focus_runs = [x for x in sp["runs"] if x["cat"] == "focus" and not x.get("pause")]
         if not focus_runs:
             return False
+        if r.get("pause"):
+            return not away     # a pause belongs to whatever came before it
         first = r["segments"][0]
         last_run = focus_runs[-1]
         last = last_run["segments"][-1]
@@ -845,8 +976,18 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 return True
             if a in away_ids:
                 return False
-            a, p = ante_of.get(a, (None, 0.0))
-            conf *= p
+            if a not in ante_of:     # the chain leaves this window: an unknown thread, no answer
+                a, conf = None, 0.0
+                break
+            a, p = ante_of[a]
+            if a is not None:
+                # Only a link that exists costs confidence. A thread's first segment has no
+                # antecedent, and its default "link" of 0.85 used to be multiplied in on
+                # arrival: a chain reaching its root at 0.50-0.588 fell under 0.5, skipped the
+                # "different thread" answer below and was read as the span continuing
+                # (2026-11-19, segment 36188: 0.54 became 0.459 and an Atlas planning thread
+                # was glued into a span on a Terminal thread; found 2026-11-20).
+                conf *= p
             hops += 1
         if has_ptr and a is None and conf >= 0.5:
             # The stated chain was followed, with confidence, back to where its thread began,
@@ -894,7 +1035,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         return (first.get("probs") or {}).get("task_change", 0.0) < 0.7
 
     def _finalize(sp, ended_by):
-        focus_runs = [r for r in sp["runs"] if r["cat"] == "focus"]
+        # a span ends on its thread's own time, not on a pause that followed it
+        focus_runs = ([r for r in sp["runs"] if r["cat"] == "focus" and not r.get("pause")]
+                      or [r for r in sp["runs"] if r["cat"] == "focus"])
         last_focus = focus_runs[-1]
         sp["runs"] = sp["runs"][: sp["runs"].index(last_focus) + 1]
         sp["end"] = last_focus["end"]
@@ -917,7 +1060,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         away = []  # runs since we last left cur's task (detours and/or different-task focus)
 
         def away_s():
-            return sum(r["duration"] for r in away)
+            # A short pause while away is not time on something else: the 5-minute clock
+            # counts the diversion, the idle threshold counts the pause (2026-11-20).
+            return sum(r["duration"] for r in away if not r.get("pause"))
 
         def reason():
             if any(r["cat"] == "focus" and not r.get("soft") for r in away):
@@ -938,6 +1083,12 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 # "back after being away from the Mac" into one span across the idle time
                 # (27 spans since August, one with 27 idle minutes inside; found 2026-11-20).
                 return out + _assemble((away + rs[i:]) if away else rs[i + 1:])
+            if r.get("pause"):
+                # A short pause never ends a span by itself and is never a diversion: inside
+                # the span it stays in it, during time away it waits with that time away.
+                (away if away else cur["runs"]).append(r)
+                i += 1
+                continue
             if (away and r["cat"] == "focus" and r["duration"] <= TOUCH_BACK_S and i + 1 < n
                     and not rs[i + 1].get("gap_before") and rs[i + 1]["cat"] != "idle"
                     and _same_task(cur, r, away)
@@ -960,7 +1111,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                         segs_away = [sg for ar in away for sg in ar["segments"]]
                         merged = {"cat": "detour", "soft": False, "focus_start": False, "gap_before": False,
                                   "start": away[0]["start"], "end": away[-1]["end"],
-                                  "duration": sum(ar["duration"] for ar in away), "segments": segs_away,
+                                  "duration": away_s(), "segments": segs_away,
                                   "toggl_id": next((ar.get("toggl_id") for ar in away if ar.get("toggl_id")), None)}
                         lab = _detour_label(merged)
                         merged["state"] = lab if lab in ("distracted", "interrupted") else "interrupted"
@@ -1012,7 +1163,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 rest = sp["runs"][len(head):]
                 if not rest or rest[0]["cat"] != "focus":
                     continue
-                if any(r_["cat"] == "focus" for r_ in head):
+                if any(r_["cat"] == "focus" and not r_.get("pause") for r_ in head):
                     pieces_cut.append(_finalize({"start": sp["start"], "runs": head}, "interrupted"))
                 sp["runs"], sp["start"] = rest, rest[0]["start"]
                 _finalize(sp, sp["ended_by"])
@@ -1049,7 +1200,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if not at:  # no block at all (disqualified below), or the span already starts with it
                 continue
             head_runs = sp["runs"][:at]
-            if any(r_["cat"] == "focus" for r_ in head_runs):
+            if any(r_["cat"] == "focus" and not r_.get("pause") for r_ in head_runs):
                 cut.append(_finalize({"start": sp["start"], "runs": head_runs}, "interrupted"))
             sp["runs"] = sp["runs"][at:]
             sp["start"] = sp["runs"][0]["start"]
@@ -1088,7 +1239,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
             if r_["cat"] == "focus":
                 cur += r_["duration"]
                 best = max(best, cur)
-                if r_.get("soft"):
+                if r_.get("pause"):
+                    cur_f = 0.0      # not focused time; and not time judged unfocused either
+                elif r_.get("soft"):
                     cur_f = 0.0
                     soft_s += r_["duration"]
                     soft_run += r_["duration"]
@@ -1135,11 +1288,43 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 sg["diversion"] = True   # time off the span's thread, focused or not (for the timeline)
             (interruptions if d["state"] == "interrupted" else distractions).append(d)
     span_ends = {round(sp["end"]) for sp in qualifying}
-    for r in runs:
+    in_span = {id(sg) for sp in qualifying for r_ in sp["runs"] for sg in r_["segments"]}
+    outside: list[dict] = []
+    joinable = False    # nothing but a short pause since the last stretch in `outside`
+    for r in runs + tail_runs:
+        joinable = (joinable and not r.get("gap_before")
+                    and bool(r.get("pause") or (r["cat"] == "detour" and not r.get("inside_span"))))
         if r["cat"] == "detour" and not r.get("inside_span"):
-            r["is_event"] = any(abs(r["start"] - e) <= MAX_GAP for e in span_ends)
-            r["inside_span"] = False
-            (interruptions if r["state"] == "interrupted" else distractions).append(r)
+            if joinable:
+                # A short pause in the middle of time away does not make two stretches of it
+                # (the older count is one self-distraction per distracted stretch). The
+                # pause's own minutes are not added.
+                m = dict(outside[-1], end=r["end"], duration=outside[-1]["duration"] + r["duration"],
+                         segments=outside[-1]["segments"] + r["segments"])
+                m["state"] = _detour_label(m)
+                outside[-1] = m
+            else:
+                r["is_event"] = any(abs(r["start"] - e) <= MAX_GAP for e in span_ends)
+                r["inside_span"] = False
+                outside.append(r)
+            joinable = True
+        elif (r["cat"] == "focus" and r.get("soft") and not r.get("pause") and not r.get("inside_span")
+              and id(r["segments"][0]) not in in_span):
+            # Unfocused time on a thread counts as focus only inside a qualifying span on that
+            # thread. Outside one it is plain unfocused time, and until 2026-11-20 it was counted
+            # nowhere: 3 focused minutes and then 40 unfocused ones in the same document reported
+            # 0 unfocused minutes. Counted by each segment's own state; never an event of its own
+            # unless it is where a span ended. (A short pause is not unfocused time: see _runs3.)
+            for st, evs in (("interrupted", interruptions), ("distracted", distractions)):
+                sg_ = [g for g in r["segments"] if g["state"] == st]
+                if sg_:
+                    evs.append({"cat": "detour", "soft": True, "state": st, "segments": sg_,
+                                "start": sg_[0]["clip_start"], "end": sg_[-1]["clip_end"],
+                                "duration": sum(g["duration"] for g in sg_), "focus_start": False,
+                                "gap_before": False, "toggl_id": r.get("toggl_id"), "inside_span": False,
+                                "is_event": any(abs(sg_[0]["clip_start"] - e) <= MAX_GAP for e in span_ends)})
+    for r in outside:
+        (interruptions if r["state"] == "interrupted" else distractions).append(r)
     interruptions.sort(key=lambda r: r["start"]); distractions.sort(key=lambda r: r["start"])
     return {"focus_spans": qualifying, "short_focus": short, "disqualified": disqualified,
             "interruptions": interruptions, "distractions": distractions}
@@ -1179,6 +1364,8 @@ def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
                 break
             prev_end = s["clip_end"]       # windows passed through on the way out
     for d in se["distractions"]:
+        if d.get("soft"):      # unfocused time on a thread, outside a span: minutes, not an event
+            continue
         if not any(sg.get("redesign") for sg in ([x for x in d["segments"] if not x.get("phone")] or d["segments"])):
             events += 1
             bounces += int(bool(d.get("inside_span")))
@@ -1212,8 +1399,21 @@ def select_for_review(conn, t0: float, t1: float, n: int) -> list[int]:
 
 
 def short_breaks(conn, t0: float, t1: float) -> list[dict]:
-    return [{"start": max(r["start"], t0), "end": min(r["end"], t1)} for r in
-            conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ? ORDER BY start", (t1, t0))]
+    out = [{"start": max(r["start"], t0), "end": min(r["end"], t1)} for r in
+           conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ? ORDER BY start", (t1, t0))]
+    # A raw idle segment shorter than the idle threshold is a short pause too (2026-11-20; see
+    # _labelled_segments): the collector wrote one for every screen lock until that day, and
+    # only 30 of those 807 have an inactivity row. Same floor as the inactivity log.
+    from .config import load_config
+    cfg = load_config()
+    for r in conn.execute("SELECT start, end FROM segments WHERE idle=1 AND end IS NOT NULL AND start < ? AND end > ?"
+                          " AND end - start >= ? AND end - start < ? ORDER BY start",
+                          (t1, t0, cfg.short_inactivity_seconds, cfg.idle_seconds)).fetchall():
+        a, b = max(r["start"], t0), min(r["end"], t1)
+        if not any(x["start"] < b and x["end"] > a for x in out):
+            out.append({"start": a, "end": b})
+    out.sort(key=lambda x: x["start"])
+    return out
 
 
 def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
