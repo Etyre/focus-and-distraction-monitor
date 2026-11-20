@@ -428,12 +428,16 @@ async function reviewStep(dir){
     if(m==='oneoff'){m=returnMode;if(!m){if(dir>0&&current&&current.switch)pendingAfter=current.switch.ts;return await loadQueue();}if(dir<0)return reviewShow(m);} // back = the item you came from
     if(!m)return await loadQueue();
     let i=rvIdx(m)+dir;
+    // On a question that became ready late (shown after the last one): forward means onward, not
+    // a second pass through the cards between its place in time and the end.
+    if(m==='question'&&dir>0&&qPastEnd)i=qQueue.length;
+    if(dir<0)qPastEnd=false;
     for(;;){
       if(i>=0&&i<rvList(m).length){rvIdx(m,i);return reviewShow(m);}
       if(m==='question'&&dir>0){ // before leaving the questions: any that became ready behind you?
         await mergeReadyQuestions();
         const j=qQueue.findIndex(q=>qLate.has(q.id));
-        if(j>=0){qLate.delete(qQueue[j].id);qqi=j;return renderQuestion();}
+        if(j>=0){qLate.delete(qQueue[j].id);qqi=j;qPastEnd=true;return renderQuestion();}
         if(i<qQueue.length){qqi=i;return renderQuestion();}}
       const k=RV_ORDER.indexOf(m)+dir;
       if(k<0||k>=RV_ORDER.length){$('#queueCount').textContent=dir>0?'that was the last review item — ⌘← goes back':'this is the first review item';return;}
@@ -444,7 +448,7 @@ async function reviewStep(dir){
 // The Rules page shows each with the review answers it rests on.
 function ruleEvidenceHtml(e){
   const day=new Date(e.start*1000).toLocaleDateString([],{month:'short',day:'numeric'});
-  const differs=e.app_said&&e.app_said!==e.ruling;
+  const differs=e.corrected;
   return `<div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--grid)">
     ${e.shot?`<a href="/shot/${encodeURIComponent(e.shot)}" target="_blank"><img loading="lazy" src="/shot/${encodeURIComponent(e.shot)}" style="width:220px;border-radius:4px;border:1px solid var(--grid);display:block"></a>`:'<div class="muted small" style="width:220px">no capture kept</div>'}
     <div style="flex:1;min-width:0">
@@ -488,7 +492,7 @@ async function loadQueue(){
   // Chronological, oldest first. A flagged segment whose question is not written yet is left out
   // (Eli, 2026-11-19): it joins the list when the question is ready (mergeReadyQuestions). The one
   // exception is a segment opened on purpose from the Day tab, which shows its placeholder card.
-  qQueue=(await api('/api/questions/queue')).filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();
+  qQueue=(await api('/api/questions/queue')).filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();qPastEnd=false;
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
   else{ // otherwise always the first question of the day the Day tab is on (user ruling 2026-11-16); none that day: the next later one
@@ -578,7 +582,7 @@ let qQueue=[],qqi=0;
 // Questions that were still being written when the queue loaded join it once they are ready, in
 // their place in time. One that lands behind the card you are on is remembered in qLate and
 // shown after the last question, so it is not missed.
-const qLate=new Set();
+const qLate=new Set();let qPastEnd=false;
 async function mergeReadyQuestions(){
   let fresh;try{fresh=await api('/api/questions/queue');}catch(e){return;}
   const have=new Set(qQueue.map(q=>q.id)),cur=qQueue[qqi];
@@ -589,7 +593,14 @@ async function mergeReadyQuestions(){
     let at=qQueue.findIndex(x=>x.seg_start>q.seg_start);if(at<0)at=qQueue.length;
     qQueue.splice(at,0,q);
     if(cur&&at<=qqi){qqi++;qLate.add(q.id);}}}
-setInterval(()=>{if(location.hash==='#review'&&reviewMode==='question'&&!rvBusy)mergeReadyQuestions();},20000);
+setInterval(async()=>{
+  if(location.hash!=='#review'||rvBusy)return;
+  if(reviewMode==='question')return mergeReadyQuestions();
+  // Nothing at all on screen ("Nothing to review") because every open question was still being
+  // written when the tab loaded: show the first one as soon as it is ready.
+  if(reviewMode===null&&!qQueue.length){
+    let fresh;try{fresh=await api('/api/questions/queue');}catch(e){return;}
+    if(fresh.some(q=>!q.pending)&&reviewMode===null&&!rvBusy)loadQueue();}},20000);
 const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?',thread_link:'the model is unsure which thread this continues',chat:'raised by Claude in a conversation with you'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';

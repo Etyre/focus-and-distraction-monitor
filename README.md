@@ -153,6 +153,9 @@ first commit 2026-08-29, in continuous development since.
   by one small model call (about $0.04; it is told not to hint at the verdict); if that call
   fails the card shows a bare where-and-when line instead. "Yes" stores that axis as your own ruling. "No" on focused is the opposite ruling; "No"
   on the other two flags the segment so the usual question about what it was gets written.
+  (That flag carries a mark in the reasoning, "spot check: the person says ...", which exempts it
+  from the short-thread floor: without it 86 of 283 eligible segments would have had the "No"
+  dropped with no follow-up. Clearing the answer removes the mark and the verdict.)
   Outcomes are in `agreement_samples` (with the `axis` asked), and the
   first tile on the agreement panel gives the share agreed, by week. This is the unbiased
   accuracy figure: the other questions are about segments the app already doubted.
@@ -441,6 +444,16 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * The evaluator's context lines had no segment ids, so a segment continuing one could not point
+    at it; the evaluator named a later segment and the pointer was dropped (195 "dropping invalid
+    antecedent" warnings in a week). Context lines are now "(context id=N)".
+  * The Rules tab compared the ruling and the app's judgment as strings; a ruling on one axis
+    that agreed with the app looked like a correction. `evidence()` now returns `corrected`,
+    compared field by field.
+  * The review queue leaves out questions not written yet. If ALL of them were unwritten the tab
+    said "Nothing to review" for good; it now loads the first one that becomes ready. And after
+    a late question was shown, "next" replayed every card after its place in time (`qPastEnd`).
 * **Signals (2026-11-19): what was tried and what the data showed.**
   * A listen-only event tap on mouse clicks can be created without any permission, but macOS
     delivers it no events unless the app has Input Monitoring. The click and key COUNTERS and

@@ -279,7 +279,7 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     floor_s = 60.0 * _lc().break_min
     kept = []
     for t in out:
-        if t["source"] in ("coherence", "audit") or _content_doubt(conn, t["segment_id"]):
+        if t["source"] in ("coherence", "audit") or _content_doubt(conn, t["segment_id"]) or _spot_disagreed(conn, t["segment_id"]):
             kept.append(t)
             continue
         mass = thread_mass_s(conn, t["segment_id"], stop_at=floor_s)
@@ -376,6 +376,16 @@ def passthrough_applies(conn, segment_id: int) -> bool:
     return p is None or p >= PASSTHROUGH_MIN_P
 
 
+def _spot_disagreed(conn, segment_id: int) -> bool:
+    """The person answered 'No' to a spot check on this segment's kind of activity or switch
+    (web.py raises the flag and leaves this mark). That doubt is theirs, not the app's, so it
+    always gets its question: before 2026-11-20 the short-thread floor dropped it, and the 'No'
+    did nothing beyond the tally (86 of 283 eligible segments would have gone that way)."""
+    r = conn.execute("SELECT rationale FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    return bool(r and r["rationale"] and SPOT_MARK in r["rationale"])
+
+
+SPOT_MARK = " | spot check: the person says "
 DECLINED_TEXT = "(no question: nothing the person could answer would resolve this doubt)"
 
 

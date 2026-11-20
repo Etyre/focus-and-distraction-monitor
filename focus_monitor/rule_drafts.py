@@ -162,6 +162,11 @@ def evidence(conn, segment_ids: list[int]) -> list[dict]:
         # only a judgment made before the ruling shows what the app thought on its own
         d["app_said"] = _verdict(r["ec"], r["esw"], r["ef"]) if r["e_at"] is not None and r["e_at"] < r["created"] else None
         d["rationale"] = r["rationale"] if d["app_said"] else None
+        # Compared field by field, on the fields the person set (as run() does): a ruling on one
+        # axis that agrees with the app is not a correction, though the two strings differ.
+        d["corrected"] = bool(d["app_said"]) and bool(
+            (r["content"] and r["content"] != r["ec"]) or (r["switch_label"] and r["switch_label"] != r["esw"])
+            or (r["focused"] is not None and r["ef"] is not None and bool(r["focused"]) != bool(r["ef"])))
         q = conn.execute("""SELECT question, answer, note FROM review_questions
                             WHERE segment_id=? AND status='answered' ORDER BY answered_at DESC LIMIT 1""", (sid,)).fetchone()
         d["question"], d["answer"] = (q["question"], q["answer"]) if q else (None, None)

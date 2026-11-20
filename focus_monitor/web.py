@@ -746,6 +746,23 @@ def _restore_rows(c, table: str, key: str, key_val, row: dict | None):
                   [row[k] for k in cols])
 
 
+def _spot_unmark(c, segment_id: int) -> None:
+    """Take the "spot check: the person says ... is wrong" mark back off the app's reasoning."""
+    import re
+    from . import questions as _q
+    r = c.execute("SELECT rationale FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    if r and r["rationale"] and _q.SPOT_MARK in r["rationale"]:
+        c.execute("UPDATE seg_evals SET rationale=? WHERE segment_id=?",
+                  (re.sub(re.escape(_q.SPOT_MARK) + r"[^|]*?(?= \| |$)", "", r["rationale"]), segment_id))
+
+
+def _spot_unanswer(c, segment_id: int) -> None:
+    """A spot check's answer was cleared (or became "I can't tell"): no verdict, so it does not
+    count in the agreement figure, and no mark left on the reasoning."""
+    c.execute("UPDATE agreement_samples SET verdict=NULL, answered_at=NULL WHERE segment_id=?", (segment_id,))
+    _spot_unmark(c, segment_id)
+
+
 def _undo_question_answer(c, undo_json: str | None) -> dict:
     """Put back whatever a previous answer to a review question overwrote (the segment review,
     and the legacy switch review), so changing or clearing an answer leaves no residue."""
@@ -857,17 +874,20 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
         if q["source"] == "sample":   # a spot check (questions.spot_checks): record the verdict
             c.execute("UPDATE agreement_samples SET verdict=?, answered_at=? WHERE segment_id=?",
                       (o.get("sample_verdict"), time.time(), q["segment_id"]))
+        if q["source"] == "sample":   # no stale mark from an earlier 'No' on this spot check
+            _spot_unmark(c, q["segment_id"])
         if o.get("sample_verdict") == "disagree" and o.get("focused") is None:
             # he says the confident judgment is wrong on this axis: raise the doubt, so the usual
             # question about what it really was gets written ('No' on focused is itself the ruling)
+            from .questions import SPOT_MARK
             wrong = {"content": "the kind of activity", "switch": "the switch (continuation / shift / return)"}.get(o.get("axis"), "this judgment")
             c.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
-                      (f" | spot check: the person says {wrong} is wrong" + (f" ({a.note.strip()})" if a.note and a.note.strip() else ""),
+                      (f"{SPOT_MARK}{wrong} is wrong" + (f" ({a.note.strip()})" if a.note and a.note.strip() else ""),
                        q["segment_id"]))
         elif not o.get("phone"):   # a phone question only borrows its computer segment as an anchor
             c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
-    if o.get("switch_label") == "interruption" and not o.get("interruption_kind"):
-        _kick_kind_derivation(o["segment_id"], a.note)
+    if o.get("switch_label") == "interruption" and not o.get("interruption_kind") and not o.get("sample_verdict"):
+        _kick_kind_derivation(o["segment_id"], a.note)   # (a spot-check 'Yes' only confirms: nothing to derive)
     return {"ok": True}
 
 
@@ -904,6 +924,8 @@ def api_question_reopen(qid: int):
                   " answered_at=NULL, undo=NULL WHERE id=?", (qid,))
         if u.get("uncertain") is not None:
             c.execute("UPDATE seg_evals SET uncertain=? WHERE segment_id=?", (u["uncertain"], q["segment_id"]))
+        if q["source"] == "sample":
+            _spot_unanswer(c, q["segment_id"])
     return {"ok": True}
 
 
@@ -933,6 +955,8 @@ def _settle_without_ruling(c, qid: int, status: str, answer: str, note: str | No
                                   _json.dumps(undo), qid))
         if q["source"] != "phone":
             c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
+        if q["source"] == "sample":
+            _spot_unanswer(c, q["segment_id"])
     return {"ok": True}
 
 
@@ -1099,7 +1123,7 @@ def api_rule_draft_decide(did: int, body: RuleDecision):
         raise HTTPException(404 if not d else 400)
     if d["status"] != "open":
         return {"ok": True, "status": d["status"]}
-    rule = " ".join((body.text or d["rule"]).split())
+    rule = " ".join((d["rule"] if body.text is None else body.text).split())   # emptied on purpose stays empty
     if body.action == "add":
         if not rule:
             raise HTTPException(400, "empty rule")
