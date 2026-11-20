@@ -689,51 +689,112 @@ _SPOT_SWITCH = {"continuation": "a continuation of what came before", "interrupt
                 "return": "a return to something from earlier"}
 
 
-def _spot_question(g, axis: str) -> tuple[str, str, list[dict]]:
-    """The fixed wording of one spot check. It asks about ONE axis of the judgment (Eli,
-    2026-11-19: a question is only ever about one axis), and 'Yes' rules on that axis alone."""
+SPOT_SYSTEM = """You write the short context shown above a review question in one person's \
+focus-tracking app. The app judged a stretch of their computer activity, and the person is about \
+to be asked whether one part of that judgment is right. Your summary reminds them what was \
+happening, so they can answer from memory.
+
+Write 2-3 plain sentences in the second person ("You ..."), with clock times: what they were \
+doing in the stretch before, what they did in the marked segment, and what came next if it helps. \
+Describe the ACTIVITY, not the windows: the undertaking, inferred from titles, the screenshot and \
+the notes after // in the log ("you were editing your personal site"), not a list of apps. Use \
+"apparently" or "likely" where you are inferring.
+
+Do NOT say or hint at the app's verdict: no "focused", "unfocused", "distracted", "drifting", \
+"continuing", "shifted", "returned", and no content-type label. The person must judge that \
+themselves. No question, no preamble; only the summary."""
+
+
+class SpotContext(BaseModel):
+    context: str = Field(description="2-3 sentences, second person, with clock times; no verdict words.")
+
+
+def _spot_summary(conn, cfg: Config, g) -> tuple[str | None, float]:
+    """One small model call: what was happening around a spot-checked segment, written the way the
+    other review questions set up theirs (Eli, 2026-11-19). Returns (summary or None, cost)."""
+    from . import shots as _shots, stats, summaries
+    from .classifiers.claude_vision import _b64
+    if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
+        return None, 0.0
+    blocks: list = []
+    sh = next(iter(_shots.pick(conn, [g["id"]], 1)), None)
+    b = _b64(sh["path"]) if sh else None
+    if b:
+        blocks.append({"type": "text", "text": "Screenshot from the marked segment:"})
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+    segs = [x for x in stats.labelled_segments(conn, g["start"] - 1200, g["end"] + 600) if x["duration"] > 0]
+    ids = [x["id"] for x in segs]
+    rats = {r["segment_id"]: r["rationale"] for r in conn.execute(
+        f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({','.join('?' * len(ids))})", ids)
+        if r["rationale"]} if ids else {}
+    lines = [("  >>> " if x["id"] == g["id"] else "      ") + summaries.seg_line(x)
+             + (f"  // {rats[x['id']][:90]}" if x["id"] in rats else "") for x in segs]
+    blocks.append({"type": "text", "text": "Activity log (>>> marks the segment the question is about):\n" + "\n".join(lines)})
+    try:
+        resp = llm.parse(_client(), site="spot_check", model=cfg.claude_model, max_tokens=600,
+                         system=[{"type": "text", "text": SPOT_SYSTEM}],
+                         messages=[{"role": "user", "content": blocks}],
+                         output_format=SpotContext, output_config={"effort": "low"},
+                         betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+    except Exception:
+        log.exception("spot-check summary failed (segment %d)", g["id"])
+        return None, 0.0
+    cost = float(getattr(resp, "cost_usd", 0.0) or 0.0) or llm.call_cost(resp.usage)
+    out = resp.parsed_output.context.strip() if resp.parsed_output is not None else ""
+    return (out or None), cost
+
+
+def _spot_question(g, axis: str, summary: str | None = None) -> tuple[str, str, list[dict]]:
+    """The wording of one spot check. It asks about ONE axis of the judgment (Eli, 2026-11-19:
+    a question is only ever about one axis), and 'Yes' rules on that axis alone. The context is
+    the model-written summary of what was happening; without one, a bare where-and-when line."""
     hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
     secs = g["end"] - g["start"]
     length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
     where = g["app"] + (f" · {g['domain']}" if g["domain"] else "") + (f" ({g['title'][:60]})" if g["title"] else "")
-    ctx = (f"Spot check, to measure how often the app is right: at {hhmm}, {where}, for {length}."
-           + (f" The app's note on it: {g['rationale'][:240]}" if g["rationale"] else ""))
+    ctx = summary or f"At {hhmm}, {where}, for {length}."
     blank = {"segment_id": g["id"], "switch_label": None, "antecedent_id": None, "interruption_kind": None,
-             "content": None, "hybrid": None, "axis": axis}
+             "content": None, "hybrid": None, "axis": axis, "summarised": bool(summary)}
     yes = dict(blank, label="Yes", sample_verdict="agree")
     no = dict(blank, label="No", sample_verdict="disagree")
     if axis == "content":
-        question = f"The app judged the kind of activity here as: {g['content']}. Is that right?"
+        question = f"Spot check: the app judged the kind of activity in the {length} from {hhmm} as: {g['content']}. Is that right?"
         yes["content"] = g["content"]
     elif axis == "focused":
         f = bool(g["focused"])
-        question = f"The app judged that you were {'focused' if f else 'unfocused'} here. Is that right?"
+        question = f"Spot check: the app judged that you were {'focused' if f else 'unfocused'} for the {length} from {hhmm}. Is that right?"
         yes.update(focused=f, label=f"Yes, {'focused' if f else 'unfocused'}")
         # two-valued, so 'No' is itself the ruling and no further question is needed
         no.update(focused=not f, label=f"No, {'unfocused' if f else 'focused'}")
     else:
-        question = f"The app judged this as {_SPOT_SWITCH.get(g['switch_label'], g['switch_label'])}. Is that right?"
+        question = f"Spot check: the app judged the {length} from {hhmm} as {_SPOT_SWITCH.get(g['switch_label'], g['switch_label'])}. Is that right?"
         yes.update(switch_label=g["switch_label"],
                    antecedent_id=g["antecedent_id"] if g["switch_label"] in ("continuation", "return") else None)
     return ctx, question, [yes, no]
 
 
-def _single_axis_spot_checks(conn) -> None:
-    """Rewrite open spot checks drawn before 2026-11-19, which asked about the whole judgment."""
+def _refresh_open_spot_checks(conn, cfg: Config) -> None:
+    """Rewrite open spot checks written before 2026-11-19: ones that asked about the whole
+    judgment get one axis, and ones without a summary of what was happening get one."""
     import random
     for q in conn.execute("SELECT id, segment_id, options FROM review_questions WHERE source='sample' AND status='open'").fetchall():
-        if '"axis"' in (q["options"] or ""):
+        try:
+            old = json.loads(q["options"] or "[]")[0]
+        except (ValueError, IndexError):
+            old = {}
+        if old.get("summarised") is not None:   # already tried (true, or false = the call failed: leave it)
             continue
         g = conn.execute("""SELECT g.id, g.start, COALESCE(g.end, g.start) AS end, g.app, g.domain, g.title,
                                    e.content, e.switch_label, e.focused, e.antecedent_id, e.rationale
                             FROM segments g JOIN seg_evals e ON e.segment_id = g.id WHERE g.id=?""", (q["segment_id"],)).fetchone()
         if g is None or g["focused"] is None:
             continue
-        axis = random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
-        ctx, question, opts = _spot_question(g, axis)
+        axis = old.get("axis") or random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
+        summary, cost = _spot_summary(conn, cfg, g)
+        ctx, question, opts = _spot_question(g, axis, summary)
         with db.tx(conn):
-            conn.execute("UPDATE review_questions SET context=?, question=?, options=? WHERE id=?",
-                         (ctx, question, json.dumps(opts), q["id"]))
+            conn.execute("UPDATE review_questions SET context=?, question=?, options=?, cost_usd=cost_usd+? WHERE id=?",
+                         (ctx, question, json.dumps(opts), cost, q["id"]))
             conn.execute("UPDATE agreement_samples SET axis=? WHERE segment_id=?", (axis, q["segment_id"]))
 
 
@@ -742,13 +803,14 @@ def spot_checks(conn, cfg: Config | None = None) -> int:
     confident of (no doubt flag, no review, no question), picked at random with a chance
     proportional to its length, so the weekly figure reads as "share of judged time the app had
     right". Each check asks about one axis of the judgment (content, focused, or the switch),
-    also drawn at random. The question is fixed - no model call. 'Yes' stores that axis as the
+    also drawn at random. The question is fixed; one small model call writes the summary of what
+    was happening that sits above it. 'Yes' stores that axis as the
     person's own ruling; 'No' on focused is the opposite ruling; 'No' on the other two flags the
     segment, and the usual question about what it really was follows."""
     import random
     from .config import day_bounds, logical_date
     cfg = cfg or load_config()
-    _single_axis_spot_checks(conn)
+    _refresh_open_spot_checks(conn, cfg)
     n = cfg.spot_checks_per_day
     if not n or n <= 0:
         return 0
@@ -774,11 +836,12 @@ def spot_checks(conn, cfg: Config | None = None) -> int:
         return 0
     g = random.choices(rows, weights=[r["end"] - r["start"] for r in rows])[0]
     axis = random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
-    ctx, question, opts = _spot_question(g, axis)
+    summary, cost = _spot_summary(conn, cfg, g)
+    ctx, question, opts = _spot_question(g, axis, summary)
     with db.tx(conn):
         cur = conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
-                           " VALUES (?,?,?,?,?,0,?)",
-                           (g["id"], "sample", ctx, question, json.dumps(opts), now))
+                           " VALUES (?,?,?,?,?,?,?)",
+                           (g["id"], "sample", ctx, question, json.dumps(opts), cost, now))
         conn.execute("INSERT INTO agreement_samples(segment_id, day, question_id, created, axis) VALUES (?,?,?,?,?)",
                      (g["id"], day.isoformat(), cur.lastrowid, now, axis))
     hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")

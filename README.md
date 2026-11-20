@@ -148,8 +148,10 @@ first commit 2026-08-29, in continuous development since.
   a segment whose judgment the evaluator was confident of is drawn at random (chance proportional
   to its length; at most one per 2 hours) and asked about in the review queue. Each check asks
   about one axis only, also drawn at random: the kind of activity, focused or unfocused, or the
-  switch ("The app judged this as a continuation of what came before. Is that right?"). No model
-  call. "Yes" stores that axis as your own ruling. "No" on focused is the opposite ruling; "No"
+  switch ("Spot check: the app judged the 3 min from 10:50 as a continuation of what came before.
+  Is that right?"). Above the question is a 2-3 sentence summary of what was happening, written
+  by one small model call (about $0.04; it is told not to hint at the verdict); if that call
+  fails the card shows a bare where-and-when line instead. "Yes" stores that axis as your own ruling. "No" on focused is the opposite ruling; "No"
   on the other two flags the segment so the usual question about what it was gets written.
   Outcomes are in `agreement_samples` (with the `axis` asked), and the
   first tile on the agreement panel gives the share agreed, by week. This is the unbiased
