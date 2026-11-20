@@ -95,22 +95,31 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024)
     if not api_msgs:
         return "", 0.0
     system = llm.with_preamble(system)
-    tools = [llm.CONTACT_TOOL]
-    resp = client.messages.create(
-        model=cfg.claude_model, max_tokens=max_tokens,
-        system=system,
-        messages=api_msgs,
-        tools=tools,
-        output_config={"effort": "low"},
-    )
+    tools = list(llm.CONTACT_TOOLS)
     from .classifiers.claude_vision import _cost
-    cost = _cost(resp.usage)
+    costs, said = [], []   # one entry per request: a note_to_eli call is answered and the model asked again
+
+    def call(msgs):
+        resp = client.messages.create(
+            model=cfg.claude_model, max_tokens=max_tokens,
+            system=system,
+            messages=msgs,
+            tools=tools,
+            output_config={"effort": "low"},
+        )
+        costs.append(_cost(resp.usage))
+        said.append("".join(b.text for b in resp.content if b.type == "text").strip())
+        return resp
+
+    api_msgs, resp = llm.with_notes("chat", cfg.claude_model, system, api_msgs, call(api_msgs), call, tools)
+    cost = sum(costs)
     rec = llm.contacted("chat", cfg.claude_model, system, api_msgs, resp, tools)
     if rec:
         return llm.contact_notice(rec), cost
     if resp.stop_reason == "refusal":
         return "(Claude declined to answer that.)", cost
-    return ("".join(b.text for b in resp.content if b.type == "text").strip() or "(no reply)"), cost
+    # what it wrote in a turn that also left a note is part of the reply, not replaced by the next turn
+    return ("\n\n".join(t for t in said if t) or "(no reply)"), cost
 
 
 def log_exchange(conn, kind: str, ref: str, messages: list[dict], reply: str, cost: float,
@@ -530,7 +539,8 @@ class DayChat:
         cost, text = 0.0, ""
         try:
             api_msgs = _api_messages(self._context_blocks(conn, day), messages)
-            tools = DAY_TOOLS + [llm.CONTACT_TOOL]
+            tools = DAY_TOOLS + llm.CONTACT_TOOLS
+            kept = ""   # text from turns whose only tool call was a note to Eli: still part of the reply
             for _ in range(8):
                 resp = self.client.messages.create(
                     model=self.cfg.claude_model, max_tokens=8192, system=self.system, messages=api_msgs,
@@ -543,10 +553,12 @@ class DayChat:
                 if resp.stop_reason == "refusal":
                     text = "(Claude declined to answer that.)"
                     break
-                text = "".join(b.text for b in resp.content if b.type == "text").strip() or text
+                said = "".join(b.text for b in resp.content if b.type == "text").strip()
+                text = "\n\n".join(t for t in (kept, said) if t) or text
                 uses = [b for b in resp.content if b.type == "tool_use"]
                 if not uses:
                     break
+                kept = text if all(u.name == llm.NOTE_TOOL_NAME for u in uses) else ""
                 results = [{"type": "tool_result", "tool_use_id": u.id,
                             "content": self._run_tool(conn, day, u.name, dict(u.input), mid, applied, proposal)}
                            for u in uses]
@@ -585,6 +597,8 @@ class DayChat:
             return base + 86400 if base < t0 else base  # after midnight belongs to the same logical day
 
         try:
+            if name == llm.NOTE_TOOL_NAME:   # already recorded by llm.contacted (check); the turn carries on
+                return llm.NOTE_RESULT_TEXT
             if name == "set_segment_judgment":
                 # the model is shown 'shift'; the stored name is unchanged
                 args = dict(args, switch_label=stored_switch(args.get("switch_label")))

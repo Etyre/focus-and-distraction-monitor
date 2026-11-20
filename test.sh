@@ -3,7 +3,8 @@
 # Uses a throwaway data dir and log (FOCUS_MONITOR_DATA / FOCUS_MONITOR_LOG), does not start the
 # web server (port 8790 belongs to the running app) and makes no model calls.
 #   ./test.sh
-# Steps: compile every module; unit-check the LLM preamble/contact wiring against shared/;
+# Steps: compile every module; unit-check the LLM preamble/contact wiring against shared/, then
+# every call site with a fake client (a note carries on, contact_eli stops; throwaway inbox);
 # run the collector for ~8 s against the temp dir (needs Screen Recording + Accessibility for
 # the terminal, else that step just reports FAILED); classify once with --no-claude; print stats.
 set -uo pipefail
@@ -37,6 +38,9 @@ assert hit == [("tool", "hi")], hit
 assert llm.llm_contact.extract({"content": [{"type": "text", "text": '{"ok": true}'}]}) == []
 print("ok: preamble prepended once, tool present, marker + tool detected, clean output passes")
 PYEOF
+
+echo "--- LLM inbox at every call site: note_to_eli carries on, contact_eli stops (fake client, throwaway inbox)"
+$PY -m focus_monitor.llm_selftest 2>/dev/null || fail=1
 
 echo "--- span rules on hand-built days (Rules doc redesign, 2026-11-19)"
 $PY -m focus_monitor.span_selftest || fail=1

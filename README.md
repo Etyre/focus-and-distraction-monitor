@@ -301,6 +301,18 @@ recorded in the LLM inbox, Eli is notified, and that task stops: a structured ca
 `parsed_output=None` with `stop_reason="contact_eli"` (callers treat it as "no answer" and do not
 retry), a chat shows a notice with the inbox id instead of a reply. Read and answer with `llm-inbox`.
 
+Every call that reaches the API also carries the second shared tool, `note_to_eli` (added 2026-11-20),
+which leaves Eli a message without stopping anything: the note lands in the same inbox (marked
+`via: note`, `halts: false`, a quieter notification) and the task carries on. Structured calls, the
+switch and span chats and the evaluator chat make one request and have no tool loop, so
+`llm.with_notes` (the shared `llm_contact.with_notes`) records the note, answers the call with
+"Delivered to Eli. Nothing has stopped" and makes the same request again for the answer (up to three
+times; each request is logged in `llm_calls` and the cost is summed). The day chat runs its own tool
+loop, so its dispatcher returns that acknowledgement like any other tool result. A note is never read
+as the answer; text the model wrote in the same turn as a note stays in a chat reply. A response
+that carries both a note and a `contact_eli` call records both and stops as above. The subscription
+backend has no tools, so no note tool there.
+
 ## Files
 
 | File | Purpose |
@@ -313,7 +325,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/classifiers/` | `claude_vision.py` (Claude + screenshots), `heuristic.py` (rules), `learned.py` (logistic model), `base.py` (switch context). |
 | `focus_monitor/ensemble.py` | Weights the classifiers by recent log-loss. |
 | `focus_monitor/evaluator.py` | Segment evaluator (content / switch / kind per segment), daily audit, evaluator chat. |
-| `focus_monitor/llm.py` | The one door for structured model calls: api vs. subscription backend, limit handling, cost log, shared preamble + `contact_eli` + inbox check. |
+| `focus_monitor/llm.py` | The one door for structured model calls: api vs. subscription backend, limit handling, cost log, shared preamble + `contact_eli` / `note_to_eli` + inbox check. |
 | `focus_monitor/usage_log.py` | Appends every call to `~/.claude/app-usage/Focus-monitor.jsonl` for the Claude usage dashboard. |
 | `focus_monitor/chat.py` | Interactive chats about one switch, one span, or a whole day (the day chat edits records through tools). |
 | `focus_monitor/shots.py` | Picks which captures of a stretch a model is shown: one per capture moment, the display that held the active window, spread evenly. Used by the evaluator, audit, question generator, propagation, summaries and chat. |
@@ -331,6 +343,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/menubar.py`, `icons.py` | The menu bar eye (rumps) and its icons. |
 | `build_app.py`, `build.sh` | Build `dist/Focus Monitor.app` (signed native launcher wrapping the venv). |
 | `install.sh` | Idempotent install: build, register the Login Item, relaunch; `--launchd` for the headless variant. |
+| `focus_monitor/llm_selftest.py` | Self-test of the LLM inbox wiring at every call site with a fake client: a note carries on, `contact_eli` and `@ELI:` stop (`python -m focus_monitor.llm_selftest`; run by `test.sh`). |
 | `test.sh` | End-to-end self-test against a throwaway data dir; never touches the running app. |
 | `launchd/com.elityre.focus-and-distraction-monitor.plist` | launchd agent for the headless variant (installed by `install.sh --launchd`). |
 | `config.toml` / `config.example.toml` | Your settings and profile (untracked) / the committed template. |
@@ -377,6 +390,7 @@ export ANTHROPIC_API_KEY=sk-ant-...      # for dev runs from a shell (put this i
 .venv/bin/python -m focus_monitor check  # permissions + model access
 ./test.sh                                # end-to-end self-test in a temp data dir (no model calls, no port 8790)
 .venv/bin/python -m focus_monitor.span_selftest   # just the span rules, on hand-built days (a few seconds)
+.venv/bin/python -m focus_monitor.llm_selftest    # just the LLM inbox wiring: fake client, throwaway inbox, no network
 
 ./build.sh                               # -> dist/Focus Monitor.app   (same as .venv/bin/python build_app.py)
 ./install.sh                             # build + Login Item + relaunch if running; safe to rerun
@@ -672,6 +686,13 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * `contact_eli` cannot be offered on the subscription backend (no tool plumbing through the Agent SDK
   one-shot call); the preamble's `@ELI:` marker is detected there instead, including inside the JSON of a
   structured answer.
+* `note_to_eli` had not been tried on a real model when it was wired in (2026-11-20, at night with the
+  API blocked; only `llm_selftest` with a fake client has run). `../shared/README.md` (Gotchas) asks
+  for a measurement first: routine remarks should go to the note tool, and an objection or "I want to
+  stop" must still go to `contact_eli`. Unmeasured for this app's models and structured output.
+* In the evaluator chat a `propose_judgment` / `propose_rule` call made in the same turn as a note is
+  not applied from that turn: the model is told it was not run and has to make it again in the
+  request that follows. If it does not, the reply has no proposal.
 * Structured calls that come back without parsed output (refusal, max_tokens, or a `contact_eli` call)
   are simply "no answer" at every call site; the next cycle may look at the same segment again, but the
   same request is never retried in place.

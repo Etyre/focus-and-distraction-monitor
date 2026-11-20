@@ -988,14 +988,24 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         api_msgs.append({"role": role, "content": text})
     model = run["model"] if run is not None and run["model"] else cfg.claude_model
     system = llm.with_preamble(system)
-    tools = CHAT_TOOLS + [llm.CONTACT_TOOL]
-    resp = ev.client.messages.create(model=model, max_tokens=1024, system=system, messages=api_msgs,
-                                     tools=tools, output_config={"effort": "low"})
+    tools = CHAT_TOOLS + llm.CONTACT_TOOLS
     from .classifiers.claude_vision import _cost
+    costs, said = [], []   # one entry per request: a note_to_eli call is answered and the model asked again
+
+    def call(msgs):
+        resp = ev.client.messages.create(model=model, max_tokens=1024, system=system, messages=msgs,
+                                         tools=tools, output_config={"effort": "low"})
+        costs.append(_cost(resp.usage))
+        said.append("".join(b.text for b in resp.content if b.type == "text").strip())
+        return resp
+
+    # A proposal made in the same turn as a note is not taken from that turn: the model is told it
+    # was not run and makes it again in the answer that follows, which is the one read below.
+    api_msgs, resp = llm.with_notes("evaluator_chat", model, system, api_msgs, call(api_msgs), call, tools)
     rec = llm.contacted("evaluator_chat", model, system, api_msgs, resp, tools)
     text = (llm.contact_notice(rec) if rec
             else "(Claude declined to answer that.)" if resp.stop_reason == "refusal"
-            else "".join(b.text for b in resp.content if b.type == "text").strip())
+            else "\n\n".join(t for t in said if t))
     proposal: dict = {}
     for b in ([] if rec else resp.content):
         if b.type != "tool_use":
@@ -1020,7 +1030,7 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
     if not text:
         text = "(proposal below)" if proposal else "(no reply)"
     from .chat import log_exchange
-    mid = log_exchange(conn, "evaluator", str(segment_id), messages, text, _cost(resp.usage), model,
+    mid = log_exchange(conn, "evaluator", str(segment_id), messages, text, sum(costs), model,
                        question_id, proposal or None)
     return {"reply": text, "proposal": proposal or None, "message_id": mid}
 

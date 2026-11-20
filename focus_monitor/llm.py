@@ -21,6 +21,11 @@ llm_contact.check: if the model asked to talk to Eli (the contact_eli tool on th
 an "@ELI:" line on either), the contact is recorded in the LLM inbox, Eli is notified, and the
 call returns parsed_output=None with stop_reason "contact_eli" so the caller drops that task
 without retrying. The subscription backend runs with no tools, so there the marker is the way.
+
+The API backend also offers the shared note_to_eli tool, which leaves Eli a message WITHOUT
+stopping: with_notes() records the note, answers the call and asks the model again for its
+answer (structured calls and the single-shot chats); the day chat, which runs its own tool loop,
+returns NOTE_RESULT_TEXT for the call instead. A note is never the answer and never stops a task.
 """
 from __future__ import annotations
 
@@ -46,6 +51,9 @@ log = logging.getLogger("llm")
 SDK_TIMEOUT_S = 300.0
 APP_NAME = "focus-monitor"      # how this app is named in the LLM inbox
 CONTACT_TOOL = llm_contact.CONTACT_TOOL
+CONTACT_TOOLS = llm_contact.CONTACT_TOOLS          # contact_eli (stops the task) + note_to_eli (task carries on)
+NOTE_TOOL_NAME = llm_contact.NOTE_TOOL["name"]
+NOTE_RESULT_TEXT = llm_contact.NOTE_RESULT_TEXT    # the tool_result a note_to_eli call gets
 
 
 @dataclass
@@ -180,20 +188,31 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
             _log(site, "subscription", model, effort, None, int((time.time() - t0) * 1000), False, _last_error)
     # The API backend takes tools alongside structured output, so contact_eli rides along; a
     # call to it comes back without parsed output, which every caller already treats as "no
-    # answer" and does not retry.
-    tools = [t for t in (kw.get("tools") or []) if t.get("name") != CONTACT_TOOL["name"]] + [CONTACT_TOOL]
+    # answer" and does not retry. note_to_eli rides along too: a note is recorded and answered
+    # and the same request is made again on the longer exchange (with_notes), so the caller
+    # sees only the answer; every request is logged, and the Result carries their summed cost.
+    names = {t["name"] for t in CONTACT_TOOLS}
+    tools = [t for t in (kw.get("tools") or []) if t.get("name") not in names] + CONTACT_TOOLS
     kw["tools"] = tools
-    t0 = time.time()
-    try:
-        resp = client.beta.messages.parse(**kw)
-    except Exception as e:
-        _log(site, "api", model, effort, None, int((time.time() - t0) * 1000), False,
-             f"{type(e).__name__}: {e}"[:300])
-        raise
-    ms = int((time.time() - t0) * 1000)
-    r = Result(resp.parsed_output, resp.usage, resp.stop_reason, "api", ms, call_cost(resp.usage))
-    _log(site, "api", model, effort, resp.usage, ms, True, None)
-    if contacted(site, model, kw["system"], kw.get("messages"), resp, tools):
+    spent = []   # (latency_ms, cost) of each request made for this call
+
+    def call(msgs):
+        t0 = time.time()
+        try:
+            resp = client.beta.messages.parse(**{**kw, "messages": msgs})
+        except Exception as e:
+            _log(site, "api", model, effort, None, int((time.time() - t0) * 1000), False,
+                 f"{type(e).__name__}: {e}"[:300])
+            raise
+        ms = int((time.time() - t0) * 1000)
+        _log(site, "api", model, effort, resp.usage, ms, True, None)
+        spent.append((ms, call_cost(resp.usage)))
+        return resp
+
+    msgs, resp = with_notes(site, model, kw["system"], kw.get("messages"), call(kw.get("messages")), call, tools)
+    r = Result(resp.parsed_output, resp.usage, resp.stop_reason, "api",
+               sum(m for m, _ in spent), sum(c for _, c in spent))
+    if contacted(site, model, kw["system"], msgs, resp, tools):
         r.parsed_output, r.stop_reason = None, "contact_eli"
     return r
 
@@ -253,6 +272,17 @@ def contacted(site: str, model: str, system, messages, response, tools=None) -> 
     log.warning("the model asked to talk to Eli at %s (inbox %s): %s - this task stops here",
                 site, rec["id"], rec["message"][:200])
     return rec
+
+
+def with_notes(site: str, model: str, system, messages, response, call, tools=None):
+    """For a call with no tool loop of its own: while the response only leaves a note_to_eli
+    message, record it in the inbox, answer it and ask again with call(messages). Returns
+    (messages, response) for contacted(). The task never stops for a note; a response that also
+    asks for Eli comes back untouched. An error from `call` is raised like any failed request."""
+    out = llm_contact.with_notes(APP_NAME, model, _system_text(system), messages, response, call, tools)
+    if len(out[0]) != len(messages or []):
+        log.info("the model left Eli a note at %s; the task carried on (llm-inbox list)", site)
+    return out
 
 
 def contact_notice(rec: dict) -> str:
