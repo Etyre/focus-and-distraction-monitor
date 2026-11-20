@@ -377,6 +377,10 @@ class Sampler:
         self.prev: dict | None = None
         self.prev_ts = 0.0
         self.last_visits = 0.0
+        # Read the counters once before the watcher thread starts: pyobjc resolves Quartz names
+        # lazily, and two threads doing that at the same moment made the first sample fail.
+        self.prev = _counters()
+        self.prev_ts = time.time()
         self.watcher.start()
 
     def sample(self, now: float | None = None):
