@@ -95,6 +95,63 @@ def _retry_later(conn, event_id: int) -> None:
         conn.execute("UPDATE feedback_events SET processed=0 WHERE id=?", (event_id,))
 
 
+def _apply(conn, rec) -> bool:
+    """Write one propagated verdict (a seg_propagated row, or the same fields as a dict) onto the
+    segment's stored judgment. False when it changes nothing."""
+    sid, src, note = rec["segment_id"], rec["from_segment_id"], rec["note"]
+    if rec["verdict"] == "uncertain":
+        conn.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
+                     (f" | does your correction of segment {src} apply here? {note}", sid))
+        return True
+    sets, args = [], []
+    if rec["content"] in CONTENTS:
+        sets.append("content=?"); args.append(rec["content"])
+    switch_label = stored_switch(rec["switch_label"])  # tolerate the shown name 'shift'
+    focused = None if rec["focused"] is None else bool(rec["focused"])
+    cur_row = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (sid,)).fetchone()
+    foc = focused if focused is not None else (
+        None if cur_row is None or cur_row["focused"] is None else bool(cur_row["focused"]))
+    if focused is not None:
+        sets.append("focused=?"); args.append(int(focused))
+    sw_new = switch_label if switch_label in SWITCHES else (cur_row["switch_label"] if cur_row else None)
+    if switch_label in SWITCHES:
+        sets.append("switch_label=?"); args.append(switch_label)
+        if switch_label != "interruption":
+            sets.append("next_task=0")
+            if switch_label != "return":   # a return keeps its own self-distraction judgment
+                sets.append("self_distraction=0")
+    if (switch_label in SWITCHES or focused is not None) and foc is not None:
+        # the older per-shift kind follows from the fields (evaluator.kind_of)
+        from .evaluator import kind_of
+        sd = bool(cur_row["self_distraction"]) if cur_row is not None and sw_new in ("interruption", "return") else False
+        sets.append("interruption_kind=?"); args.append(kind_of(sw_new, foc, sd))
+    elif switch_label in SWITCHES and switch_label != "interruption":
+        sets.append("interruption_kind=NULL")
+    if not sets:
+        return False
+    sets.append("uncertain=0")
+    sets.append("rationale = COALESCE(rationale,'') || ?")
+    args.append(f" | corrected via your feedback on segment {src}: {note}")
+    args.append(sid)
+    conn.execute(f"UPDATE seg_evals SET {', '.join(sets)} WHERE segment_id=?", args)
+    return True
+
+
+def reapply(conn, segment_ids) -> int:
+    """Put propagated corrections back on segments the evaluator has just judged again. A new
+    judgment replaces the whole stored row, and with it went the correction carried over from
+    the person's ruling on a similar segment (about 170 of 1,444 by 2026-11-20). The person's
+    ruling outranks the evaluator, so it is applied again - unless that ruling has since been
+    cleared."""
+    n = 0
+    for sid in segment_ids:
+        for rec in conn.execute("""SELECT p.* FROM seg_propagated p
+                                   JOIN seg_reviews r ON r.segment_id = p.from_segment_id
+                                   WHERE p.segment_id=? ORDER BY p.created""", (sid,)).fetchall():
+            n += int(_apply(conn, rec))
+    return n
+
+
 def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int:
     from . import efforts, stats, summaries
     from .classifiers.claude_vision import _b64, _rules_doc
@@ -182,41 +239,21 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
                 if v.segment_id not in cand_ids:
                     continue
                 verdict = v.verdict.strip().lower()
+                if verdict not in ("applies", "uncertain"):
+                    continue
+                rec = {"segment_id": v.segment_id, "from_segment_id": seg["id"], "verdict": verdict,
+                       "content": v.content, "switch_label": v.switch_label, "focused": v.focused, "note": v.note}
+                if not _apply(conn, rec):
+                    continue
+                # Kept in a table of its own: the evaluator replaces the whole seg_evals row
+                # when it judges a segment again, and reapply() puts the correction back.
+                conn.execute("INSERT OR REPLACE INTO seg_propagated(segment_id, from_segment_id, verdict, content,"
+                             " switch_label, focused, note, created) VALUES (?,?,?,?,?,?,?,?)",
+                             (v.segment_id, seg["id"], verdict, v.content, v.switch_label,
+                              None if v.focused is None else int(v.focused), v.note, now))
                 if verdict == "applies":
-                    sets, args = [], []
-                    if v.content in CONTENTS:
-                        sets.append("content=?"); args.append(v.content)
-                    v.switch_label = stored_switch(v.switch_label)  # tolerate the shown name 'shift'
-                    cur_row = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (v.segment_id,)).fetchone()
-                    foc = v.focused if v.focused is not None else (
-                        None if cur_row is None or cur_row["focused"] is None else bool(cur_row["focused"]))
-                    if v.focused is not None:
-                        sets.append("focused=?"); args.append(int(v.focused))
-                    sw_new = v.switch_label if v.switch_label in SWITCHES else (cur_row["switch_label"] if cur_row else None)
-                    if v.switch_label in SWITCHES:
-                        sets.append("switch_label=?"); args.append(v.switch_label)
-                        if v.switch_label != "interruption":
-                            sets.append("next_task=0")
-                            if v.switch_label != "return":   # a return keeps its own self-distraction judgment
-                                sets.append("self_distraction=0")
-                    if (v.switch_label in SWITCHES or v.focused is not None) and foc is not None:
-                        # the older per-shift kind follows from the fields (evaluator.kind_of)
-                        from .evaluator import kind_of
-                        sd = bool(cur_row["self_distraction"]) if cur_row is not None and sw_new in ("interruption", "return") else False
-                        sets.append("interruption_kind=?"); args.append(kind_of(sw_new, foc, sd))
-                    elif v.switch_label in SWITCHES and v.switch_label != "interruption":
-                        sets.append("interruption_kind=NULL")
-                    if not sets:
-                        continue
-                    sets.append("uncertain=0")
-                    sets.append("rationale = COALESCE(rationale,'') || ?")
-                    args.append(f" | corrected via your feedback on segment {seg['id']}: {v.note}")
-                    args.append(v.segment_id)
-                    conn.execute(f"UPDATE seg_evals SET {', '.join(sets)} WHERE segment_id=?", args)
                     n_applied += 1
-                elif verdict == "uncertain":
-                    conn.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
-                                 (f" | does your correction of segment {seg['id']} apply here? {v.note}", v.segment_id))
+                else:
                     n_flagged += 1
             conn.execute("UPDATE feedback_events SET n_applied=?, n_flagged=?, cost_usd=? WHERE id=?",
                          (n_applied, n_flagged, cost, ev["id"]))

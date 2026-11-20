@@ -483,6 +483,9 @@ class ChunkEvaluator:
                 " VALUES (?,?,?,?,?,?,?,?)",
                 (s["id"], c, sw, k, 0, "(deferred to local models - earned track record)",
                  json.dumps(comb), now))
+        if deferred:
+            from . import propagation
+            propagation.reapply(conn, sorted(deferred))
         target = [s for s in target if s["id"] not in deferred]
         if not target and not picks:
             log.info("chunk %s-%s: all %d segments deferred to local models ($0)",
@@ -603,6 +606,9 @@ class ChunkEvaluator:
                 + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
                 + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
         n = n_held = n_phone = 0
+        # for run_reevaluations: did this call produce judgments, a message for Eli, or nothing?
+        self.last_answer = ("parsed" if resp.parsed_output is not None else
+                            "contact" if resp.stop_reason == "contact_eli" else "none")
         if resp.stop_reason == "contact_eli" and target and extra is None:
             # The model asked for Eli and the task stops there: no retry. Without a hold the
             # next cycle (15 s later) would select the same chunk and send the same prompt again.
@@ -652,9 +658,15 @@ class ChunkEvaluator:
                                                        seg_models.weights_for(sc, h, list(allp)))
                             for h in HEADS}
                     rc = max(comb["content"], key=comb["content"].get)
-                    rsw = max(comb["switch"], key=comb["switch"].get)
+                    # The stored switch is the evaluator's own. Its other fields (focused,
+                    # self-distraction, the thread pointer, the note) are all about that switch,
+                    # and when it was unsure the two local models could outvote it: 497 rows by
+                    # 2026-11-20 said "continuation" under a note reading "Left X for Y", with
+                    # the thread pointer thrown away. A disagreement is flagged for review instead.
+                    rsw = sw
                     unc = int(j.uncertain or max(comb["content"].values()) < 0.5
-                              or max(comb["switch"].values()) < 0.5)
+                              or max(comb["switch"].values()) < 0.5
+                              or max(comb["switch"], key=comb["switch"].get) != sw)
                     # Antecedents (thread pointers): stored raw from the evaluator, never
                     # ensembled - the local heads cannot represent "which thread". Ranked
                     # candidates (top + runner-up + third) with probabilities conditional on
@@ -760,6 +772,9 @@ class ChunkEvaluator:
                             "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created, run_id)"
                             " VALUES (?,?,?,?,?,?,?)",
                             (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
+                # a correction carried over from the person's ruling on a similar segment survives a new judgment
+                from . import propagation
+                propagation.reapply(conn, [s["id"] for s in target])
                 conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
         log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone segment(s) ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
@@ -1356,12 +1371,23 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                      f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
                      f"entries, change it.")
         phone_q = q["reason"] == PHONE_REASON
+        ev = _get()
+        ev.last_answer = "parsed"   # (a chunk with nothing to send returns before the call)
         try:
-            n = _get().evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
+            n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
         except Exception:
             log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
             if _attempt(conn, f"reeval.fail.{q['id']}") >= 3:   # a failed call is not a finished one: try again later, three times
                 conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            break
+        if ev.last_answer != "parsed":
+            # No judgments came back, so nothing was re-judged: the old judgments and the
+            # questions written from them stand. This used to count as done and retired the
+            # open questions. A message for Eli stops the task for good; anything else is
+            # tried again later, three times.
+            if ev.last_answer == "contact" or _attempt(conn, f"reeval.fail.{q['id']}") >= 3:
+                conn.execute("UPDATE reeval_queue SET done_at=? WHERE id=?", (time.time(), q["id"]))
+            log.warning("re-evaluation of %s got no judgments (%s)", dt.datetime.fromtimestamp(start), ev.last_answer)
             break
         # (a phone re-judgment leaves the segments' judgments, and so their questions, as they were)
         nq, _ = _invalidate_derived(conn, start, c1, questions=not phone_q, summaries=False)
@@ -1380,10 +1406,71 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
     return done
 
 
+def repair_outvoted(conn) -> int:
+    """One-off (2026-11-20): stored judgments whose switch is not the one the evaluator gave,
+    because the local models outvoted it (see evaluate_chunk), get the evaluator's own switch
+    back, with the fields that follow from it re-derived from its stored answer
+    (eval_runs.response). Rows changed since by a propagated correction, or by the 10-minute
+    return rule, are left alone. The old values are kept in seg_evals_outvoted."""
+    conn.execute("CREATE TABLE IF NOT EXISTS seg_evals_outvoted (segment_id INTEGER PRIMARY KEY, switch_label TEXT,"
+                 " interruption_kind TEXT, self_distraction INTEGER, next_task INTEGER, antecedent_id INTEGER,"
+                 " uncertain INTEGER, repaired REAL)")
+    rows = conn.execute("""SELECT e.*, g.start AS g_start, r.response FROM seg_evals e
+                           JOIN segments g ON g.id = e.segment_id JOIN eval_runs r ON r.id = e.run_id
+                           WHERE r.response IS NOT NULL AND COALESCE(e.rationale,'') NOT LIKE '%feedback on segment %'
+                             AND COALESCE(e.rationale,'') NOT LIKE '%[return after more than 10 minutes%'
+                           ORDER BY e.run_id""").fetchall()
+    parsed: dict = {}
+    n = 0
+    for e in rows:
+        if e["run_id"] not in parsed:
+            try:
+                parsed = {e["run_id"]: {x["segment_id"]: x for x in json.loads(e["response"]).get("segments", [])}}
+            except (ValueError, TypeError, KeyError, AttributeError):
+                parsed = {e["run_id"]: {}}
+        j = parsed[e["run_id"]].get(e["segment_id"])
+        if j is None:
+            continue
+        sw = stored_switch(str(j.get("switch") or "").strip().lower())
+        if sw not in SWITCHES or sw == e["switch_label"]:
+            continue
+        ante = None
+        if sw != "interruption":
+            ante = e["antecedent_id"]
+            if ante is None:   # dropped when the row was stored as a shift
+                for cand in sorted(j.get("antecedents") or [], key=lambda x: -(x.get("p") or 0)):
+                    a = conn.execute("SELECT start, end FROM segments WHERE id=?", (cand.get("segment_id"),)).fetchone()
+                    if a is not None and a["start"] < e["g_start"]:
+                        ante = cand["segment_id"]
+                        break
+            if sw == "return" and ante is not None:
+                a = conn.execute("SELECT end FROM segments WHERE id=?", (ante,)).fetchone()
+                if a is not None and a["end"] is not None and e["g_start"] - a["end"] > RETURN_MAX_S:
+                    continue   # the 10-minute rule would have stored this one as a shift anyway
+        if "focused" in j:     # judged with the 2026-11-19 fields
+            sd = bool(j.get("self_distraction")) and sw in ("interruption", "return")
+            nxt = bool(j.get("next_task")) and sw == "interruption"
+            kind = kind_of(sw, bool(j.get("focused")), sd)
+        else:
+            kind = (j.get("interruption_kind") if j.get("interruption_kind") in KINDS else "detour") if sw == "interruption" else None
+            sd, nxt = kind == "self_distraction", False
+        conn.execute("INSERT OR IGNORE INTO seg_evals_outvoted VALUES (?,?,?,?,?,?,?,?)",
+                     (e["segment_id"], e["switch_label"], e["interruption_kind"], e["self_distraction"],
+                      e["next_task"], e["antecedent_id"], e["uncertain"], time.time()))
+        conn.execute("UPDATE seg_evals SET switch_label=?, interruption_kind=?, self_distraction=?, next_task=?,"
+                     " antecedent_id=?, uncertain=1 WHERE segment_id=?",
+                     (sw, kind, int(sd), int(nxt), ante, e["segment_id"]))
+        n += 1
+    return n
+
+
 def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s: float | None = None) -> int:
     """Evaluate the oldest unevaluated stretch that is at least LAZY_S old. Called from the
     classifier loop; also usable for backfill with a longer lookback and more chunks."""
     cfg = cfg or load_config()
+    if db.kv_get(conn, "migrated.outvoted") is None:
+        with db.tx(conn):
+            db.kv_set(conn, "migrated.outvoted", str(repair_outvoted(conn)))
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     if lookback_s is None:

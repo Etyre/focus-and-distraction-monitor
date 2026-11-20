@@ -330,7 +330,7 @@ backend has no tools, so no note tool there.
 | `focus_monitor/chat.py` | Interactive chats about one switch, one span, or a whole day (the day chat edits records through tools). |
 | `focus_monitor/shots.py` | Picks which captures of a stretch a model is shown: one per capture moment, the display that held the active window, spread evenly. Used by the evaluator, audit, question generator, propagation, summaries and chat. |
 | `focus_monitor/questions.py` | Writes review questions for doubted segments; ranks the queue. Each question is about one dimension (thread, content, or hybrid); a doubt uncertain along two gets two questions on the same segment, and options that would land the same judgment (blank fields count as "as the model has it") are merged. Every question's options are the model's readings plus the app's own pass-through option ("just a window I passed through"), which is left out when the segment was plainly in use: held longer than `transit_seconds` and given under 10% chance of being a transition by the evaluator. |
-| `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge). |
+| `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge), and applies it again after a re-judgment. |
 | `focus_monitor/resolver.py` | Attention-thread resolver: which thread a switch continues. |
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
 | `focus_monitor/efforts.py` | Effort-ladder shadow calls and the effort judge (which effort level is good enough). |
@@ -459,6 +459,19 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * A new judgment replaces the whole `seg_evals` row, and a correction propagated from a ruling
+    on a similar segment lived only in that row, so every re-judgment erased it. Propagated
+    corrections are now also kept in `seg_propagated` and applied again after the evaluator writes
+    (`propagation.reapply`), unless the ruling they came from was cleared. A one-off migration
+    records the ones still present and re-queues recent rulings whose corrections were lost.
+  * The stored switch is the evaluator's own answer. It used to be the weighted vote with the two
+    local models, which could outvote an unsure evaluator; the other fields stayed the
+    evaluator's, so a row could say "continuation" under a note reading "Left X for Y" (497
+    rows). A disagreement now only flags the segment. `evaluator.repair_outvoted` put the
+    evaluator's switch back on the old rows once; the values it replaced are in
+    `seg_evals_outvoted`. Content was never outvoted and is still the vote.
+  * A re-evaluation that came back with no judgments was marked done and retired the open
+    questions for that stretch. It is retried up to three times and the questions stay.
   * Phone time with nothing on the Mac in it is "distracted" when its pickup began as a
     self-distraction, and plain unfocused time otherwise (Eli, 2026-11-20). `_detour_label` used to
     want a self-distraction shift inside the stretch itself, so the later pieces of such a pickup,

@@ -225,6 +225,15 @@ CREATE TABLE IF NOT EXISTS feedback_events (  -- user corrections queued for pro
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS seg_propagated (  -- corrections carried over to similar segments
+    segment_id INTEGER NOT NULL,              --  (propagation.py); applied to seg_evals, and
+    from_segment_id INTEGER NOT NULL,         --  applied again after the evaluator re-judges
+    verdict TEXT NOT NULL,                    -- applies | uncertain
+    content TEXT, switch_label TEXT, focused INTEGER, note TEXT,
+    created REAL NOT NULL,
+    PRIMARY KEY (segment_id, from_segment_id)
+);
+
 CREATE TABLE IF NOT EXISTS effort_trials (   -- every judgment call is shadowed at lower
     id INTEGER PRIMARY KEY,                  --  efforts; same prompt, compared and kept
     role TEXT NOT NULL,          -- segment_evaluator | span_summarizer | daily_audit
@@ -485,6 +494,42 @@ def connect() -> sqlite3.Connection:
         conn.execute("BEGIN")
         moved = sum(move_late_shots(conn, r["id"], r["end"], r["idle_id"]) for r in late if r["idle_id"] is not None)
         kv_set(conn, "migrated.late_shots", str(moved))
+        conn.execute("COMMIT")
+    if kv_get(conn, "migrated.seg_propagated") is None:
+        # One-off (2026-11-20): corrections propagated before seg_propagated existed are known
+        # only by the mark they left in the rationale. Record the ones that are still there, as
+        # the row stands now, so a later re-judgment cannot erase them either.
+        import re as _re
+        conn.execute("BEGIN")
+        k = 0
+        for r in conn.execute("SELECT * FROM seg_evals WHERE rationale LIKE '%feedback on segment %'"
+                              " OR rationale LIKE '%does your correction of segment %'").fetchall():
+            for m in _re.finditer(r" \| corrected via your feedback on segment (\d+): ([^|]*)", r["rationale"] or ""):
+                conn.execute("INSERT OR IGNORE INTO seg_propagated VALUES (?,?,?,?,?,?,?,?)",
+                             (r["segment_id"], int(m.group(1)), "applies", r["content"], r["switch_label"],
+                              r["focused"], m.group(2).strip(), r["created"]))
+                k += 1
+            for m in _re.finditer(r" \| does your correction of segment (\d+) apply here\? ([^|]*)", r["rationale"] or ""):
+                if r["uncertain"]:
+                    conn.execute("INSERT OR IGNORE INTO seg_propagated VALUES (?,?,?,?,?,?,?,?)",
+                                 (r["segment_id"], int(m.group(1)), "uncertain", None, None, None, m.group(2).strip(), r["created"]))
+                    k += 1
+        # Corrections already erased cannot be read back. Where the ruling is recent enough for
+        # its candidates to be in the propagation window still, run the propagation again.
+        import time as _time
+        marks: dict = {}
+        for r in conn.execute("SELECT rationale FROM seg_evals WHERE rationale LIKE '%feedback on segment %'"
+                              " OR rationale LIKE '%does your correction of segment %'"):
+            for src in {int(x) for x in _re.findall(r"(?:feedback on|correction of) segment (\d+)", r["rationale"])}:
+                marks[src] = marks.get(src, 0) + 1
+        again = 0
+        for e in conn.execute("""SELECT f.* FROM feedback_events f WHERE f.processed=1 AND f.created > ?
+                                 AND f.id = (SELECT MAX(id) FROM feedback_events WHERE segment_id = f.segment_id)""",
+                              (_time.time() - 4 * 86400,)).fetchall():
+            if marks.get(e["segment_id"], 0) < e["n_applied"] + e["n_flagged"]:
+                conn.execute("UPDATE feedback_events SET processed=0 WHERE id=?", (e["id"],))
+                again += 1
+        kv_set(conn, "migrated.seg_propagated", f"{k} recorded, {again} run again")
         conn.execute("COMMIT")
     return conn
 
