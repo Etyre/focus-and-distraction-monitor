@@ -591,6 +591,14 @@ def _detour_label(run: dict) -> str:
     before the redesign keep the older rule: the dominant kind by time."""
     # Decided on the Mac segments: a piece of phone time always carries the redesign's fields,
     # and one 12-second pickup used to flip a 13-minute stretch judged under the older rule.
+    if all(s.get("phone") for s in run["segments"]):
+        # Phone time with nothing on the Mac in it (Eli, 2026-11-20): distracted "if it started
+        # with a self-distraction event", otherwise plain unfocused time. A carved phone
+        # segment's state already says how its pickup's thread began, so the first one decides.
+        # Before this the stretch needed a self-distraction shift of its own, and the later
+        # pieces of a pickup that began as one (cut off by a pass-through app or a second of
+        # idle Mac) were counted as interruptions: 9 of 86 distracted minutes on 2026-11-18.
+        return "distracted" if run["segments"][0].get("state") == "distracted" else "interrupted"
     mac = [s for s in run["segments"] if not s.get("phone")] or run["segments"]
     if any(s.get("focused") is not None for s in mac):
         return "distracted" if any(s.get("self_distraction") for s in run["segments"]) else "interrupted"

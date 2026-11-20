@@ -459,6 +459,10 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * Phone time with nothing on the Mac in it is "distracted" when its pickup began as a
+    self-distraction, and plain unfocused time otherwise (Eli, 2026-11-20). `_detour_label` used to
+    want a self-distraction shift inside the stretch itself, so the later pieces of such a pickup,
+    cut off by a pass-through app or a second of idle Mac, were counted as interruptions.
   * The evaluator's context lines had no segment ids, so a segment continuing one could not point
     at it; the evaluator named a later segment and the pointer was dropped (195 "dropping invalid
     antecedent" warnings in a week). Context lines are now "(context id=N)".

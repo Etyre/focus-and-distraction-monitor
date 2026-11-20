@@ -364,6 +364,24 @@ def cases():
         assert [_mins(x) for x in sp] == [44], [_mins(x) for x in sp]
         assert [g["domain"] for g in d.segs if g.get("phone")] == ["Phone"]
 
+    @case("phone time away from the Mac is distracted when its pickup began as a self-distraction, and only then")
+    def _():
+        def day(sd):
+            d = Day()
+            d.add(15, "Essay")
+            d.add(20, "Essay")
+            d.segs[-1].update(state="idle", idle=1, label=None, content="idle")
+            d.add(15, "Essay")
+            # 2 minutes into the idle time: Bumble, a pass-through app that is not carved, then Feeld
+            d.phone(17, [(2, "Bumble", "interruption", True, sd, False),
+                         (1, "Oura", "continuation", False, False, False),
+                         (3, "Feeld", "continuation", True, False, False)])
+            se = d.run()
+            ev = sorted(se["distractions"] + se["interruptions"], key=lambda r: r["start"])
+            return [(r["segments"][0]["domain"], r["state"]) for r in ev]
+        assert day(True) == [("Bumble", "distracted"), ("Feeld", "distracted")], day(True)
+        assert day(False) == [("Bumble", "interrupted"), ("Feeld", "interrupted")], day(False)
+
     @case("leaving the task and then going away from the Mac: no span is joined across the idle time")
     def _():
         d = Day()
