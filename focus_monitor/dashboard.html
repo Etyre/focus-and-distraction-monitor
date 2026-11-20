@@ -430,6 +430,11 @@ async function reviewStep(dir){
     let i=rvIdx(m)+dir;
     for(;;){
       if(i>=0&&i<rvList(m).length){rvIdx(m,i);return reviewShow(m);}
+      if(m==='question'&&dir>0){ // before leaving the questions: any that became ready behind you?
+        await mergeReadyQuestions();
+        const j=qQueue.findIndex(q=>qLate.has(q.id));
+        if(j>=0){qLate.delete(qQueue[j].id);qqi=j;return renderQuestion();}
+        if(i<qQueue.length){qqi=i;return renderQuestion();}}
       const k=RV_ORDER.indexOf(m)+dir;
       if(k<0||k>=RV_ORDER.length){$('#queueCount').textContent=dir>0?'that was the last review item — ⌘← goes back':'this is the first review item';return;}
       m=RV_ORDER[k];await reviewEnsure(m);i=dir>0?0:rvList(m).length-1;}
@@ -480,7 +485,10 @@ async function loadQueue(){
     try{const sp=await api('/api/span/at?ts='+ts);enterOneOff();$('#queueCount').textContent='viewing selected span — ⌘→ continues the review queue';renderSpanCard(sp,true);return;}
     catch(e){/* no span there any more — fall through to the queue */}}
   RV.span=RV.switch=false;spanQueue=[];queue=[];sqi=0;qi=0;reviewMode=null;returnMode=null;
-  qQueue=await api('/api/questions/queue');qqi=0; // chronological, oldest first
+  // Chronological, oldest first. A flagged segment whose question is not written yet is left out
+  // (Eli, 2026-11-19): it joins the list when the question is ready (mergeReadyQuestions). The one
+  // exception is a segment opened on purpose from the Day tab, which shows its placeholder card.
+  qQueue=(await api('/api/questions/queue')).filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
   else{ // otherwise always the first question of the day the Day tab is on (user ruling 2026-11-16); none that day: the next later one
@@ -567,6 +575,21 @@ function phoneTrack(ph,x,t0,t1,L,yText,yBar,attr){
   return s;
 }
 let qQueue=[],qqi=0;
+// Questions that were still being written when the queue loaded join it once they are ready, in
+// their place in time. One that lands behind the card you are on is remembered in qLate and
+// shown after the last question, so it is not missed.
+const qLate=new Set();
+async function mergeReadyQuestions(){
+  let fresh;try{fresh=await api('/api/questions/queue');}catch(e){return;}
+  const have=new Set(qQueue.map(q=>q.id)),cur=qQueue[qqi];
+  for(const q of fresh){
+    if(q.pending||have.has(q.id))continue;
+    const ph=qQueue.findIndex(x=>x.pending&&x.segment_id===q.segment_id); // its own placeholder, if shown
+    if(ph>=0){if(ph!==qqi)qQueue[ph]=q;continue;} // the card on screen swaps itself (pollPendingQuestion)
+    let at=qQueue.findIndex(x=>x.seg_start>q.seg_start);if(at<0)at=qQueue.length;
+    qQueue.splice(at,0,q);
+    if(cur&&at<=qqi){qqi++;qLate.add(q.id);}}}
+setInterval(()=>{if(location.hash==='#review'&&reviewMode==='question'&&!rvBusy)mergeReadyQuestions();},20000);
 const qSourceName={self_uncertain:'the evaluator was unsure',disagreement:'the models disagree',coherence:'the span description contradicts the one-object rule',audit:'flagged by the daily audit',ensemble:'flagged by the switch models (high stakes, uncertain)',propagation:'does your recent correction apply here?',thread_link:'the model is unsure which thread this continues',chat:'raised by Claude in a conversation with you'};
 function qTL(q){
   const segs=q.timeline||[];if(!segs.length)return '';

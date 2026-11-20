@@ -530,6 +530,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   unanswered" appended) and the model's judgment stands. Age counts from `created`, so reopening an
   answer on a question older than that sends it to the archive at the next pass. To see them:
   `sqlite3 focus.db "SELECT id, question FROM review_questions WHERE status='archived'"`.
+* A flagged segment whose question is still being written is left out of the Review queue (since
+  2026-11-19; before, a "being written" placeholder card sat in its place in time). It joins the
+  queue when the question is ready: the page re-checks every 20 s, and one that lands behind the
+  card you are on is shown after the last question. Opening such a segment on purpose from the
+  Day tab still shows its placeholder.
 * Review questions are shown in time order, oldest first (since 2026-11-16), so next/prev move to
   the neighbouring question on the same day. Before that the priority tier came first, and "next"
   jumped between days. A needs-review dot on the Day timeline opens its question inside that queue
