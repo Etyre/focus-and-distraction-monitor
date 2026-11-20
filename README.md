@@ -192,7 +192,8 @@ first commit 2026-08-29, in continuous development since.
   the phone is secondary: a phone block's tooltip says so, and a phone judgment becomes a review
   question only when it is load-bearing (`questions.phone_questions`): reading that phone time
   the other way (away from the work, or part of it) would move the day's independent focus time
-  or longest span by `PHONE_Q_MIN` (10) minutes or more. The question is a fixed one with four
+  or longest span by `PHONE_Q_MIN` (10) minutes or more, and the phone use lasted 30 s or more
+  and was not a pass-through. The question is a fixed one with four
   answers, written without a model call, and anchored on the computer segment the phone time
   falls in (so that segment shows the needs-review dot, and its own doubts wait until the phone
   question is settled). The answer is stored in `phone_reviews` and overrides `phone_evals`.

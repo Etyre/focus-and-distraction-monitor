@@ -603,6 +603,10 @@ def retire_threadless_questions(conn, force: bool = False) -> int:
 # Load-bearing here = reading the phone time the other way (away from the work <-> part of it)
 # moves the day's independent focus time or its longest span by this many minutes or more.
 PHONE_Q_MIN = 10.0
+# ...and only for phone use long enough for there to be a real other reading: a 2-second
+# pass-through "read the other way" is a 2-second shift, which can still unmake a span's opening
+# 10 unbroken minutes - the first live run asked about two of those (2026-11-19).
+PHONE_Q_MIN_S = 30.0
 PHONE_OPTIONS = (
     ("Part of what I was doing on the computer", {"switch_label": "continuation", "away": 0, "focused": 1, "self_distraction": 0}),
     ("A deliberate break or errand", {"switch_label": "interruption", "away": 1, "self_distraction": 0}),
@@ -624,7 +628,8 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
             LEFT JOIN phone_reviews r ON r.seg_key = p.seg_key
             LEFT JOIN review_questions q ON q.phone_key = p.seg_key
             WHERE p.switch_label IS NOT NULL AND p.app != 'Lock screen' AND p.start >= ?
-              AND r.seg_key IS NULL AND q.id IS NULL ORDER BY p.start""", (time.time() - lookback_s,)).fetchall()
+              AND p.end - p.start >= ? AND COALESCE(p.content, '') != 'transition'
+              AND r.seg_key IS NULL AND q.id IS NULL ORDER BY p.start""", (time.time() - lookback_s, PHONE_Q_MIN_S)).fetchall()
     except Exception:   # no phone tables yet
         return 0
     n, base, stamps = 0, {}, {}
