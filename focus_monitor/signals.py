@@ -149,6 +149,7 @@ def media_state() -> dict:
 # ---- windows: what a click landed on, and whether a banner is showing ---------------------
 
 NC_NAMES = ("Notification Center", "NotificationCenter")
+SYSTEM_UI = ("Dock", "Window Server", "Control Center", "SystemUIServer", "Spotlight")   # Window Server = the menu bar
 
 
 def _windows() -> list:
@@ -168,8 +169,8 @@ def _display_sizes() -> set:
 
 def window_at(x: float, y: float, windows=None) -> tuple[str, int]:
     """(owner app, window layer) of the topmost window at a point; ('desktop', 0) if none. The
-    list is front to back. Skipped: desktop-level windows (wallpaper, widgets), and screen-sized
-    overlays above the normal layer (dictation and dimming tools put invisible ones up)."""
+    list is front to back. Skipped: desktop-level windows (wallpaper, widgets), and anything
+    above the normal layer that is not the system's own (dictation tools float invisible windows there)."""
     full = _display_sizes()
     for w in (windows if windows is not None else _windows()):
         layer = int(w.get("kCGWindowLayer", 0))
@@ -183,7 +184,10 @@ def window_at(x: float, y: float, windows=None) -> tuple[str, int]:
             if bx + bw - 420 <= x < bx + bw and by <= y < by + 260:
                 return "Notification Center", layer
             continue
-        if layer > 0 and (bw, bh) in full:
+        if layer > 0 and ((bw, bh) in full or w.get("kCGWindowOwnerName") not in SYSTEM_UI):
+            # Above the normal layer only the system's own surfaces count. Other apps keep
+            # floating windows there that clicks pass straight through: Superwhisper's 240 x 160
+            # indicator sits mid-screen at layer 27 even when nothing shows (2026-11-20).
             continue
         if bx <= x < bx + bw and by <= y < by + bh:
             return str(w.get("kCGWindowOwnerName") or "?"), layer
@@ -509,7 +513,7 @@ def describe(conn, seg: dict, prev_app: str | None = None) -> list[str]:
                 "a click on the menu bar" if k == "menu_bar" else
                 "a click on this app's own window" if k == "own_window" else
                 f"a click inside {prev_app} (something clicked there brought this forward, e.g. a link)" if k == "previous_app" else
-                f"a click on {arr.get('click_owner')}" if k == "other" else
+                f"a click in a third app's window ({arr.get('click_owner')})" if k == "other" else
                 "the keyboard, no click (Cmd-Tab, Spotlight or a shortcut)" if arr["keys"] else
                 "no click and no key press (something else opened it)"))
         if arr is not None and arr["banner_s"] is not None and arr.get("click") != "banner":

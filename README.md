@@ -451,6 +451,9 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
     (layer 21), so "which window is under the pointer" would say Notification Center for every
     click. Only its top right corner (420 x 260) counts as the banner. Its desktop widgets are
     separate windows on a negative layer.
+  * Other apps float windows above the normal layer that clicks pass through (Superwhisper keeps
+    a 240 x 160 one mid-screen), so above layer 0 only the system's own surfaces count as click
+    targets: the Dock, the menu bar, Spotlight and the banner corner.
   * Chrome's transition values do not mean what their names say. "Typed" without the
     from-address-bar flag is a link opened from another app (28 of 39 such visits in a week began
     with another app in front). "Reload" is mostly a single-page site (X) moving between its own

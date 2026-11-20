@@ -23,12 +23,14 @@ def main() -> int:
     W = lambda owner, layer, x, y, w, h: {"kCGWindowOwnerName": owner, "kCGWindowLayer": layer, "kCGWindowAlpha": 1.0,
                                            "kCGWindowBounds": {"X": x, "Y": y, "Width": w, "Height": h}}
     wins = [W("Superwhisper", 30, 0, 0, 1728, 1117),          # invisible full-screen overlay
+            W("Superwhisper", 27, 744, 495, 240, 160),        # small floating indicator, click-through
             W("Notification Center", 21, 0, 0, 1728, 1117),   # the banner host: whole display
             W("Dock", 20, 400, 1040, 900, 77),
             W("Signal", 0, 100, 100, 800, 600), W("Google Chrome", 0, 0, 30, 1728, 1000),
             W("Notification Center", -2147483601, 8, 180, 360, 180)]   # a desktop widget
     check("a click on the Dock", signals.window_at(600, 1060, wins), ("Dock", 20))
     check("a click on the front app, under a full-screen overlay", signals.window_at(300, 300, wins), ("Signal", 0))
+    check("a click under another app's small floating window", signals.window_at(800, 550, wins), ("Signal", 0))
     check("a click on the app behind", signals.window_at(1200, 500, wins), ("Google Chrome", 0))
     check("a click in the banner corner while a banner shows", signals.window_at(1600, 80, wins), ("Notification Center", 21))
     check("a click elsewhere while a banner shows is not a banner click", signals.window_at(300, 80, wins), ("Google Chrome", 0))
