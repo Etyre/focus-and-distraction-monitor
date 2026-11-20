@@ -187,7 +187,7 @@ about the last 10 minutes. Coming back to something after longer than that is a 
 they get back by passing through other windows, those pass-through segments are transitions \
 (switch 'continuation'); 'return' goes on the segment where they ARRIVE back on the old object.
    For continuation and return, ALSO name the antecedent(s): ranked candidates for the nearest \
-EARLIER segment (visible in the log) belonging to the SAME thread - the thing this segment \
+EARLIER segment (visible in the log; "(context id=N)" lines count) belonging to the SAME thread - the thing this segment \
 continues. For a continuation that is normally the immediately preceding non-transition segment; \
 for a return, the last segment of what they were on BEFORE the shift away - the thing they \
 are coming back to - and never a segment of the time away itself. Thread identity follows the \
@@ -497,7 +497,10 @@ class ChunkEvaluator:
         for s in segs:
             if s["duration"] <= 0:
                 continue
-            mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else "(context) "
+            # Context lines carry their id too: the antecedent of the first segment to judge is
+            # usually a context line, and without an id there the evaluator named a LATER segment
+            # instead (195 pointers dropped as invalid, 2026-11-13 to 11-20).
+            mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else f"(context id={s['id']}) "
             # what the Mac recorded beside the capture: how the app came forward, how the page
             # was reached, input rates, audio / microphone / camera (signals.py)
             sig = _signals.describe(conn, s, prev_app) if s.get("state") != "idle" else []
