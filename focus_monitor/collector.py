@@ -277,6 +277,7 @@ class Collector:
         self.last_real_state: WindowState | None = None
         self.short_idle_start: float | None = None  # start of a current pause in input, if any
         self.current_start: float = 0.0
+        self.signals = None   # extra signals beside the captures (signals.py); started in run()
         self._recover()
 
     def _recover(self):
@@ -303,6 +304,8 @@ class Collector:
             self.conn.execute("INSERT INTO segment_shots(segment_id, ts, path, display) VALUES (?,?,?,?)",
                               (seg_id, at, name, i))
         self.last_shot_time = at
+        if self.signals is not None and not idle:
+            self.signals.note_switch(seg_id, at)   # the click / key press / banner just before; never raises
         return seg_id
 
     def _switch_to(self, state: WindowState | None, at: float, idle: bool):
@@ -343,6 +346,8 @@ class Collector:
             # dev restarts during long Terminal stretches each truncated an open ~25-minute
             # segment to a 1-second sliver via _recover.)
             self.conn.execute("UPDATE segments SET end=? WHERE id=?", (now, self.current_id))
+        if self.signals is not None and not self.paused:
+            self.signals.sample(now)   # input counts, audio/mic/camera, clicks, banners, page visits; never raises
         if self.paused:
             if not self.current_idle:  # record the pause as away time so spans break cleanly
                 self._switch_to(None, now, True)
@@ -394,6 +399,12 @@ class Collector:
 
     def run(self):
         log.info("collector started; data dir %s", DATA_DIR)
+        if self.cfg.collect_signals:
+            try:
+                from .signals import Sampler
+                self.signals = Sampler(self.conn)
+            except Exception:
+                log.exception("extra signals could not be started; collection continues without them")
         last_cleanup = 0.0
         while True:
             try:

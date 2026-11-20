@@ -411,6 +411,33 @@ def connect() -> sqlite3.Connection:
         question_id INTEGER, created REAL NOT NULL,
         verdict TEXT,                     -- 'agree' | 'disagree'; NULL = not answered (not counted)
         answered_at REAL)""")
+    # Extra signals beside the captures (signals.py): input rates and media in 10-second buckets,
+    # clicks and notification banners as events, and how Chrome reached each page.
+    conn.execute("""CREATE TABLE IF NOT EXISTS activity_samples (
+        ts REAL PRIMARY KEY,              -- start of the 10-second bucket
+        secs REAL NOT NULL DEFAULT 0,     -- seconds of it that were sampled
+        keys INTEGER NOT NULL DEFAULT 0, clicks INTEGER NOT NULL DEFAULT 0,   -- event COUNTS only
+        scrolls INTEGER NOT NULL DEFAULT 0, moves INTEGER NOT NULL DEFAULT 0,
+        audio REAL NOT NULL DEFAULT 0, mic REAL NOT NULL DEFAULT 0, camera REAL NOT NULL DEFAULT 0)""")  # audio/mic/camera: seconds on
+    conn.execute("""CREATE TABLE IF NOT EXISTS segment_arrivals (  -- what the person did just before a segment began
+        segment_id INTEGER PRIMARY KEY,
+        click_owner TEXT, click_layer INTEGER,   -- app whose window the last click (within 6 s) landed on; NULL = no click
+        click_age REAL,                          -- seconds from that click to the segment's recorded start
+        key_age REAL,                            -- seconds since a key was last pressed (NULL = over a minute)
+        banner_age REAL)""")                     # seconds since a notification banner appeared (NULL = none in the last 20 s)
+    conn.execute("""CREATE TABLE IF NOT EXISTS ui_events (
+        id INTEGER PRIMARY KEY, ts REAL NOT NULL,
+        kind TEXT NOT NULL,               -- click | banner
+        detail TEXT)""")                  # JSON: click {owner, layer}; banner {until}
+    conn.execute("CREATE INDEX IF NOT EXISTS ui_events_ts ON ui_events(kind, ts)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS page_visits (  -- copied from Chrome's History files
+        profile TEXT NOT NULL, visit_id INTEGER NOT NULL, ts REAL NOT NULL,
+        url TEXT NOT NULL, title TEXT,
+        transition INTEGER,               -- Chrome's raw value
+        how TEXT,                         -- typed | link | new_tab | external | search | in_page | back_forward | ... (signals._how)
+        from_url TEXT,                    -- the page it was opened from, when Chrome recorded one
+        PRIMARY KEY (profile, visit_id))""")
+    conn.execute("CREATE INDEX IF NOT EXISTS page_visits_ts ON page_visits(ts)")
     if "axis" not in {r[1] for r in conn.execute("PRAGMA table_info(agreement_samples)")}:
         conn.execute("ALTER TABLE agreement_samples ADD COLUMN axis TEXT")  # content | focused | switch: the one axis asked about
     conn.execute("""CREATE TABLE IF NOT EXISTS phone_reviews (  -- the person's ruling on one phone app segment

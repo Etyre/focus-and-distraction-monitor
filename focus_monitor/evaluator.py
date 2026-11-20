@@ -262,6 +262,30 @@ segment as a return. So do not turn a computer segment into a shift or a return 
 line sits inside it. PHONE lines that already have a judgment carry the same tags as computer \
 lines.
 
+6. SIGNALS IN SQUARE BRACKETS. A computer line may end with notes in [brackets]: things the \
+Mac recorded beside the capture. They are evidence, not verdicts, and older lines have none.
+   - "arrived by": what the person did just before this app came forward. "a click on a \
+notification banner" means something arrived and they followed it: an outside prompt, not \
+stimulation-seeking (whether it was a shift still depends on what it was about). "a click on the \
+Dock" or "the keyboard, no click" means they went there on their own initiative. "a click inside \
+<the previous app>" usually means a link or button there opened this one, so it likely serves \
+what they were doing. This is inferred from a click's position and timing and is sometimes wrong.
+   - "a notification banner appeared N s before": a banner was on screen shortly before the \
+switch. The Mac does not say which app sent it, so it may or may not be why they switched.
+   - "page reached by": how the browser got to this page. "typed the address", "opened from a \
+bookmark" and "searched from the address bar" are deliberate navigation from nowhere - for a feed \
+or video site in the middle of work, the mark of a self-started visit. "a link on <site>" or "a \
+new tab opened from <site>" means it grew out of that page. "link opened from another app" means \
+it was clicked in a message, document or other app. "no new page load" means they switched to a \
+tab they already had open, or moved around inside a page.
+   - "input": keys, clicks and scroll events per minute. Steady typing is writing or chatting; \
+scrolling with few keys is reading or browsing; almost nothing is watching, listening, thinking \
+or being away from the keyboard. Only counts are recorded, never what was typed.
+   - "audio playing", "microphone on", "camera on": share of the segment. Microphone or camera \
+on for most of a segment means a call or a recording - or, with the microphone alone and for \
+short bursts, voice dictation in place of typing (low key counts then do not mean idleness). Audio playing with \
+little input usually means a video or a call is actually running, not just open.
+
 Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
 and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
 2026-11-19 carry an older tag instead - <switch: shift (detour)>, (self_distraction) or \
@@ -468,11 +492,18 @@ class ChunkEvaluator:
                 f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", all_ids)
                 if r2["rationale"]}
         lines, line_ts = [], []
+        from . import signals as _signals
+        prev_app = None
         for s in segs:
             if s["duration"] <= 0:
                 continue
             mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else "(context) "
+            # what the Mac recorded beside the capture: how the app came forward, how the page
+            # was reached, input rates, audio / microphone / camera (signals.py)
+            sig = _signals.describe(conn, s, prev_app) if s.get("state") != "idle" else []
+            prev_app = None if s.get("state") == "idle" else s.get("app")
             lines.append(mark + summaries.seg_line(s)
+                         + (f"  [{'; '.join(sig)}]" if sig else "")
                          + (f"  // prior judgment: {rats[s['id']][:80]}" if s["id"] in rats else ""))
             line_ts.append(s["clip_start"])
         pick_keys = {p["key"] for p in picks}
