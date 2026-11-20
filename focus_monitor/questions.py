@@ -792,7 +792,10 @@ def _refresh_open_spot_checks(conn, cfg: Config) -> None:
             old = json.loads(q["options"] or "[]")[0]
         except (ValueError, IndexError):
             old = {}
-        if old.get("summarised") is not None:   # already tried (true, or false = the call failed: leave it)
+        # Has its summary: done. Tried and failed (network down, budget spent): try again, but
+        # not more than every half hour. (Until 2026-11-20 a failed one was never retried and
+        # kept its bare where-and-when line for good.)
+        if old.get("summarised") or (old.get("summarised") is False and time.time() - (old.get("summary_tried") or 0) < 1800):
             continue
         g = conn.execute("""SELECT g.id, g.start, COALESCE(g.end, g.start) AS end, g.app, g.domain, g.title,
                                    e.content, e.switch_label, e.focused, e.antecedent_id, e.rationale
@@ -802,6 +805,7 @@ def _refresh_open_spot_checks(conn, cfg: Config) -> None:
         axis = old.get("axis") or random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
         summary, cost = _spot_summary(conn, cfg, g)
         ctx, question, opts = _spot_question(g, axis, summary)
+        opts[0]["summary_tried"] = time.time()
         with db.tx(conn):
             conn.execute("UPDATE review_questions SET context=?, question=?, options=?, cost_usd=cost_usd+? WHERE id=?",
                          (ctx, question, json.dumps(opts), cost, q["id"]))

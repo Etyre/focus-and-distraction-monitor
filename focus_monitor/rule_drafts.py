@@ -167,8 +167,28 @@ def evidence(conn, segment_ids: list[int]) -> list[dict]:
         d["corrected"] = bool(d["app_said"]) and bool(
             (r["content"] and r["content"] != r["ec"]) or (r["switch_label"] and r["switch_label"] != r["esw"])
             or (r["focused"] is not None and r["ef"] is not None and bool(r["focused"]) != bool(r["ef"])))
-        q = conn.execute("""SELECT question, answer, note FROM review_questions
-                            WHERE segment_id=? AND status='answered' ORDER BY answered_at DESC LIMIT 1""", (sid,)).fetchone()
+        # The question whose answer made THIS ruling. An option can edit a different segment
+        # than the one its question is anchored on, and a spot-check "No" on the kind or the
+        # switch makes no ruling at all, so "the latest answered question on this segment" could
+        # show one that had nothing to do with it.
+        q = None
+        for c in conn.execute("""SELECT segment_id, question, answer, note, options, answer_index FROM review_questions
+                                 WHERE status='answered' AND (segment_id=? OR options LIKE ?)
+                                 ORDER BY answered_at DESC""", (sid, f'%"segment_id": {sid}%')):
+            try:
+                opts = json.loads(c["options"] or "[]")
+            except ValueError:
+                opts = []
+            if c["answer_index"] is not None and 0 <= c["answer_index"] < len(opts):
+                o = opts[c["answer_index"]]
+            else:   # answers from before the index was stored: find the option by its label
+                o = next((x for x in opts if x.get("label") == c["answer"]), {})
+            if (o.get("segment_id") or c["segment_id"]) != sid:
+                continue
+            if o.get("sample_verdict") == "disagree" and o.get("focused") is None:
+                continue
+            q = c
+            break
         d["question"], d["answer"] = (q["question"], q["answer"]) if q else (None, None)
         if q and q["note"] and not d["note"]:
             d["note"] = q["note"]
