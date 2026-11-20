@@ -364,6 +364,18 @@ def cases():
         assert [_mins(x) for x in sp] == [44], [_mins(x) for x in sp]
         assert [g["domain"] for g in d.segs if g.get("phone")] == ["Phone"]
 
+    @case("leaving the task and then going away from the Mac: no span is joined across the idle time")
+    def _():
+        d = Day()
+        d.add(15, "Essay")
+        r = d.add(3, "Report", switch="interruption", content="task")
+        d.add(20, "Report")
+        d.segs[-1].update(state="idle", idle=1, label=None, content="idle")
+        d.add(12, "Report", ante=r)
+        se = d.run()
+        walls = sorted(round((x["end"] - x["start"]) / 60) for x in se["focus_spans"] + se["short_focus"] + se["disqualified"])
+        assert walls and max(walls) <= 15, walls   # before 2026-11-20: Report 3 + idle 20 + Report 12 was one 35-minute span
+
     @case("a phone pickup judged a continuation changes nothing")
     def _():
         d = Day()

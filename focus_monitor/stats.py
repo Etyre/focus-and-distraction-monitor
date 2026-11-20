@@ -589,7 +589,10 @@ def _detour_label(run: dict) -> str:
     diversion ('interrupted'). Under the redesign a self-distraction is an EVENT - a shift made
     without clear intent - so the stretch is one when it contains such a shift. Stretches judged
     before the redesign keep the older rule: the dominant kind by time."""
-    if any(s.get("focused") is not None for s in run["segments"]):
+    # Decided on the Mac segments: a piece of phone time always carries the redesign's fields,
+    # and one 12-second pickup used to flip a 13-minute stretch judged under the older rule.
+    mac = [s for s in run["segments"] if not s.get("phone")] or run["segments"]
+    if any(s.get("focused") is not None for s in mac):
         return "distracted" if any(s.get("self_distraction") for s in run["segments"]) else "interrupted"
     from collections import Counter
     c = Counter()
@@ -889,7 +892,11 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
                 return out + _assemble((away + rs[i:]) if away else rs[i:])
             if r["cat"] == "idle":
                 out.append(_finalize(cur, reason() if away else "away"))
-                return out + _assemble((away + rs[i + 1:]) if away else rs[i + 1:])
+                # With runs away still pending, keep the idle run in what is assembled next, so
+                # the next span closes at it too. Dropping it joined "left the task" and
+                # "back after being away from the Mac" into one span across the idle time
+                # (27 spans since August, one with 27 idle minutes inside; found 2026-11-20).
+                return out + _assemble((away + rs[i:]) if away else rs[i + 1:])
             if (away and r["cat"] == "focus" and r["duration"] <= TOUCH_BACK_S and i + 1 < n
                     and not rs[i + 1].get("gap_before") and rs[i + 1]["cat"] != "idle"
                     and _same_task(cur, r, away)
@@ -1100,7 +1107,7 @@ def self_distraction_counts(segs: list[dict], se: dict) -> tuple[int, int]:
                 break
             prev_end = s["clip_end"]       # windows passed through on the way out
     for d in se["distractions"]:
-        if not any(sg.get("redesign") for sg in d["segments"]):
+        if not any(sg.get("redesign") for sg in ([x for x in d["segments"] if not x.get("phone")] or d["segments"])):
             events += 1
             bounces += int(bool(d.get("inside_span")))
     return events, bounces
@@ -1178,9 +1185,10 @@ def daily_metrics(conn, day: dt.date, overrides: dict | None = None) -> dict:
         "passive_min": sum(s["duration"] for s in segs if s.get("content") == "passive") / 60,
         # Correspondence (chat, email) is work but interactive: tracked in its own right, never a focus span.
         "correspondence_min": sum(s["duration"] for s in segs if s.get("content") == "correspondence") / 60,
-        "switches": sum(1 for s in segs if s["switch_id"]),
-        "uncertain": sum(1 for s in segs if s["uncertain"]),
-        "reviewed": sum(1 for s in segs if s["source"] == "review"),
+        # by distinct id: a segment split around a phone pickup appears once per piece
+        "switches": len({s["id"] for s in segs if s["switch_id"]}),
+        "uncertain": len({s["id"] for s in segs if s["uncertain"]}),
+        "reviewed": len({s["id"] for s in segs if s["source"] == "review"}),
         "spend_usd": conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM predictions WHERE created>=? AND created<?",
                                   (t0, t1)).fetchone()[0],
     }
@@ -1326,8 +1334,10 @@ def agreement_report(conn, days: int = 60) -> dict:
         if not found:
             unscored += 1
             continue
-        ante = (found.get("antecedents") or [{}])[0].get("segment_id") if found.get("switch") in ("continuation", "return") else None
-        rows.append(dict(r, ec=found.get("content"), esw=found.get("switch"), ea=ante))
+        from .seg_models import stored_switch   # transcripts say 'shift'; rulings are stored as 'interruption'
+        esw = stored_switch(found.get("switch"))
+        ante = (found.get("antecedents") or [{}])[0].get("segment_id") if esw in ("continuation", "return") else None
+        rows.append(dict(r, ec=found.get("content"), esw=esw, ea=ante))
     per_day: dict[str, dict] = {}
     tot = {"n": 0, "agree": 0, "by_head": {"content": 0, "switch": 0, "thread": 0}}
     recent = {"n": 0, "agree": 0}

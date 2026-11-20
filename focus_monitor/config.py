@@ -274,6 +274,8 @@ def logical_date(ts: float | None = None) -> _dt.date:
 
 
 def day_bounds(day: _dt.date) -> tuple[float, float]:
-    """[start, start+24h) for a logical day, starting at day_start_hour."""
-    start = _dt.datetime.combine(day, _dt.time(hour=day_start_hour())).timestamp()
-    return start, start + 86400
+    """[day_start_hour on `day`, day_start_hour on the next day). Not start + 24 h: on the two
+    clock-change days that left an hour in no day (autumn) or in two (spring)."""
+    t = _dt.time(hour=day_start_hour())
+    return (_dt.datetime.combine(day, t).timestamp(),
+            _dt.datetime.combine(day + _dt.timedelta(days=1), t).timestamp())
