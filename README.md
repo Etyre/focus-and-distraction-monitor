@@ -433,6 +433,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+* **Never commit a `.venv` symlink from a worktree (2026-11-20).** A worktree needs the main
+  checkout's environment, so a `.venv` symlink gets made inside it. `.gitignore` had `.venv/`,
+  which matches a directory but not a symlink, so `git add -A` committed it; merging that branch
+  made git replace main's real (ignored) `.venv` with a symlink to itself, deleting the
+  environment. The pattern is now `.venv`. In a worktree, add files by name. The app bundle
+  reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
+  means the app cannot start again after its next restart.
+
 * **Signals (2026-11-19): what was tried and what the data showed.**
   * A listen-only event tap on mouse clicks can be created without any permission, but macOS
     delivers it no events unless the app has Input Monitoring. The click and key COUNTERS and
