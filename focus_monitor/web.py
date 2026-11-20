@@ -852,7 +852,16 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                    _json.dumps(undo), qid))
         # The answer resolves the doubt this question was generated for, even when the chosen
         # option edits a different segment - otherwise the needs-review dot never goes away.
-        if not o.get("phone"):   # a phone question only borrows its computer segment as an anchor
+        if q["source"] == "sample":   # a spot check (questions.spot_checks): record the verdict
+            c.execute("UPDATE agreement_samples SET verdict=?, answered_at=? WHERE segment_id=?",
+                      (o.get("sample_verdict"), time.time(), q["segment_id"]))
+        if o.get("sample_verdict") == "disagree":
+            # he says the confident judgment is wrong: raise the doubt, so the usual question
+            # about what the segment really was gets written
+            c.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
+                      (" | spot check: the person says this judgment is wrong" + (f" ({a.note.strip()})" if a.note and a.note.strip() else ""),
+                       q["segment_id"]))
+        elif not o.get("phone"):   # a phone question only borrows its computer segment as an anchor
             c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     if o.get("switch_label") == "interruption" and not o.get("interruption_kind"):
         _kick_kind_derivation(o["segment_id"], a.note)

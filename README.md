@@ -124,6 +124,13 @@ first commit 2026-08-29, in continuous development since.
   can be flagged, at most `max_reviews_per_day` (8) per day, highest-stakes first (longer preceding
   focus = higher stakes). Everything else is auto-accepted. Model accuracy is likewise weighted toward
   focus-leaving switches.
+* **Spot checks** (`questions.spot_checks`, `spot_checks_per_day`, default 3): a few times a day
+  a segment whose judgment the evaluator was confident of is drawn at random (chance proportional
+  to its length; at most one per 2 hours) and asked about in the review queue: "Is that judgment
+  right?" No model call. "Yes" stores the judgment as your own ruling; "No" flags the segment so
+  the usual question about what it was gets written. Outcomes are in `agreement_samples`, and the
+  first tile on the agreement panel gives the share agreed, by week. This is the unbiased
+  accuracy figure: the other questions are about segments the app already doubted.
 * **Agreement with your judgments** (top of the Models tab, `/api/agreement`): of the verdicts you
   have given, how many the app already had right vs. how many you corrected, overall, over the last
   30 days, and by day. A segment verdict agrees when every field you set matches what the app had

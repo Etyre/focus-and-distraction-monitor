@@ -1097,6 +1097,8 @@ async function loadAgreement(){
   const tiles=[[`${pct(sg.ratio)}`,'segment judgments agreed',`${sg.total.agree} agreed · ${sg.total.n-sg.total.agree} corrected (n=${sg.total.n}) · last 30 days ${pct(sg.ratio_recent)} (n=${sg.recent.n})`],
     [`${pct(sp.ratio)}`,'spans confirmed',`${sp.total.agree} confirmed · ${sp.total.n-sp.total.agree} rejected (n=${sp.total.n}) · last 30 days ${pct(sp.ratio_recent)} (n=${sp.recent.n})`],
     [`${sg.total.by_head.content} / ${sg.total.by_head.switch} / ${sg.total.by_head.thread}`,'corrections by field: content / switch / thread','a verdict can correct more than one field'+(sg.judged_after_ruling?` · ${sg.judged_after_ruling} verdict(s) not scored: the app judged them after you ruled`:'')]];
+  const spt=a.spot||{total:{n:0,agree:0},weekly:[]};
+  tiles.unshift([`${pct(spt.ratio)}`,'spot checks agreed (confident judgments drawn at random)',spt.total.n?`${spt.total.agree} of ${spt.total.n} · by week: `+spt.weekly.slice(-6).map(w=>`${w.week.slice(5)} ${pct(w.ratio)} (n=${w.n})`).join(', '):'none answered yet · a few are asked each day, in the review queue']);
   $('#agreeTiles').innerHTML=tiles.map(([v,l,sub])=>`<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div><div class="l muted">${sub}</div></div>`).join('');
   const days=sg.daily.map(d=>d.day);
   if(!days.length){$('#c-agree').innerHTML='<div class="muted">No scored verdicts in this window yet.</div>';$('#agreeTable').innerHTML='';return;}

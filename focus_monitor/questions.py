@@ -180,6 +180,7 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
         LEFT JOIN seg_reviews r ON r.segment_id = e.segment_id
         LEFT JOIN review_questions q ON q.segment_id = e.segment_id
                                     AND q.status NOT IN ('declined', 'dismissed', 'archived')
+                                    AND NOT (q.source = 'sample' AND q.status = 'answered')
         WHERE e.uncertain = 1 AND r.segment_id IS NULL AND q.id IS NULL
         ORDER BY g.start DESC""").fetchall()
     for r in rows:
@@ -671,6 +672,73 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
         conn.commit()
         log.info("wrote %d question(s) about load-bearing phone judgments", n)
     return n
+
+
+SPOT_GAP_S = 2 * 3600.0     # at most one new spot check per this long, so they spread over the day
+SPOT_MIN_S = 20.0           # shorter segments are not drawn
+SPOT_SETTLE_S = 600.0       # ...nor ones that ended less than this ago (their judgment may still change)
+
+
+def spot_checks(conn, cfg: Config | None = None) -> int:
+    """Draw today's next spot check, if one is due: a segment whose judgment the evaluator was
+    confident of (no doubt flag, no review, no question), picked at random with a chance
+    proportional to its length, so the weekly figure reads as "share of judged time the app had
+    right". The question is fixed - no model call. 'Yes' stores the judgment as the person's
+    own; 'No' flags the segment, and the usual question about what it really was follows."""
+    import random
+    from .config import day_bounds, logical_date
+    from .seg_models import shown_switch
+    cfg = cfg or load_config()
+    n = cfg.spot_checks_per_day
+    if not n or n <= 0:
+        return 0
+    day = logical_date()
+    have = conn.execute("SELECT COUNT(*), MAX(created) FROM agreement_samples WHERE day=?", (day.isoformat(),)).fetchone()
+    now = time.time()
+    if have[0] >= n or (have[1] and now - have[1] < SPOT_GAP_S):
+        return 0
+    d0, d1 = day_bounds(day)
+    rows = conn.execute("""
+        SELECT g.id, g.start, COALESCE(g.end, g.start) AS end, g.app, g.domain, g.title,
+               e.content, e.switch_label, e.focused, e.self_distraction, e.next_task, e.antecedent_id, e.rationale
+        FROM segments g JOIN seg_evals e ON e.segment_id = g.id
+        LEFT JOIN seg_reviews r ON r.segment_id = g.id
+        LEFT JOIN review_questions q ON q.segment_id = g.id
+        LEFT JOIN agreement_samples a ON a.segment_id = g.id
+        WHERE g.start >= ? AND g.start < ? AND g.idle = 0 AND g.neutral = 0 AND e.uncertain = 0
+          AND e.focused IS NOT NULL AND e.content NOT IN ('transition', 'idle')
+          AND r.segment_id IS NULL AND q.id IS NULL AND a.segment_id IS NULL
+          AND COALESCE(g.end, g.start) - g.start >= ? AND COALESCE(g.end, g.start) < ?""",
+                        (d0, d1, SPOT_MIN_S, now - SPOT_SETTLE_S)).fetchall()
+    if not rows:
+        return 0
+    g = random.choices(rows, weights=[r["end"] - r["start"] for r in rows])[0]
+    hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
+    secs = g["end"] - g["start"]
+    length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
+    call = ", ".join(v for v in (
+        g["content"], "focused" if g["focused"] else "unfocused",
+        {"continuation": "a continuation of what came before", "interruption": "a shift to something new",
+         "return": "a return to something from earlier"}.get(g["switch_label"], shown_switch(g["switch_label"])),
+        "a self-distraction" if g["self_distraction"] else None,
+        "the next task in a task block" if g["next_task"] else None) if v)
+    where = g["app"] + (f" · {g['domain']}" if g["domain"] else "") + (f" ({g['title'][:60]})" if g["title"] else "")
+    ctx = (f"Spot check, to measure how often the app is right: at {hhmm}, {where}, for {length}. "
+           f"The app was confident in its call: {call}." + (f" Its reason: {g['rationale'][:240]}" if g["rationale"] else ""))
+    blank = {"segment_id": g["id"], "switch_label": None, "antecedent_id": None, "interruption_kind": None,
+             "content": None, "hybrid": None}
+    opts = [dict(blank, label="Yes, that is right", sample_verdict="agree", content=g["content"],
+                 switch_label=g["switch_label"], focused=bool(g["focused"]),
+                 antecedent_id=g["antecedent_id"] if g["switch_label"] in ("continuation", "return") else None),
+            dict(blank, label="No, something about it is wrong", sample_verdict="disagree")]
+    with db.tx(conn):
+        cur = conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
+                           " VALUES (?,?,?,?,?,0,?)",
+                           (g["id"], "sample", ctx, "Is that judgment right?", json.dumps(opts), now))
+        conn.execute("INSERT INTO agreement_samples(segment_id, day, question_id, created) VALUES (?,?,?,?)",
+                     (g["id"], day.isoformat(), cur.lastrowid, now))
+    log.info("spot check drawn: segment %d (%s)", g["id"], hhmm)
+    return 1
 
 
 def generate_pending(conn, cfg: Config | None = None) -> int:

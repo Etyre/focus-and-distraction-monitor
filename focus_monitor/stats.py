@@ -1375,7 +1375,21 @@ def agreement_report(conn, days: int = 60) -> dict:
             d["n"] += 1
             d["agree"] += ok
     ratio = lambda x: (x["agree"] / x["n"]) if x["n"] else None
-    return {"segments": {"total": tot, "ratio": ratio(tot), "recent": recent, "ratio_recent": ratio(recent),
+    # Spot checks: confident judgments drawn at random - the unbiased figure, by week (Mon-Sun).
+    spot_tot, weeks = {"n": 0, "agree": 0}, {}
+    try:
+        srows = conn.execute("SELECT day, verdict FROM agreement_samples WHERE verdict IS NOT NULL ORDER BY day").fetchall()
+    except Exception:
+        srows = []
+    for s in srows:
+        d = dt.date.fromisoformat(s["day"])
+        wk = (d - dt.timedelta(days=d.weekday())).isoformat()
+        w = weeks.setdefault(wk, {"week": wk, "n": 0, "agree": 0})
+        for x in (w, spot_tot):
+            x["n"] += 1
+            x["agree"] += int(s["verdict"] == "agree")
+    spot = {"total": spot_tot, "ratio": ratio(spot_tot), "weekly": [dict(w, ratio=ratio(w)) for w in weeks.values()]}
+    return {"spot": spot, "segments": {"total": tot, "ratio": ratio(tot), "recent": recent, "ratio_recent": ratio(recent),
                          "daily": [dict(d, ratio=d["agree"] / d["n"]) for d in sorted(per_day.values(), key=lambda d: d["day"])],
                          "judged_after_ruling": unscored},
             "spans": {"total": sp_tot, "ratio": ratio(sp_tot), "recent": sp_recent, "ratio_recent": ratio(sp_recent),
