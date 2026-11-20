@@ -171,9 +171,14 @@ first commit 2026-08-29, in continuous development since.
   the span (`stats._phone_on_track`). Phone time that was a shift is always time away and never
   starts a span of its own; phone-only focus (meditation, cardio intervals) is tracked in Toggl.
   Phone judgments are low confidence (the model sees an app name and timing, nothing else) and
-  the phone is secondary: a phone block's tooltip says so, and a phone judgment never becomes a
-  review question (every question source reads `seg_evals`/`segments`; phone judgments live in
-  `phone_evals`). What matters from the phone is interruptions and self-distraction events.
+  the phone is secondary: a phone block's tooltip says so, and a phone judgment becomes a review
+  question only when it is load-bearing (`questions.phone_questions`): reading that phone time
+  the other way (away from the work, or part of it) would move the day's independent focus time
+  or longest span by `PHONE_Q_MIN` (10) minutes or more. The question is a fixed one with four
+  answers, written without a model call, and anchored on the computer segment the phone time
+  falls in (so that segment shows the needs-review dot, and its own doubts wait until the phone
+  question is settled). The answer is stored in `phone_reviews` and overrides `phone_evals`.
+  What matters from the phone is interruptions and self-distraction events.
   A glance at the lock screen is an interruption and never a self-distraction (Eli's rule); that
   is set in code (`evaluator.store_lock_glance`), not asked of the model. The phone log records
   a lock-screen look only when you swipe to the widgets page without unlocking

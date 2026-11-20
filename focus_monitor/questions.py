@@ -444,6 +444,8 @@ def _uncertainty(conn, segment_id: int, source: str) -> float:
             pass
     if source in ("coherence", "propagation", "audit"):
         u = max(u, 0.7)
+    if source == "phone":   # the model's own confidence is about the computer segment, not the phone
+        u = 0.8
     return max(0.0, min(1.0, u))
 
 
@@ -486,6 +488,11 @@ def score_questions(conn, limit: int | None = None, only_stale: bool = True) -> 
             base_cache[day] = stats.daily_metrics(conn, day)
         vals = {k: [base_cache[day][k]] for k in STAKE_METRICS}
         for o in opts:
+            if o.get("phone"):      # a ruling on a phone segment (phone_questions)
+                m = stats.daily_metrics(conn, day, {"phone": {o["phone_key"]: o["phone"]}})
+                for k in STAKE_METRICS:
+                    vals[k].append(m[k])
+                continue
             sid = o.get("segment_id") or r["segment_id"]
             ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid", "focused")}}
             if not any(v is not None for v in ov[sid].values()):
@@ -586,6 +593,83 @@ def retire_threadless_questions(conn, force: bool = False) -> int:
         n += 1
     if n:
         log.info("retired %d open thread question(s) on threads under %.0fs", n, floor_s)
+    return n
+
+
+# Phone judgments are low confidence (the model sees an app name and timing, nothing else) and
+# the phone is secondary, so they are not asked about - unless one is load-bearing (Eli,
+# 2026-11-19: "Make a review question if it's loadbearing for some important evaluation").
+# Load-bearing here = reading the phone time the other way (away from the work <-> part of it)
+# moves the day's independent focus time or its longest span by this many minutes or more.
+PHONE_Q_MIN = 10.0
+PHONE_OPTIONS = (
+    ("Part of what I was doing on the computer", {"switch_label": "continuation", "away": 0, "focused": 1, "self_distraction": 0}),
+    ("A deliberate break or errand", {"switch_label": "interruption", "away": 1, "self_distraction": 0}),
+    ("A self-distraction: I picked it up without a clear task", {"switch_label": "interruption", "away": 1, "self_distraction": 1}),
+    ("The phone was just open; I was not looking at it", {"switch_label": "continuation", "content": "transition", "away": 0, "self_distraction": 0}),
+)
+_phone_checked: dict = {}   # seg_key -> the day stamp it was last checked at (in memory: cheap to redo)
+
+
+def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
+    """Write a review question for each load-bearing phone judgment (see PHONE_Q_MIN). No model
+    call: the model knows nothing more about the phone than the app and the timing, so the
+    question is a fixed one, anchored on the computer segment the phone time falls in (which
+    gives the card its timeline, with the phone lane under it)."""
+    from . import stats
+    from .config import logical_date, day_bounds
+    try:
+        rows = conn.execute("""SELECT p.* FROM phone_evals p
+            LEFT JOIN phone_reviews r ON r.seg_key = p.seg_key
+            LEFT JOIN review_questions q ON q.phone_key = p.seg_key
+            WHERE p.switch_label IS NOT NULL AND p.app != 'Lock screen' AND p.start >= ?
+              AND r.seg_key IS NULL AND q.id IS NULL ORDER BY p.start""", (time.time() - lookback_s,)).fetchall()
+    except Exception:   # no phone tables yet
+        return 0
+    n, base, stamps = 0, {}, {}
+    for p in rows:
+        day = logical_date(p["start"])
+        if day not in stamps:
+            d0, d1 = day_bounds(day)
+            ps = conn.execute("SELECT MAX(created) FROM phone_evals WHERE start >= ? AND start < ?", (d0, d1)).fetchone()[0]
+            stamps[day] = max(_day_stamp(conn, d0, d1), float(ps or 0.0))
+        if _phone_checked.get(p["seg_key"]) == stamps[day]:
+            continue
+        _phone_checked[p["seg_key"]] = stamps[day]
+        flip = ({"switch_label": "continuation", "away": 0, "focused": 1, "self_distraction": 0} if p["away"]
+                else {"switch_label": "interruption", "away": 1, "self_distraction": 0})
+        if day not in base:
+            base[day] = stats.daily_metrics(conn, day)
+        m = stats.daily_metrics(conn, day, {"phone": {p["seg_key"]: flip}})
+        moved = {k: m[k] - base[day][k] for k in ("total_focus_min", "longest_focus_min")}
+        k, delta = max(moved.items(), key=lambda kv: abs(kv[1]))
+        if abs(delta) < PHONE_Q_MIN:
+            continue
+        g = conn.execute("""SELECT id, app, title FROM segments WHERE start <= ? AND COALESCE(end, start) > ?
+                            ORDER BY idle, start DESC LIMIT 1""", (p["start"], p["start"])).fetchone()
+        if g is None:
+            continue
+        hhmm = dt.datetime.fromtimestamp(p["start"]).strftime("%H:%M")
+        secs = p["end"] - p["start"]
+        length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
+        call = ("a self-distraction" if p["away"] and p["self_distraction"] else
+                "a deliberate trip away from the work" if p["away"] else "part of what you were doing")
+        what = "independent focus time" if k == "total_focus_min" else "longest focus span"
+        ctx = (f"At {hhmm} your phone had {p['app']} open for {length}, while the computer was on {g['app']}"
+               f"{' (' + g['title'][:60] + ')' if g['title'] else ''}. The app sees only which phone app was open and when, "
+               f"so its call is a low-confidence one: {call}. Read the other way, the day's {what} "
+               f"would be {abs(delta):.0f} min {'longer' if delta > 0 else 'shorter'}.")
+        opts = [{"label": lab, "segment_id": g["id"], "phone_key": p["seg_key"], "phone": edit,
+                 "switch_label": None, "antecedent_id": None, "interruption_kind": None, "content": None, "hybrid": None}
+                for lab, edit in PHONE_OPTIONS]
+        conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created, phone_key)"
+                     " VALUES (?,?,?,?,?,0,?,?)",
+                     (g["id"], "phone", ctx, f"What was the {p['app']} use on your phone at {hhmm}?", json.dumps(opts),
+                      time.time(), p["seg_key"]))
+        n += 1
+    if n:
+        conn.commit()
+        log.info("wrote %d question(s) about load-bearing phone judgments", n)
     return n
 
 

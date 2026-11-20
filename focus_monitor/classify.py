@@ -251,6 +251,7 @@ class ClassifierService:
             from . import questions
             # Drain the whole backlog: a burst of flags (audit sweep, propagation) must have
             # its questions composed this cycle, not 6 per cycle - the review page needs them.
+            questions.phone_questions(self.conn)   # load-bearing phone judgments; no model call
             for _ in range(5):
                 if questions.generate_pending(self.conn, self.cfg) == 0:
                     break

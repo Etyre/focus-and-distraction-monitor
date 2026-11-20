@@ -39,7 +39,37 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None,
     touching the database. With `phone` (the default), iPhone app segments judged to be time
     away are carved out of the Mac segments they overlap (_carve_phone)."""
     segs = _labelled_segments(conn, t0, t1, overrides)
-    return _carve_phone(conn, segs, t0, t1) if phone and segs else segs
+    return _carve_phone(conn, segs, t0, t1, (overrides or {}).get("phone")) if phone and segs else segs
+
+
+PHONE_REVIEW_FIELDS = ("switch_label", "content", "focused", "self_distraction", "away")
+
+
+def _phone_rows(conn, t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
+    """Judged phone app segments overlapping [t0,t1), oldest first, as they stand: the model's
+    call (phone_evals), then the person's ruling on it (phone_reviews), then `overrides`
+    ({seg_key: {field: value}} - a ruling simulated in memory, as for computer segments)."""
+    import sqlite3
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM phone_evals WHERE switch_label IS NOT NULL AND start < ? AND end > ? ORDER BY start", (t1, t0))]
+    except sqlite3.OperationalError:   # a database from before the table existed, opened read-only
+        return []
+    if not rows:
+        return rows
+    try:
+        rv = {r["seg_key"]: r for r in conn.execute("SELECT * FROM phone_reviews")}
+    except sqlite3.OperationalError:
+        rv = {}
+    for p in rows:
+        r, o = rv.get(p["seg_key"]), (overrides or {}).get(p["seg_key"]) or {}
+        p["reviewed"] = r is not None
+        for k in PHONE_REVIEW_FIELDS:
+            if r is not None and r[k] is not None:
+                p[k] = r[k]
+            if o.get(k) is not None:
+                p[k] = o[k]
+    return rows
 
 
 # Eli, 2026-11-19: "Phone time can count as part of a focus span if it's on track." So phone
@@ -49,7 +79,7 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None,
 # is tracked with Toggl, not read off the phone log.
 
 
-def _phone_on_track(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
+def _phone_on_track(rows: list[dict], segs: list[dict]) -> list[dict]:
     """On-track phone time (phone_evals.away = 0, focused, not a pass-through) needs no change
     while the Mac is recording activity: the computer segment keeps counting. But a call that is
     the task can outlast the Mac's idle threshold, and an idle segment ends the span. So where
@@ -58,14 +88,8 @@ def _phone_on_track(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
     segment before the idle one and takes its state and labels. If what is left of the idle
     segment is then shorter than the idle threshold, it was never really idle (no input for a
     few minutes is ordinary), and it joins the same thread too."""
-    import sqlite3
     from .config import load_config
-    try:
-        rows = conn.execute("SELECT * FROM phone_evals WHERE away = 0 AND focused = 1 AND switch_label IS NOT NULL"
-                            " AND content NOT IN ('transition', 'idle') AND start < ? AND end > ? ORDER BY start",
-                            (t1, t0)).fetchall()
-    except sqlite3.OperationalError:
-        return segs
+    rows = [p for p in rows if not p["away"] and p["focused"] and p["content"] not in ("transition", "idle")]
     if not rows:
         return segs
     idle_s = load_config().idle_seconds
@@ -101,7 +125,7 @@ def _phone_on_track(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
     return out
 
 
-def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
+def _carve_phone(conn, segs: list[dict], t0: float, t1: float, overrides: dict | None = None) -> list[dict]:
     """Phone app segments are judged like computer segments (Eli, 2026-11-19: "The app should
     make the same segment judgements of open phone apps as it does of computer segments"). One
     that is time AWAY from what was on the Mac (phone_evals.away: a shift, or more of the same
@@ -111,13 +135,11 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
     the same thread. A phone segment that was a continuation of the Mac thread or a pass-through,
     or that is not judged yet, changes nothing. Pieces of a cut segment keep its id (reviews,
     questions and thread pointers are per segment); only clip_start / clip_end / duration differ."""
-    import sqlite3
-    try:
-        rows = conn.execute("SELECT * FROM phone_evals WHERE away = 1 AND switch_label IS NOT NULL"
-                            " AND start < ? AND end > ? ORDER BY start", (t1, t0)).fetchall()
-    except sqlite3.OperationalError:   # a database from before the table existed, opened read-only
+    allrows = _phone_rows(conn, t0, t1, overrides)
+    if not allrows:
         return segs
-    segs = _phone_on_track(conn, segs, t0, t1)
+    segs = _phone_on_track(allrows, segs)
+    rows = [p for p in allrows if p["away"]]
     last: dict = {}    # pickup -> (id of its latest carved segment, did that thread begin as a self-distraction)
     for p in rows:
         a, b = max(p["start"], t0), min(p["end"], t1)
@@ -158,10 +180,10 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
                   switch="interruption" if shift else "continuation", self_distraction=sd,
                   next_task=bool(p["next_task"]) and shift,
                   antecedent_id=None if shift else prev[0], antecedent_p=1.0,
-                  source="eval", switch_id=None, own_switch_id=None, uncertain=0,
+                  source="review" if p["reviewed"] else "eval", switch_id=None, own_switch_id=None, uncertain=0,
                   hybrid=0, inact_s=0.0, activity=None, probs=None, focus_exception=0,
                   review_chat_mid=None, first_screenshot=None, last_screenshot=None,
-                  note=p["rationale"])
+                  note=p["rationale"], phone_reviewed=p["reviewed"])
         last[p["pickup_key"]] = (ph["id"], sd_live)
         out.append(ph)
         out.sort(key=lambda s: s["clip_start"])   # stable: equal starts keep their order

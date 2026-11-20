@@ -751,6 +751,8 @@ def _undo_question_answer(c, undo_json: str | None) -> dict:
     u = _json.loads(undo_json) if undo_json else {}
     if u.get("seg_id") is not None:
         _restore_rows(c, "seg_reviews", "segment_id", u["seg_id"], u.get("seg_review"))
+    if u.get("phone_key") is not None:
+        _restore_rows(c, "phone_reviews", "seg_key", u["phone_key"], u.get("phone_review"))
     if u.get("switch_id") is not None:
         _restore_rows(c, "reviews", "switch_id", u["switch_id"], u.get("review"))
         c.execute("UPDATE switches SET status=? WHERE id=?", (u.get("switch_status"), u["switch_id"]))
@@ -801,6 +803,15 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                  else (_json.loads(q["undo"]) if q["status"] in ("unsure", "none") and q["undo"] else {}))
         ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
         undo = {"uncertain": old_u.get("uncertain", ev0["uncertain"] if ev0 else None)}
+        if o.get("phone"):   # a ruling on a phone app segment: its own table, read by stats._phone_rows
+            prev_p = c.execute("SELECT * FROM phone_reviews WHERE seg_key=?", (o["phone_key"],)).fetchone()
+            undo.update(phone_key=o["phone_key"], phone_review=dict(prev_p) if prev_p else None)
+            e = o["phone"]
+            c.execute("INSERT OR REPLACE INTO phone_reviews(seg_key, switch_label, content, focused, self_distraction, away, note, created)"
+                      " VALUES (?,?,?,?,?,?,?,?)",
+                      (o["phone_key"], e.get("switch_label"), e.get("content"), e.get("focused"), e.get("self_distraction"),
+                       e.get("away"), (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"),
+                       time.time()))
         if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None:
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
             undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
@@ -841,7 +852,8 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                    _json.dumps(undo), qid))
         # The answer resolves the doubt this question was generated for, even when the chosen
         # option edits a different segment - otherwise the needs-review dot never goes away.
-        c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
+        if not o.get("phone"):   # a phone question only borrows its computer segment as an anchor
+            c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     if o.get("switch_label") == "interruption" and not o.get("interruption_kind"):
         _kick_kind_derivation(o["segment_id"], a.note)
     return {"ok": True}
@@ -907,7 +919,8 @@ def _settle_without_ruling(c, qid: int, status: str, answer: str, note: str | No
         c.execute("UPDATE review_questions SET status=?, answer=?, answer_index=NULL, note=?, answered_at=?, undo=?"
                   " WHERE id=?", (status, answer, (note.strip() or None) if note else None, time.time(),
                                   _json.dumps(undo), qid))
-        c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
+        if q["source"] != "phone":
+            c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
     return {"ok": True}
 
 

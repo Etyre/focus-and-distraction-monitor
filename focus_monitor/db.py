@@ -396,6 +396,12 @@ def connect() -> sqlite3.Connection:
         antecedent TEXT,                  -- what a continuation/return attaches to: "P<seg_key>" or a Mac segment id
         away INTEGER,                     -- 1 = time away from what was on the Mac (carved out by stats._carve_phone)
         rationale TEXT, created REAL NOT NULL, run_id INTEGER)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS phone_reviews (  -- the person's ruling on one phone app segment
+        seg_key INTEGER PRIMARY KEY,      -- phone_evals.seg_key; any field left NULL keeps the model's call
+        switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, away INTEGER,
+        note TEXT, created REAL NOT NULL)""")
+    if qcols and "phone_key" not in qcols:   # a question about a phone judgment names its phone segment
+        conn.execute("ALTER TABLE review_questions ADD COLUMN phone_key INTEGER")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
         conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")
