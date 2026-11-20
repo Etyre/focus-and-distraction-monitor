@@ -1,5 +1,5 @@
 # environments / build output
-.venv/
+.venv
 __pycache__/
 *.pyc
 dist/
