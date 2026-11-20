@@ -976,6 +976,18 @@ class EvalChatReq(BaseModel):
     question_id: int | None = None  # set when this is a follow-up on a review question
 
 
+@app.post("/api/questions/{qid}/followup")
+def api_question_followup(qid: int):
+    """Called by the review card right after an answer: the evaluator may ask one follow-up
+    question when the answer went against its judgment (evaluator.followup_question)."""
+    from . import evaluator
+    try:
+        return evaluator.followup_question(conn(), cfg, qid)
+    except Exception as e:
+        log.exception("follow-up question failed")
+        raise HTTPException(500, str(e))
+
+
 @app.post("/api/segment/{segment_id}/evaluator-chat")
 def api_evaluator_chat(segment_id: int, req: EvalChatReq):
     from . import evaluator

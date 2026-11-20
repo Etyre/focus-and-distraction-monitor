@@ -822,6 +822,20 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
               + "\n\nWrite one question per dimension in doubt - usually one per DOUBT, two when both the "
               "thread and the content are in doubt (trigger_segment_id = the doubted segment's id on each). "
               "A DOUBT may be omitted when no question the person could answer would resolve it."})
+    # The person's past rulings on segments like the doubted ones: a doubt one of them already
+    # settles should not be asked again (until 2026-11-19 the question writer saw none of them).
+    try:
+        from . import evaluator as _ev
+        tsegs = [dict(g) for g in (conn.execute("SELECT id, app, domain, title FROM segments WHERE id=?", (t["segment_id"],)).fetchone()
+                                   for t in trigs) if g]
+        prec = _ev._get()._similar_precedents(conn, tsegs, skip_recent=False)
+    except Exception:
+        log.exception("could not gather precedents for the question writer")
+        prec = ""
+    if prec:
+        content_blocks.append({"type": "text", "text": prec + "\n\nWhen one of these past rulings already answers a DOUBT "
+                               "(the same kind of situation, ruled on before), omit that DOUBT: do not ask the person "
+                               "something they have already told the app."})
     system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
     resp = llm.parse(_client(), site="questions", 
         model=cfg.claude_model, max_tokens=4000,

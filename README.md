@@ -124,6 +124,15 @@ first commit 2026-08-29, in continuous development since.
   can be flagged, at most `max_reviews_per_day` (8) per day, highest-stakes first (longer preceding
   focus = higher stakes). Everything else is auto-accepted. Model accuracy is likewise weighted toward
   focus-leaving switches.
+* **Follow-up after a correction** (`evaluator.followup_question`, `/api/questions/{id}/followup`):
+  when you answer a review question against the app's judgment (or say "No" to a spot check),
+  the review card replays that segment's evaluation run and lets the model ask one short question
+  about your reason; it shows in the question's chat a few seconds later. It replies "No
+  question." (nothing is shown) when your answer or note already explains it, and no call is made
+  when your answer agreed with the app or the question was about the phone.
+* **The question writer sees your past rulings** too (`questions.generate_pending`): the same
+  similarity-picked precedents as the evaluator, with the instruction to drop a doubt that a past
+  ruling already answers.
 * **Rules drafted from your answers** (`rule_drafts.py`): once 8 new rulings have come in (and at
   most every 6 hours, one model call, about $0.20), the evaluator model reads your newest 150
   rulings next to the Rules doc and drafts up to 3 lines for patterns that at least three rulings

@@ -340,14 +340,15 @@ class ChunkEvaluator:
     def _title_words(t: str | None) -> set:
         return {w for w in re.findall(r"[a-z0-9]{3,}", (t or "").lower())}
 
-    def _similar_precedents(self, conn, target: list[dict]) -> str:
+    def _similar_precedents(self, conn, target: list[dict], skip_recent: bool = True) -> str:
         """The person's past rulings on segments like the ones in `target`: same site (4), same
         app where there is no site to compare (3), same app but another site (1), plus up to 3
         for shared window-title words. A ruling needs 2 or more against some target segment;
         the best SIMILAR_PRECEDENTS are listed, at most 5 per app+site so one busy site does
         not crowd out the rest, newer first among equals. The newest few are in the system
-        prompt already and are left out here."""
-        rows = conn.execute(self._PREC_SQL).fetchall()[self.RECENT_PRECEDENTS:]
+        prompt already and are left out here (skip_recent=False keeps them, for a caller that
+        does not use that system prompt: the question writer)."""
+        rows = conn.execute(self._PREC_SQL).fetchall()[self.RECENT_PRECEDENTS if skip_recent else 0:]
         tids = {s["id"] for s in target}
         tg = [(s.get("app") or "", s.get("domain") or "", self._title_words(s.get("title"))) for s in target]
         scored = []
@@ -829,6 +830,42 @@ CHAT_TOOLS = [
 ]
 
 
+FOLLOWUP_ASK = ("(Sent automatically when I answered; I did not type this.) My answer differs from your judgment "
+                "of that segment. If my reason is not already clear from my answer or note, and knowing it would "
+                "change how you judge similar cases later, ask me ONE short, concrete question that I can answer "
+                "in a sentence. If the reason is already clear, reply with exactly: No question.")
+
+
+def followup_question(conn, cfg: Config, question_id: int) -> dict:
+    """After the person answers a review question against the app's judgment, let the evaluator
+    - the replayed evaluation run, as in chat_reply - ask them one follow-up question (Eli,
+    2026-11-19: "letting the model instance that did the evaluation ask follow up questions
+    when I correct its judgements is fine"). An answer with its reason is a far better precedent
+    than a bare click. Returns {} when the answer agreed with the app (no model call), else
+    {"auto": the automatic prompt, "reply", "message_id", "proposal", "asked": bool}."""
+    import json as _json
+    q = conn.execute("SELECT * FROM review_questions WHERE id=?", (question_id,)).fetchone()
+    if q is None or q["status"] != "answered" or q["answer_index"] is None:
+        return {}
+    try:
+        o = _json.loads(q["options"])[q["answer_index"]]
+    except (ValueError, IndexError):
+        return {}
+    if o.get("phone"):       # nothing was seen of the phone: there is no judgment to ask about
+        return {}
+    ev_row = conn.execute("SELECT content, switch_label, focused FROM seg_evals WHERE segment_id=?",
+                          (o.get("segment_id") or q["segment_id"],)).fetchone()
+    differs = o.get("sample_verdict") == "disagree" or (ev_row is not None and (
+        (o.get("content") and o["content"] != ev_row["content"])
+        or (o.get("switch_label") and o["switch_label"] != ev_row["switch_label"])
+        or (o.get("focused") is not None and ev_row["focused"] is not None and bool(o["focused"]) != bool(ev_row["focused"]))))
+    if not differs:
+        return {}
+    r = chat_reply(conn, cfg, q["segment_id"], [{"role": "user", "text": FOLLOWUP_ASK}], question_id)
+    asked = not (r.get("reply") or "").strip().lower().startswith("no question")
+    return dict(r, auto=FOLLOWUP_ASK, asked=asked)
+
+
 def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
                question_id: int | None = None) -> dict:
     """Talk to "the one who made the decision": reconstitute the EXACT evaluation conversation
@@ -895,6 +932,12 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
                             f"be applied. Be brief.\n"
                             f"Context shown: {qrow['context']}\n"
                             f"Question: {qrow['question']}\nRejected options:\n{opts}]\n\n")
+            elif qrow["status"] == "answered":
+                preface += (f"[The person was shown this review question about that segment and has answered it.\n"
+                            f"Context shown: {qrow['context']}\n"
+                            f"Question: {qrow['question']}\nOptions:\n{opts}\n"
+                            f"Their answer: {qrow['answer']}"
+                            + (f"\nTheir note: \"{qrow['note']}\"" if qrow["note"] else "") + "]\n\n")
             else:
                 preface += (f"[The person was shown this review question about that segment and is asking "
                             f"a follow-up before answering it. Help them decide: say concretely what you "

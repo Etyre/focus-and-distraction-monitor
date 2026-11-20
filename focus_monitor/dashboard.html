@@ -645,7 +645,9 @@ function qShots(q){const tl=q.timeline||[],k=tl.findIndex(g=>g.id===q.segment_id
   </div>`;}
 // A chat message, plus the cards for anything the evaluator proposed in it. The evaluator cannot
 // write to the record itself: a proposed judgment / rule is a button, applied only when clicked.
-function chatMsgHtml(m,key){let h=`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`;
+function chatMsgHtml(m,key){
+  if(m.role==='user'&&/^\(Sent automatically/.test(m.text||''))return '<div class="muted small" style="margin:4px 0">Your answer differed from the app\u2019s judgment, so the evaluator was asked whether it has a question for you.</div>';
+  let h=`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`;
   const p=m.proposal;if(!p||!m.id)return h;const ap=p.applied||{};
   if(p.judgment){const j=p.judgment,done=!!ap.judgment;
     const sets=[j.content?'content: '+j.content:null,j.switch_label?'thread: '+j.switch_label+(j.antecedent_id?' of #'+j.antecedent_id:''):null,j.hybrid===true?'hybrid (with others)':j.hybrid===false?'solo':null].filter(Boolean).join(' · ');
@@ -707,6 +709,16 @@ async function answerQuestion(id,idx){
   // The question stays up, marked answered, so a misclick is one click to fix; ⌘→ / s moves on.
   const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
   renderQuestion();
+  if(q)askFollowup(q);
+}
+// When an answer goes against the app's judgment, the evaluator may ask one follow-up question.
+// It arrives a few seconds later in this question's chat; nothing happens when the answer agreed.
+async function askFollowup(q){
+  let r;try{r=await api(`/api/questions/${q.id}/followup`,{method:'POST'});}catch(e){return;}
+  if(!r||!r.asked)return;
+  const k='q'+q.segment_id;CHAT[k]=CHAT[k]||[];
+  CHAT[k].push({role:'user',text:r.auto},{id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});
+  if(currentQSeg===q.segment_id&&$('#qchatlog'))renderQChat();
 }
 async function reopenQuestion(id){
   await api(`/api/questions/${id}/reopen`,{method:'POST'});
