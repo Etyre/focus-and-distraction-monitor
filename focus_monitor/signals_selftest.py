@@ -37,6 +37,13 @@ def main() -> int:
     check("a banner is showing", signals.banner_showing(wins), True)
     check("desktop widgets alone are not a banner", signals.banner_showing([w for w in wins if w["kCGWindowLayer"] != 21]), False)
 
+    here = [W("Atlas", 0, 0, 30, 1728, 1000)]
+    check("a click is placed on the window that was there before it", signals.place_click(300, 300, wins, here), ("Signal", 0))
+    check("... or, where nothing was, on the one there now", signals.place_click(300, 300, [], here), ("Atlas", 0))
+    w = signals.Watcher(); w.clicks.append((100.0, "Dock", 20)); w.keys.append(99.0); w.banners.append([90.0, 95.0])
+    check("what happened before a switch", w.before(101.0),
+          {"click_owner": "Dock", "click_layer": 20, "click_age": 1.0, "key_age": 2.0, "banner_age": 11.0})
+
     T, AB, FB = 1, 0x02000000, 0x01000000
     check("typed in the address bar", signals._how(T | AB, False, False), "typed")
     check("'typed' without the address bar = from another app", signals._how(T, False, False), "external")
@@ -71,6 +78,21 @@ def main() -> int:
           ["arrived by: a click on a notification banner", "page reached by: typed the address"])
     put(None, None, None)
     check("nothing pressed", signals.describe(c, seg, "Cursor")[0], "arrived by: no click and no key press (something else opened it)")
+    put("desktop", None, 50.0)
+    check("a click on nothing; a banner from long before is not mentioned", signals.describe(c, seg, "Cursor")[:2],
+          ["arrived by: a click where no window was (the desktop)", "page reached by: typed the address"])
+    tab = {"id": 8, "start": t + 30, "end": t + 50, "app": "Google Chrome", "url": "https://docs.example/a_b"}
+    check("no visit, History not read yet: say nothing", signals.page_reached(c, tab["url"], tab["start"], tab["end"]), None)
+    db.kv_set(c, "signals.visits_from", str(t - 1000)); db.kv_set(c, "signals.visits_to", str(t + 100))
+    check("no visit, History read since: the tab was already open",
+          signals.page_reached(c, tab["url"], tab["start"], tab["end"]), {"how": "already_open"})
+    check("another browser's page is never called already open",
+          [n for n in signals.describe(c, dict(tab, app="Safari"), "Safari") if n.startswith("page")], [])
+    c.execute("INSERT INTO page_visits(profile, visit_id, ts, url, title, transition, how, from_url) VALUES ('Default',2,?,?,?,?,?,?)",
+              (t + 31, "https://docs.example/a_b#part", "", 0, "link", "https://mail.example/x"))
+    check("an address with _ still matches its #fragment visit",
+          signals.page_reached(c, tab["url"], tab["start"], tab["end"]), {"how": "link", "from": "mail.example"})
+    check("... and _ is not a wildcard", signals.page_reached(c, "https://docs.example/aXb", t + 30, t + 50), {"how": "already_open"})
     check("same app: no 'arrived by'", signals.describe(c, seg, "Google Chrome")[0], "page reached by: typed the address")
     check("a segment from before signals existed has no notes",
           signals.describe(c, {"id": 99, "start": t - 9000, "end": t - 8900, "app": "Notes", "url": ""}, "Cursor"), [])

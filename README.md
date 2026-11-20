@@ -445,8 +445,17 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   * A listen-only event tap on mouse clicks can be created without any permission, but macOS
     delivers it no events unless the app has Input Monitoring. The click and key COUNTERS and
     the pointer position need no permission, so the watcher polls those instead. A click is
-    placed against the window list from about a second earlier, because the click itself often
-    changes what is on screen.
+    placed against the window list from the poll before (a quarter second earlier), because the
+    click itself often changes what is on screen. It must not be older than that: the list covers
+    only the current Space, and with a 1-2 s old list a swipe to another Space followed by a click
+    was reported as "a click inside" the app just left (found in the first hour of live data,
+    2026-11-20). Reading the list four times a second costs about 2 ms each time.
+  * "No visit in Chrome's History" means "the tab was already open" only if History has been
+    read for that stretch. The stretch read so far is kept in `kv` (`signals.visits_from`,
+    `signals.visits_to`); judging it by the newest visit's time made the note appear or vanish
+    depending on whether some later page happened to load.
+  * SQLite's LIKE has no escape character unless the query says `ESCAPE`; without it, escaping
+    `_` in an address made the pattern match nothing.
   * While a banner shows, Notification Center puts up a window the size of the whole display
     (layer 21), so "which window is under the pointer" would say Notification Center for every
     click. Only its top right corner (420 x 260) counts as the banner. Its desktop widgets are

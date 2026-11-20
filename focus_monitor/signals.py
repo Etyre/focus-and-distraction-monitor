@@ -194,6 +194,13 @@ def window_at(x: float, y: float, windows=None) -> tuple[str, int]:
     return "desktop", 0
 
 
+def place_click(x: float, y: float, before, after) -> tuple[str, int]:
+    """Where a click landed: the window under the pointer just before the click; if nothing was
+    there (a window that only just appeared), the window there now."""
+    owner, layer = window_at(x, y, before)
+    return window_at(x, y, after) if owner == "desktop" else (owner, layer)
+
+
 def banner_showing(windows=None) -> bool:
     """A Notification Center window above the desktop layer = a banner (or the opened panel).
     Its desktop widgets sit on a negative layer and do not count."""
@@ -220,11 +227,12 @@ class Watcher:
     the pointer position need no permission at all.)
 
     A click often changes what is on screen (it is why the next app came forward), so the
-    pointer is tested against the window list as it stood about a second BEFORE the click was
-    noticed. Recent clicks and key presses stay in memory so the collector can ask, the moment
+    pointer is tested against the window list from the poll BEFORE the one that noticed the
+    click: the latest picture that is certain to predate it. (Until 2026-11-20 the picture was
+    1-2 s old, and after a swipe to another Space it still showed the Space just left: a click
+    in the app just arrived at was reported as a click in the app left behind.) Recent clicks and key presses stay in memory so the collector can ask, the moment
     it opens a segment, what the person did just before (`before()`)."""
     POLL_S = 0.25
-    SNAPSHOT_S = 1.0
 
     def __init__(self):
         self.alive = False
@@ -243,19 +251,19 @@ class Watcher:
             count = lambda *ts: sum(int(Quartz.CGEventSourceCounterForEventType(s, t)) for t in ts)
             last_c = count(Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown)
             last_k = count(Quartz.kCGEventKeyDown)
-            older = newer = _windows()
-            snap_at = time.time()
+            before = _windows()
             self.alive = True
             log.info("signal watcher running")
             while True:
                 time.sleep(self.POLL_S)
                 now = time.time()
+                wins = _windows()   # read before the counters, so `before` predates any click counted next time
                 c = count(Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown)
                 k = count(Quartz.kCGEventKeyDown)
                 if c > last_c:
                     try:
                         x, y = _pointer()
-                        owner, layer = window_at(x, y, older)
+                        owner, layer = place_click(x, y, before, wins)
                         self.clicks.append((now, owner, layer))
                         self.pending.append((now, "click", json.dumps({"owner": owner, "layer": layer})))
                     except Exception:
@@ -263,15 +271,14 @@ class Watcher:
                 if k > last_k:
                     self.keys.append(now)
                 last_c, last_k = c, k   # (a counter that went DOWN restarted at login: just follow it)
-                if now - snap_at >= self.SNAPSHOT_S:
-                    older, newer, snap_at = newer, _windows(), now
-                    showing = banner_showing(newer)
-                    open_b = self.banners[-1] if self.banners and self.banners[-1][1] is None else None
-                    if showing and open_b is None:
-                        self.banners.append([now, None])
-                    elif not showing and open_b is not None:
-                        open_b[1] = now
-                        self.pending.append((open_b[0], "banner", json.dumps({"until": now})))
+                before = wins
+                showing = banner_showing(wins)
+                open_b = self.banners[-1] if self.banners and self.banners[-1][1] is None else None
+                if showing and open_b is None:
+                    self.banners.append([now, None])
+                elif not showing and open_b is not None:
+                    open_b[1] = now
+                    self.pending.append((open_b[0], "banner", json.dumps({"until": now})))
         except Exception:
             log.exception("signal watcher died")
         self.alive = False
@@ -279,10 +286,13 @@ class Watcher:
     def before(self, at: float) -> dict:
         """What happened just before time `at` (a segment's start): the last click and where it
         landed, how long since a key was pressed, how long since a banner appeared."""
-        click = next(((ts, o, l) for ts, o, l in reversed(self.clicks)
+        # Copies: the watcher thread appends while this (the collector's thread) reads, and
+        # iterating a deque that changes underneath raises.
+        clicks, keys, banners = list(self.clicks), list(self.keys), list(self.banners)
+        click = next(((ts, o, l) for ts, o, l in reversed(clicks)
                       if at - ARRIVE_BEFORE_S <= ts <= at + ARRIVE_AFTER_S), None)
-        key = next((ts for ts in reversed(self.keys) if ts <= at + ARRIVE_AFTER_S), None)
-        banner = next((b for b in reversed(self.banners)
+        key = next((ts for ts in reversed(keys) if ts <= at + ARRIVE_AFTER_S), None)
+        banner = next((b for b in reversed(banners)
                        if b[0] <= at and (b[1] is None or b[1] >= at - BANNER_BEFORE_S)), None)
         return {"click_owner": click[1] if click else None, "click_layer": click[2] if click else None,
                 "click_age": (at - click[0]) if click else None,
@@ -329,8 +339,9 @@ def sync_visits(conn, since_s: float = 3 * 86400) -> int:
     """Copy new rows from every Chrome profile's History into `page_visits`. Chrome holds the
     file locked while it runs; `immutable=1` reads it anyway (a read that races a write can fail
     or see a half-written page, so any error just waits for the next round)."""
-    n = 0
+    n, all_read, started = 0, True, time.time()
     for profile, path in chrome_history_files():
+        h = None
         try:
             last = conn.execute("SELECT COALESCE(MAX(visit_id), 0) FROM page_visits WHERE profile=?", (profile,)).fetchone()[0]
             h = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True, timeout=1)
@@ -359,16 +370,25 @@ def sync_visits(conn, since_s: float = 3 * 86400) -> int:
                 out.append((profile, r["id"], r["visit_time"] / 1e6 - CHROME_EPOCH, r["url"], r["title"] or "",
                             r["transition"], _how(origin["transition"], bool(origin["from_visit"]), bool(origin["opener_visit"])),
                             src["url"] if src else None))
-            h.close()
             if out:
                 with db.tx(conn):
                     conn.executemany("INSERT OR IGNORE INTO page_visits(profile, visit_id, ts, url, title, transition, how, from_url)"
                                      " VALUES (?,?,?,?,?,?,?,?)", out)
                 n += len(out)
         except sqlite3.Error as e:
+            all_read = False
             log.debug("chrome history (%s) not read this round: %s", profile, e)
         except Exception:
+            all_read = False
             log.exception("chrome history sync failed (%s)", profile)
+        finally:
+            if h is not None:
+                h.close()
+    if all_read:
+        # The stretch History has been read for, so "no visit recorded" can be told from "not read yet".
+        if db.kv_get(conn, "signals.visits_from") is None:
+            db.kv_set(conn, "signals.visits_from", str(started - since_s))
+        db.kv_set(conn, "signals.visits_to", str(started))
     return n
 
 
@@ -476,13 +496,15 @@ def page_reached(conn, url: str, start: float, end: float) -> dict | None:
         return None
     bare = url.split("#")[0]
     r = conn.execute("""SELECT how, from_url, ts FROM page_visits
-                        WHERE ts >= ? AND ts <= ? AND (url = ? OR url = ? OR url LIKE ?)
+                        WHERE ts >= ? AND ts <= ? AND (url = ? OR url = ? OR url LIKE ? ESCAPE '\\')
                         ORDER BY ABS(ts - ?) LIMIT 1""",
-                     (start - 15, max(end, start + 5), url, bare, bare.replace("%", r"\%").replace("_", r"\_") + "#%", start)).fetchone()
+                     (start - 15, max(end, start + 5), url, bare,
+                      bare.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "#%", start)).fetchone()
     if r is None:
-        synced = conn.execute("SELECT MAX(ts) FROM page_visits").fetchone()[0]
-        return {"how": "already_open"} if synced and synced >= start - 15 and \
-            conn.execute("SELECT 1 FROM page_visits WHERE ts < ? LIMIT 1", (start - 60,)).fetchone() else None
+        # "No visit" only means "already open" if History was read for this stretch (Chrome
+        # writes a visit to disk up to ~10 s late, hence the margin).
+        lo, hi = (float(db.kv_get(conn, k) or 0) for k in ("signals.visits_from", "signals.visits_to"))
+        return {"how": "already_open"} if lo and lo <= start - 15 and hi >= max(end, start + 5) + 20 else None
     return {"how": r["how"], "from": _domain(r["from_url"])}
 
 
@@ -513,12 +535,14 @@ def describe(conn, seg: dict, prev_app: str | None = None) -> list[str]:
                 "a click on the menu bar" if k == "menu_bar" else
                 "a click on this app's own window" if k == "own_window" else
                 f"a click inside {prev_app} (something clicked there brought this forward, e.g. a link)" if k == "previous_app" else
+                "a click where no window was (the desktop)" if k == "other" and arr.get("click_owner") == "desktop" else
                 f"a click in a third app's window ({arr.get('click_owner')})" if k == "other" else
                 "the keyboard, no click (Cmd-Tab, Spotlight or a shortcut)" if arr["keys"] else
                 "no click and no key press (something else opened it)"))
-        if arr is not None and arr["banner_s"] is not None and arr.get("click") != "banner":
+        if arr is not None and arr["banner_s"] is not None and arr["banner_s"] <= BANNER_BEFORE_S and arr.get("click") != "banner":
             notes.append(f"a notification banner appeared {arr['banner_s']:.0f} s before")
-        pg = page_reached(conn, seg.get("url") or "", t0, t1)
+        # only Chrome's History is read; another browser's pages would all look "already open"
+        pg = page_reached(conn, seg.get("url") or "", t0, t1) if seg.get("app") == "Google Chrome" else None
         if pg and pg["how"] not in _PAGE_SILENT:
             h = pg["how"]
             notes.append("page reached by: " + (
