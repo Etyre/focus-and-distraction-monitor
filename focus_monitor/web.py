@@ -506,6 +506,8 @@ def api_switch(switch_id: int):
             _kick_question_generation()
     full["to_shots"] = [dict(r) for r in c.execute(
         "SELECT ts, path, display FROM segment_shots WHERE segment_id=? ORDER BY ts", (to_id,))]
+    from . import signals as _signals   # what the Mac recorded beside the capture
+    full["to_signals"] = _signals.describe(c, full["to"], full["from"]["app"] if full["from"] else None)
     full["to_eval"] = (lambda r: dict(r) if r else None)(
         c.execute("SELECT * FROM seg_evals WHERE segment_id=?", (to_id,)).fetchone())
     full["to_seg_review"] = (lambda r: dict(r) if r else None)(

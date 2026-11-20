@@ -38,6 +38,7 @@ class Config:
     min_segment_seconds: float = 3.0
     idle_seconds: float = 600.0            # no keyboard/mouse input this long => away; breaks focus spans
     short_inactivity_seconds: float = 60.0  # shorter pauses (>= this) are logged as short breaks only
+    collect_signals: bool = True           # input counts, audio/mic/camera, click targets, banners, Chrome page visits (signals.py)
     refresh_screenshot_seconds: float = 60.0
     screenshot_max_width: int = 1280
     screenshot_quality: int = 60

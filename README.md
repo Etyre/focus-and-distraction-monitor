@@ -228,6 +228,33 @@ first commit 2026-08-29, in continuous development since.
   segments in it against the activity already judged. The computer segments are shown as context
   and are not judged again. A day's numbers can therefore change when the phone data lands.
 
+### Signals beside the captures (`signals.py`, since 2026-11-19)
+
+macOS says that an app came forward, never why. So the collector also records what can be
+observed around each switch, and the evaluator reads it as notes in [brackets] at the end of
+each line of its activity log (the Captures card shows the same notes as "Signals:"). None of it
+needs a permission beyond those the app already has. `collect_signals = false` in `config.toml`
+turns it all off; pausing tracking pauses it too.
+
+| Signal | How it is read | Stored in |
+|---|---|---|
+| Keys, clicks, scroll and pointer-move events per 10 s | the system's per-type event counters (`CGEventSourceCounterForEventType`). Counts only: no key is ever read | `activity_samples` |
+| Audio playing, microphone on, camera on | CoreAudio / CoreMediaIO "device is running somewhere", every poll | `activity_samples` (seconds on) |
+| What the last click before a switch landed on | four times a second a watcher thread checks the click counter; when it has gone up, the app whose window is under the pointer (Dock, a notification banner, the previous app...) | `ui_events` (every click), `segment_arrivals` (per segment) |
+| Whether a key was pressed just before a switch | the key counter, same thread | `segment_arrivals.key_age` |
+| A notification banner on screen | a Notification Center window above the desktop layer. It says that a banner showed, not which app sent it | `ui_events`, `segment_arrivals.banner_age` |
+| How Chrome reached each page | every profile's `History` file, read every 30 s (typed, link from a page, new tab from a page, link from another app, bookmark, address-bar search, back/forward) | `page_visits` |
+
+From these the log says, per segment: "arrived by: a click on the Dock / on a notification
+banner / inside <the previous app> / the keyboard, no click / no click and no key press", "a
+notification banner appeared N s before", "page reached by: ...", "input: N keys/min ...", and
+"audio playing / microphone on / camera on N% of the time". Section 6 of the evaluator's prompt
+tells it how to weigh them: evidence, not verdicts.
+
+Not collected, because each needs Full Disk Access for the app and could not be tested without
+it: which app sent a notification (`~/Library/Group Containers/group.com.apple.usernoted/db2/db`)
+and whether a Focus mode is on (`~/Library/DoNotDisturb/DB/Assertions.json`).
+
 ### The app, the launcher and restarts
 
 An eye appears in the menu bar while the monitor is running (👁 ⏸ when paused, 👁 ⚠︎ if the
@@ -293,6 +320,7 @@ retry), a chat shows a notice with the inbox id instead of a reply. Read and ans
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
 | `focus_monitor/efforts.py` | Effort-ladder shadow calls and the effort judge (which effort level is good enough). |
 | `focus_monitor/edits.py`, `seg_models.py`, `stats.py`, `toggl.py`, `db.py` | Edits with provenance, label space, metrics/spans, Toggl sync, SQLite schema and helpers. |
+| `focus_monitor/signals.py` | Extra signals beside the captures: input counts, audio/mic/camera, what was clicked before a switch, notification banners, how Chrome reached each page (tables `activity_samples`, `ui_events`, `segment_arrivals`, `page_visits`). |
 | `focus_monitor/rule_drafts.py` | Drafts Rules-doc lines from repeated review rulings; you approve each (tables `rule_drafts`, `rule_draft_runs`). |
 | `focus_monitor/span_selftest.py` | Self-test of the span rules on hand-built days (`python -m focus_monitor.span_selftest`; run by `test.sh`). |
 | `focus_monitor/web.py` | FastAPI server for the dashboard and its API (port 8790). |
@@ -404,6 +432,24 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+* **Signals (2026-11-19): what was tried and what the data showed.**
+  * A listen-only event tap on mouse clicks can be created without any permission, but macOS
+    delivers it no events unless the app has Input Monitoring. The click and key COUNTERS and
+    the pointer position need no permission, so the watcher polls those instead. A click is
+    placed against the window list from about a second earlier, because the click itself often
+    changes what is on screen.
+  * While a banner shows, Notification Center puts up a window the size of the whole display
+    (layer 21), so "which window is under the pointer" would say Notification Center for every
+    click. Only its top right corner (420 x 260) counts as the banner. Its desktop widgets are
+    separate windows on a negative layer.
+  * Chrome's transition values do not mean what their names say. "Typed" without the
+    from-address-bar flag is a link opened from another app (28 of 39 such visits in a week began
+    with another app in front). "Reload" is mostly a single-page site (X) moving between its own
+    pages, so it is not reported. "Link" with the from-API flag is as often an extension.
+  * Chrome keeps `History` locked while it runs; opening it with `?mode=ro&immutable=1` reads it
+    anyway. A read that races a write can fail; the next round (30 s) picks it up.
+  * Microphone "on" is also true during voice dictation, not only on calls.
 
 * **The app's abstractions were rebuilt to match the Rules doc (2026-11-19).** Before, the
   evaluator gave each shift a "kind" (focus start / detour / self-distraction) and every later
