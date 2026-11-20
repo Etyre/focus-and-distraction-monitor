@@ -855,11 +855,12 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
         if q["source"] == "sample":   # a spot check (questions.spot_checks): record the verdict
             c.execute("UPDATE agreement_samples SET verdict=?, answered_at=? WHERE segment_id=?",
                       (o.get("sample_verdict"), time.time(), q["segment_id"]))
-        if o.get("sample_verdict") == "disagree":
-            # he says the confident judgment is wrong: raise the doubt, so the usual question
-            # about what the segment really was gets written
+        if o.get("sample_verdict") == "disagree" and o.get("focused") is None:
+            # he says the confident judgment is wrong on this axis: raise the doubt, so the usual
+            # question about what it really was gets written ('No' on focused is itself the ruling)
+            wrong = {"content": "the kind of activity", "switch": "the switch (continuation / shift / return)"}.get(o.get("axis"), "this judgment")
             c.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
-                      (" | spot check: the person says this judgment is wrong" + (f" ({a.note.strip()})" if a.note and a.note.strip() else ""),
+                      (f" | spot check: the person says {wrong} is wrong" + (f" ({a.note.strip()})" if a.note and a.note.strip() else ""),
                        q["segment_id"]))
         elif not o.get("phone"):   # a phone question only borrows its computer segment as an anchor
             c.execute("UPDATE seg_evals SET uncertain=0 WHERE segment_id=?", (q["segment_id"],))
@@ -1072,9 +1073,15 @@ def _append_rule(rule: str, origin: str) -> None:
 
 @app.get("/api/rule-drafts")
 def api_rule_drafts():
-    """Rules the app drafted from repeated rulings, waiting for a yes or no (rule_drafts.py)."""
+    """Rules the app drafted from repeated rulings: the open ones with the rulings each rests on,
+    and the recently decided ones (rule_drafts.py)."""
     from . import rule_drafts
-    return rule_drafts.open_drafts(conn())
+    return rule_drafts.drafts(conn())
+
+
+@app.get("/api/rule-drafts/count")
+def api_rule_drafts_count():
+    return {"open": conn().execute("SELECT COUNT(*) FROM rule_drafts WHERE status='open'").fetchone()[0]}
 
 
 class RuleDecision(BaseModel):

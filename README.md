@@ -136,15 +136,22 @@ first commit 2026-08-29, in continuous development since.
 * **Rules drafted from your answers** (`rule_drafts.py`): once 8 new rulings have come in (and at
   most every 6 hours, one model call, about $0.20), the evaluator model reads your newest 150
   rulings next to the Rules doc and drafts up to 3 lines for patterns that at least three rulings
-  share and the doc does not state. Drafts appear at the top of the Review page as "Proposed
-  rule" cards: edit the wording if you like, then "add to my rules" (appended under "Lessons from
-  reviews" in the Rules doc, which every model reads) or "no, not a rule". Rejected drafts are
+  share and the doc does not state. Drafts appear on the **Rules** tab (the tab
+  shows a count while any wait) as "Proposed rule" cards. Under each card are the review answers
+  it rests on: the capture, when and where it was, the question you were asked and your answer,
+  your ruling next to what the app had said, your note, and a link to open the capture. Edit the
+  wording if you like, then "add to my rules" (appended under "Lessons from
+  reviews" in the Rules doc, which every model reads) or "no, not a rule". Decided drafts are
+  listed at the bottom of the tab. Rejected drafts are
   shown to later runs so they are not proposed again; no new drafts while 5 are waiting.
 * **Spot checks** (`questions.spot_checks`, `spot_checks_per_day`, default 3): a few times a day
   a segment whose judgment the evaluator was confident of is drawn at random (chance proportional
-  to its length; at most one per 2 hours) and asked about in the review queue: "Is that judgment
-  right?" No model call. "Yes" stores the judgment as your own ruling; "No" flags the segment so
-  the usual question about what it was gets written. Outcomes are in `agreement_samples`, and the
+  to its length; at most one per 2 hours) and asked about in the review queue. Each check asks
+  about one axis only, also drawn at random: the kind of activity, focused or unfocused, or the
+  switch ("The app judged this as a continuation of what came before. Is that right?"). No model
+  call. "Yes" stores that axis as your own ruling. "No" on focused is the opposite ruling; "No"
+  on the other two flags the segment so the usual question about what it was gets written.
+  Outcomes are in `agreement_samples` (with the `axis` asked), and the
   first tile on the agreement panel gives the share agreed, by week. This is the unbiased
   accuracy figure: the other questions are about segments the app already doubted.
 * **Agreement with your judgments** (top of the Models tab, `/api/agreement`): of the verdicts you

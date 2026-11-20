@@ -684,16 +684,71 @@ SPOT_MIN_S = 20.0           # shorter segments are not drawn
 SPOT_SETTLE_S = 600.0       # ...nor ones that ended less than this ago (their judgment may still change)
 
 
+SPOT_AXES = ("content", "focused", "switch")
+_SPOT_SWITCH = {"continuation": "a continuation of what came before", "interruption": "a shift to something new",
+                "return": "a return to something from earlier"}
+
+
+def _spot_question(g, axis: str) -> tuple[str, str, list[dict]]:
+    """The fixed wording of one spot check. It asks about ONE axis of the judgment (Eli,
+    2026-11-19: a question is only ever about one axis), and 'Yes' rules on that axis alone."""
+    hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
+    secs = g["end"] - g["start"]
+    length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
+    where = g["app"] + (f" · {g['domain']}" if g["domain"] else "") + (f" ({g['title'][:60]})" if g["title"] else "")
+    ctx = (f"Spot check, to measure how often the app is right: at {hhmm}, {where}, for {length}."
+           + (f" The app's note on it: {g['rationale'][:240]}" if g["rationale"] else ""))
+    blank = {"segment_id": g["id"], "switch_label": None, "antecedent_id": None, "interruption_kind": None,
+             "content": None, "hybrid": None, "axis": axis}
+    yes = dict(blank, label="Yes", sample_verdict="agree")
+    no = dict(blank, label="No", sample_verdict="disagree")
+    if axis == "content":
+        question = f"The app judged the kind of activity here as: {g['content']}. Is that right?"
+        yes["content"] = g["content"]
+    elif axis == "focused":
+        f = bool(g["focused"])
+        question = f"The app judged that you were {'focused' if f else 'unfocused'} here. Is that right?"
+        yes.update(focused=f, label=f"Yes, {'focused' if f else 'unfocused'}")
+        # two-valued, so 'No' is itself the ruling and no further question is needed
+        no.update(focused=not f, label=f"No, {'unfocused' if f else 'focused'}")
+    else:
+        question = f"The app judged this as {_SPOT_SWITCH.get(g['switch_label'], g['switch_label'])}. Is that right?"
+        yes.update(switch_label=g["switch_label"],
+                   antecedent_id=g["antecedent_id"] if g["switch_label"] in ("continuation", "return") else None)
+    return ctx, question, [yes, no]
+
+
+def _single_axis_spot_checks(conn) -> None:
+    """Rewrite open spot checks drawn before 2026-11-19, which asked about the whole judgment."""
+    import random
+    for q in conn.execute("SELECT id, segment_id, options FROM review_questions WHERE source='sample' AND status='open'").fetchall():
+        if '"axis"' in (q["options"] or ""):
+            continue
+        g = conn.execute("""SELECT g.id, g.start, COALESCE(g.end, g.start) AS end, g.app, g.domain, g.title,
+                                   e.content, e.switch_label, e.focused, e.antecedent_id, e.rationale
+                            FROM segments g JOIN seg_evals e ON e.segment_id = g.id WHERE g.id=?""", (q["segment_id"],)).fetchone()
+        if g is None or g["focused"] is None:
+            continue
+        axis = random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
+        ctx, question, opts = _spot_question(g, axis)
+        with db.tx(conn):
+            conn.execute("UPDATE review_questions SET context=?, question=?, options=? WHERE id=?",
+                         (ctx, question, json.dumps(opts), q["id"]))
+            conn.execute("UPDATE agreement_samples SET axis=? WHERE segment_id=?", (axis, q["segment_id"]))
+
+
 def spot_checks(conn, cfg: Config | None = None) -> int:
     """Draw today's next spot check, if one is due: a segment whose judgment the evaluator was
     confident of (no doubt flag, no review, no question), picked at random with a chance
     proportional to its length, so the weekly figure reads as "share of judged time the app had
-    right". The question is fixed - no model call. 'Yes' stores the judgment as the person's
-    own; 'No' flags the segment, and the usual question about what it really was follows."""
+    right". Each check asks about one axis of the judgment (content, focused, or the switch),
+    also drawn at random. The question is fixed - no model call. 'Yes' stores that axis as the
+    person's own ruling; 'No' on focused is the opposite ruling; 'No' on the other two flags the
+    segment, and the usual question about what it really was follows."""
     import random
     from .config import day_bounds, logical_date
-    from .seg_models import shown_switch
     cfg = cfg or load_config()
+    _single_axis_spot_checks(conn)
     n = cfg.spot_checks_per_day
     if not n or n <= 0:
         return 0
@@ -718,31 +773,16 @@ def spot_checks(conn, cfg: Config | None = None) -> int:
     if not rows:
         return 0
     g = random.choices(rows, weights=[r["end"] - r["start"] for r in rows])[0]
-    hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
-    secs = g["end"] - g["start"]
-    length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
-    call = ", ".join(v for v in (
-        g["content"], "focused" if g["focused"] else "unfocused",
-        {"continuation": "a continuation of what came before", "interruption": "a shift to something new",
-         "return": "a return to something from earlier"}.get(g["switch_label"], shown_switch(g["switch_label"])),
-        "a self-distraction" if g["self_distraction"] else None,
-        "the next task in a task block" if g["next_task"] else None) if v)
-    where = g["app"] + (f" · {g['domain']}" if g["domain"] else "") + (f" ({g['title'][:60]})" if g["title"] else "")
-    ctx = (f"Spot check, to measure how often the app is right: at {hhmm}, {where}, for {length}. "
-           f"The app was confident in its call: {call}." + (f" Its reason: {g['rationale'][:240]}" if g["rationale"] else ""))
-    blank = {"segment_id": g["id"], "switch_label": None, "antecedent_id": None, "interruption_kind": None,
-             "content": None, "hybrid": None}
-    opts = [dict(blank, label="Yes, that is right", sample_verdict="agree", content=g["content"],
-                 switch_label=g["switch_label"], focused=bool(g["focused"]),
-                 antecedent_id=g["antecedent_id"] if g["switch_label"] in ("continuation", "return") else None),
-            dict(blank, label="No, something about it is wrong", sample_verdict="disagree")]
+    axis = random.choice([a for a in SPOT_AXES if a != "switch" or g["switch_label"]])
+    ctx, question, opts = _spot_question(g, axis)
     with db.tx(conn):
         cur = conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created)"
                            " VALUES (?,?,?,?,?,0,?)",
-                           (g["id"], "sample", ctx, "Is that judgment right?", json.dumps(opts), now))
-        conn.execute("INSERT INTO agreement_samples(segment_id, day, question_id, created) VALUES (?,?,?,?)",
-                     (g["id"], day.isoformat(), cur.lastrowid, now))
-    log.info("spot check drawn: segment %d (%s)", g["id"], hhmm)
+                           (g["id"], "sample", ctx, question, json.dumps(opts), now))
+        conn.execute("INSERT INTO agreement_samples(segment_id, day, question_id, created, axis) VALUES (?,?,?,?,?)",
+                     (g["id"], day.isoformat(), cur.lastrowid, now, axis))
+    hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
+    log.info("spot check drawn: segment %d (%s), on %s", g["id"], hhmm, axis)
     return 1
 
 

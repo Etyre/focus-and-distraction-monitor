@@ -4,8 +4,8 @@ the Rules doc does not, the app drafts the line and asks: add it to your rules? 
 2026-11-19: one of the ways the app is meant to converge on his judgments.)
 
 One model call per run, at most every MIN_GAP_S and only once MIN_NEW rulings have come in
-since the last run. Drafts wait in `rule_drafts` (status open) and are shown on the Review
-page; nothing reaches the Rules doc until he clicks add (web.api_rule_draft_decide), and he
+since the last run. Drafts wait in `rule_drafts` (status open) and are shown on the Rules
+page, each with the rulings it rests on; nothing reaches the Rules doc until he clicks add (web.api_rule_draft_decide), and he
 can edit the wording first. Rejected drafts are shown to later runs so they are not re-proposed."""
 from __future__ import annotations
 
@@ -69,7 +69,6 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     """Draft rules if a run is due. Returns how many drafts were stored."""
     from .classifiers.claude_vision import _rules_doc
     from .questions import _client
-    from .seg_models import shown_switch
     cfg = cfg or load_config()
     new, last = _new_since_last(conn)
     if not force and (new < MIN_NEW or time.time() - last < MIN_GAP_S):
@@ -88,9 +87,7 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     if len(rows) < 3:
         return 0
 
-    def verdict(c, sw, f, extra=()):
-        return " / ".join(v for v in (c, shown_switch(sw), None if f is None else ("focused" if f else "unfocused"),
-                                      *extra) if v) or "(nothing)"
+    verdict = _verdict
     lines = []
     for r in reversed(rows):
         mine = verdict(r["content"], r["switch_label"], r["focused"],
@@ -137,10 +134,57 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     return n
 
 
-def open_drafts(conn) -> list[dict]:
+def _verdict(c, sw, f, extra=()):
+    from .seg_models import shown_switch
+    return " / ".join(v for v in (c, shown_switch(sw), None if f is None else ("focused" if f else "unfocused"),
+                                  *extra) if v) or "(nothing)"
+
+
+def evidence(conn, segment_ids: list[int]) -> list[dict]:
+    """The rulings a draft rests on, for the Rules page: what it was, what the person ruled, what
+    the app had said, their note, the question they answered (if one), and a capture to look at."""
     out = []
-    for r in conn.execute("SELECT * FROM rule_drafts WHERE status='open' ORDER BY created"):
+    for sid in segment_ids:
+        r = conn.execute("""
+            SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task, r.hybrid,
+                   r.note, r.created, g.app, g.domain, g.title, g.start, g.end, g.first_screenshot,
+                   e.content AS ec, e.switch_label AS esw, e.focused AS ef, e.created AS e_at, e.rationale
+            FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
+            LEFT JOIN seg_evals e ON e.segment_id = r.segment_id
+            WHERE r.segment_id = ?""", (sid,)).fetchone()
+        if r is None:   # the ruling was cleared since the draft was written
+            continue
+        d = {k: r[k] for k in ("segment_id", "app", "domain", "title", "start", "end", "note")}
+        d["ruling"] = _verdict(r["content"], r["switch_label"], r["focused"],
+                               ("self-distraction" if r["self_distraction"] else None,
+                                "next task in the block" if r["next_task"] else None,
+                                "hybrid" if r["hybrid"] else None))
+        # only a judgment made before the ruling shows what the app thought on its own
+        d["app_said"] = _verdict(r["ec"], r["esw"], r["ef"]) if r["e_at"] is not None and r["e_at"] < r["created"] else None
+        d["rationale"] = r["rationale"] if d["app_said"] else None
+        q = conn.execute("""SELECT question, answer, note FROM review_questions
+                            WHERE segment_id=? AND status='answered' ORDER BY answered_at DESC LIMIT 1""", (sid,)).fetchone()
+        d["question"], d["answer"] = (q["question"], q["answer"]) if q else (None, None)
+        if q and q["note"] and not d["note"]:
+            d["note"] = q["note"]
+        shot = conn.execute("SELECT path FROM segment_shots WHERE segment_id=? AND display=0 ORDER BY ts LIMIT 1", (sid,)).fetchone()
+        path = shot["path"] if shot else r["first_screenshot"]
+        d["shot"] = path.rsplit("/", 1)[-1] if path else None
+        sw = conn.execute("SELECT COALESCE(group_id, id) FROM switches WHERE to_segment=?", (sid,)).fetchone()
+        d["switch_id"] = sw[0] if sw else None
+        out.append(d)
+    out.sort(key=lambda d: d["start"])
+    return out
+
+
+def drafts(conn, decided: int = 20) -> dict:
+    """Open drafts with their evidence, and the most recently decided ones (for the record)."""
+    def row(r, with_evidence):
         d = dict(r)
         d["support"] = json.loads(d["support"] or "[]")
-        out.append(d)
-    return out
+        if with_evidence:
+            d["evidence"] = evidence(conn, d["support"])
+        return d
+    return {"open": [row(r, True) for r in conn.execute("SELECT * FROM rule_drafts WHERE status='open' ORDER BY created")],
+            "decided": [row(r, False) for r in conn.execute(
+                "SELECT * FROM rule_drafts WHERE status!='open' ORDER BY decided_at DESC LIMIT ?", (decided,))]}

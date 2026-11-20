@@ -66,7 +66,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 <body>
 <header>
   <h1>Focus Monitor</h1>
-  <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#accuracy" data-view="accuracy">Models</a><a href="#efforts" data-view="efforts">Efforts</a></nav>
+  <nav><a href="#day" data-view="day">Day</a><a href="#segments" data-view="segments">Captures</a><a href="#trends" data-view="trends">Trends</a><a href="#review" data-view="review">Review</a><a href="#rules" data-view="rules">Rules<span id="rulesBadge"></span></a><a href="#accuracy" data-view="accuracy">Models</a><a href="#efforts" data-view="efforts">Efforts</a></nav>
   <span id="status" class="muted small"></span>
   <button id="themeBtn" class="small" style="margin-left:auto" title="light / dark / follow the system" onclick="cycleTheme()">☀︎</button>
 </header>
@@ -123,8 +123,13 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
     <span id="queueCount" class="muted small"></span>
     <span class="muted small">Keys: 1 continuation · 2 detour · 3 distraction · 4 focus start · s next · ⌘←/⌘→ previous / next review item</span>
   </div>
-  <div id="ruleDrafts"></div>
   <div id="reviewCard" class="card"></div>
+</section>
+
+<section id="view-rules" class="hidden">
+  <div class="muted small" style="margin-bottom:12px">Lines the app drafted for your rules document, each from several of your review answers that say the same thing. Below each one are the answers it rests on. Nothing is in the rules document until you click "add to my rules".</div>
+  <div id="ruleDrafts"></div>
+  <div id="ruleDecided"></div>
 </section>
 
 <section id="view-accuracy" class="hidden">
@@ -201,7 +206,7 @@ async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(await 
 // ---- routing
 function show(v){document.querySelectorAll('section').forEach(s=>s.classList.toggle('hidden',s.id!=='view-'+v));
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===v));
-  ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,accuracy:loadAccuracy,efforts:loadEfforts})[v]();}
+  ({day:loadDay,segments:loadSegments,trends:loadTrends,review:loadQueue,rules:loadRuleDrafts,accuracy:loadAccuracy,efforts:loadEfforts})[v]();}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'day'));
 document.addEventListener('keydown',e=>{if((location.hash||'#day')!=='#day'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
   if(e.key==='+'||e.key==='='){zoomView(0.33);e.preventDefault();}
@@ -431,18 +436,40 @@ async function reviewStep(dir){
   }finally{rvBusy=false;}}
 // Rules the app drafted from several of your answers that agree (rule_drafts.py). The wording is
 // editable; nothing is in the rules document until "add to my rules" is clicked.
+// The Rules page shows each with the review answers it rests on.
+function ruleEvidenceHtml(e){
+  const day=new Date(e.start*1000).toLocaleDateString([],{month:'short',day:'numeric'});
+  const differs=e.app_said&&e.app_said!==e.ruling;
+  return `<div style="display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--grid)">
+    ${e.shot?`<a href="/shot/${encodeURIComponent(e.shot)}" target="_blank"><img loading="lazy" src="/shot/${encodeURIComponent(e.shot)}" style="width:220px;border-radius:4px;border:1px solid var(--grid);display:block"></a>`:'<div class="muted small" style="width:220px">no capture kept</div>'}
+    <div style="flex:1;min-width:0">
+      <div class="small muted">${day}, ${fmtT(e.start)} · ${fmtMin(Math.max(0,(e.end-e.start)/60))} · ${esc(e.app||'')}${e.domain?' · '+esc(e.domain):''}${e.title?' · '+esc(e.title.slice(0,90)):''}
+        ${e.switch_id?`· <a href="#" onclick="openSegment(${e.switch_id});return false">open the capture</a>`:''}</div>
+      ${e.question?`<div style="margin-top:4px"><span class="muted">Asked:</span> ${esc(e.question)}<br><span class="muted">You answered:</span> ${esc(e.answer||'')}</div>`:''}
+      <div style="margin-top:4px"><span class="muted">Your ruling:</span> <b>${esc(e.ruling)}</b>
+        ${e.app_said?` · <span class="muted">the app had said:</span> ${differs?esc(e.app_said):'the same'}`:''}</div>
+      ${e.note?`<div style="margin-top:4px"><span class="muted">Your note:</span> ${esc(e.note)}</div>`:''}
+      ${e.rationale&&differs?`<div class="small muted" style="margin-top:4px">The app's reasoning: ${esc(e.rationale.slice(0,400))}</div>`:''}
+    </div></div>`;}
+async function loadRuleBadge(){
+  try{const n=(await api('/api/rule-drafts/count')).open;$('#rulesBadge').textContent=n?` (${n})`:'';}catch(e){}}
 async function loadRuleDrafts(){
-  let ds=[];try{ds=await api('/api/rule-drafts');}catch(e){}
-  $('#ruleDrafts').innerHTML=ds.map(d=>`<div class="card" style="border:1.5px dashed var(--taskchange)"><b>Proposed rule</b> <span class="muted small">— drafted from ${d.support.length} of your review answers that agree. ${esc(d.why||'')}</span>
+  let r={open:[],decided:[]};try{r=await api('/api/rule-drafts');}catch(e){}
+  $('#rulesBadge').textContent=r.open.length?` (${r.open.length})`:'';
+  $('#ruleDrafts').innerHTML=r.open.length?r.open.map(d=>`<div class="card"><b>Proposed rule</b> <span class="muted small">— ${esc(d.why||'')}</span>
     <textarea id="ruleDraft${d.id}" spellcheck="true" rows="3" style="width:100%;margin:6px 0;box-sizing:border-box">${esc(d.rule)}</textarea>
-    <div class="row" style="gap:6px"><button class="primary" onclick="decideRule(${d.id},'add')">add to my rules</button><button onclick="decideRule(${d.id},'reject')">no, not a rule</button><span class="muted small">you can edit the wording first</span></div></div>`).join('');}
+    <div class="row" style="gap:6px"><button class="primary" onclick="decideRule(${d.id},'add')">add to my rules</button><button onclick="decideRule(${d.id},'reject')">no, not a rule</button><span class="muted small">you can edit the wording first</span></div>
+    <div style="margin-top:12px"><b class="small">The ${d.evidence.length} answer${d.evidence.length===1?'':'s'} it rests on</b>${d.evidence.length<d.support.length?` <span class="muted small">(${d.support.length-d.evidence.length} more since cleared)</span>`:''}</div>
+    ${d.evidence.map(ruleEvidenceHtml).join('')}</div>`).join('')
+    :'<div class="card muted">No proposed rules waiting. The app drafts one when several of your review answers agree on something the rules document does not say.</div>';
+  $('#ruleDecided').innerHTML=r.decided.length?`<div class="card"><b>Decided</b>${r.decided.map(d=>`<div style="padding:8px 0;border-top:1px solid var(--grid);margin-top:8px"><span class="small muted">${d.status==='added'?'Added':'Rejected'} ${d.decided_at?new Date(d.decided_at*1000).toLocaleDateString([],{month:'short',day:'numeric'}):''}</span><br>${esc(d.final_text||d.rule)}</div>`).join('')}</div>`:'';}
 async function decideRule(id,action){
   const el=$('#ruleDraft'+id);
   try{await api(`/api/rule-drafts/${id}/decide`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,text:el?el.value:null})});}
   catch(e){alert('could not save that: '+e.message);return;}
   draftClear(el,false);loadRuleDrafts();}
 async function loadQueue(){
-  loadRuleDrafts();
+  loadRuleBadge();
   detailTarget='#reviewCard';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
   if(pendingQSeg!=null&&pendingQSw){const seg=pendingQSeg,sw=pendingQSw;pendingQSw=null;
@@ -1194,6 +1221,7 @@ async function loadEffDetail(id){
   $('#effDetailCard').scrollIntoView({behavior:'smooth'});
 }
 show(location.hash.slice(1)||'day');
+loadRuleBadge();setInterval(loadRuleBadge,60000);
 // The timeline follows the data: poll a cheap fingerprint of the day and redraw only when it changes
 // (an edit from a chat, an answered question, a Toggl correction, the evaluator catching up).
 let DAY_STAMP=null,DAY_BUSY=false;

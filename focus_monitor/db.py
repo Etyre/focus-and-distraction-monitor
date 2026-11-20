@@ -411,6 +411,8 @@ def connect() -> sqlite3.Connection:
         question_id INTEGER, created REAL NOT NULL,
         verdict TEXT,                     -- 'agree' | 'disagree'; NULL = not answered (not counted)
         answered_at REAL)""")
+    if "axis" not in {r[1] for r in conn.execute("PRAGMA table_info(agreement_samples)")}:
+        conn.execute("ALTER TABLE agreement_samples ADD COLUMN axis TEXT")  # content | focused | switch: the one axis asked about
     conn.execute("""CREATE TABLE IF NOT EXISTS phone_reviews (  -- the person's ruling on one phone app segment
         seg_key INTEGER PRIMARY KEY,      -- phone_evals.seg_key; any field left NULL keeps the model's call
         switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, away INTEGER,
