@@ -42,11 +42,63 @@ def labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None,
     return _carve_phone(conn, segs, t0, t1) if phone and segs else segs
 
 
-# Eli is being asked (2026-11-19) whether focused phone time - exercise tracking, a call - may
-# count as focus, and so start a focus span of its own. Until he says so it may not: phone time
-# that was a shift is always time away, drawn as a diversion. Set True to let a phone segment
-# judged focused (and not passive) take the state "focus" by the same rule as a computer segment.
-PHONE_CAN_BE_FOCUS = False
+# Eli, 2026-11-19: "Phone time can count as part of a focus span if it's on track." So phone
+# time that is a continuation of the computer thread stays part of it, also where the Mac went
+# idle meanwhile (_phone_on_track). Phone time that was a shift is always time away and never
+# starts a span of its own: the phone-only focus he can think of (meditation, cardio intervals)
+# is tracked with Toggl, not read off the phone log.
+
+
+def _phone_on_track(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
+    """On-track phone time (phone_evals.away = 0, focused, not a pass-through) needs no change
+    while the Mac is recording activity: the computer segment keeps counting. But a call that is
+    the task can outlast the Mac's idle threshold, and an idle segment ends the span. So where
+    such a phone segment overlaps an IDLE Mac segment, that piece becomes a segment of its own
+    (app "iPhone", the phone app as its site, id -seg_key) that continues the last active
+    segment before the idle one and takes its state and labels. If what is left of the idle
+    segment is then shorter than the idle threshold, it was never really idle (no input for a
+    few minutes is ordinary), and it joins the same thread too."""
+    import sqlite3
+    from .config import load_config
+    try:
+        rows = conn.execute("SELECT * FROM phone_evals WHERE away = 0 AND focused = 1 AND switch_label IS NOT NULL"
+                            " AND content NOT IN ('transition', 'idle') AND start < ? AND end > ? ORDER BY start",
+                            (t1, t0)).fetchall()
+    except sqlite3.OperationalError:
+        return segs
+    if not rows:
+        return segs
+    idle_s = load_config().idle_seconds
+    out, base = [], None
+    for s in segs:
+        if s.get("state") != "idle" or s["duration"] <= 0:
+            if s["duration"] > 0 and not s.get("phone"):
+                base = s
+            out.append(s)
+            continue
+        ps = [(max(p["start"], s["clip_start"]), min(p["end"], s["clip_end"]), p) for p in rows]
+        ps = [x for x in ps if x[1] > x[0]]
+        if not ps or base is None or s["clip_start"] - base["clip_end"] > MAX_GAP:
+            out.append(s)
+            continue
+        cont = dict(base, switch="continuation", label="continuation", self_distraction=False,
+                    next_task=False, antecedent_id=base["id"], antecedent_p=1.0)
+        for k in ("eval_split_p", "split_user"):
+            cont.pop(k, None)
+        left = s["duration"] - sum(b - a for a, b, _ in ps)
+        cur = s["clip_start"]
+        for a, b, p in ps + [(s["clip_end"], s["clip_end"], None)]:
+            if a > cur:      # idle time the phone does not cover
+                out.append(dict(cont, clip_start=cur, clip_end=a, duration=a - cur) if left < idle_s
+                           else dict(s, clip_start=cur, clip_end=a, duration=a - cur))
+            if p is not None and b > max(a, cur):
+                a = max(a, cur)
+                out.append(dict(cont, id=-int(p["seg_key"]), phone=True, app="iPhone", domain=p["app"] or "",
+                                title=p["app"] or "", url="", clip_start=a, clip_end=b, duration=b - a,
+                                content=p["content"] or base.get("content"), focused=True, redesign=True,
+                                source="eval", note=p["rationale"]))
+            cur = max(cur, b)
+    return out
 
 
 def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
@@ -65,6 +117,7 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
                             " AND start < ? AND end > ? ORDER BY start", (t1, t0)).fetchall()
     except sqlite3.OperationalError:   # a database from before the table existed, opened read-only
         return segs
+    segs = _phone_on_track(conn, segs, t0, t1)
     last: dict = {}    # pickup -> (id of its latest carved segment, did that thread begin as a self-distraction)
     for p in rows:
         a, b = max(p["start"], t0), min(p["end"], t1)
@@ -94,9 +147,6 @@ def _carve_phone(conn, segs: list[dict], t0: float, t1: float) -> list[dict]:
         sd_live = sd if shift else prev[1]
         content, focused = p["content"] or "other", bool(p["focused"])
         state = "distracted" if sd_live else "interrupted"
-        if (PHONE_CAN_BE_FOCUS and focused and content not in ("passive", "transition")
-                and not (content == "correspondence" and not base.get("toggl_id"))):
-            state = "focus"    # the rule for a computer segment (see _labelled_segments)
         ph = dict(base)
         for k in ("eval_split_p", "split_user"):
             ph.pop(k, None)

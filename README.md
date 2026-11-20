@@ -165,8 +165,11 @@ first commit 2026-08-29, in continuous development since.
   it ends the span, and each shift judged a self-distraction is a self-distraction event (and a
   bounce-away, when it is what left the span). A phone segment that is not away, or not judged
   yet, changes nothing.
-  `stats.PHONE_CAN_BE_FOCUS` (False) decides whether focused phone time may count as focus and
-  start a span of its own. Off, phone time that was a shift is always a diversion.
+  Phone time that is on track (a continuation of the computer thread, e.g. a call that is the
+  task) counts as part of the span: nothing changes while the Mac records activity, and where
+  the Mac went idle meanwhile that piece continues the last active segment instead of ending
+  the span (`stats._phone_on_track`). Phone time that was a shift is always time away and never
+  starts a span of its own; phone-only focus (meditation, cardio intervals) is tracked in Toggl.
   A glance at the lock screen is an interruption and never a self-distraction (Eli's rule); that
   is set in code (`evaluator.store_lock_glance`), not asked of the model. The phone log records
   a lock-screen look only when you swipe to the widgets page without unlocking

@@ -244,7 +244,10 @@ time tracker (Toggl) or jotting a note is never a diversion, like flipping to th
 diversion unless what they look at is clearly related to the current thread. 'return': back \
 to something from before the last shift. For a continuation or return that does not attach to \
 the line just before it, name the line in `continues`. When the computer shows nothing going on \
-around the pickup (idle, away), there is nothing on the computer to continue.
+around the pickup (idle, away), there is usually nothing on the computer to continue. The \
+exception: phone use that starts within minutes of the work and plainly belongs to it (a call \
+that is the task) is a continuation of the last computer segment before the idle time - name \
+that segment in `continues` - and it counts as part of that work even though the computer sat idle.
    - self_distraction, as in section 4. Their words: "Opening my phone and looking at a random \
 app without a clear task, is [a self-distraction event]." A deliberate errand, a use that \
 serves the current task, answering a message that just arrived ("opened from a notification" \

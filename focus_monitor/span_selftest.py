@@ -339,23 +339,30 @@ def cases():
         assert len(sp) == 1 and len(sp[0]["detours"]) == 1 and _mins(sp[0]) == 28, [(_mins(x), len(x["detours"])) for x in sp]
         assert stats.self_distraction_counts(d.segs, se) == (1, 1)
 
-    @case("focused phone time is time away, and never focus, while PHONE_CAN_BE_FOCUS is off")
+    @case("focused phone time that was a shift is time away, and never a span of its own")
     def _():
-        assert stats.PHONE_CAN_BE_FOCUS is False     # Eli has not ruled; see stats.py
         d2 = Day()
         d2.add(40, "Essay")
         d2.phone(12, [(20, "Exercise Tracker", "interruption", True, False, True)])
         sp = d2.run()["focus_spans"]
         assert [_mins(x) for x in sp] == [12], [_mins(x) for x in sp]   # 20 focused minutes on the phone start no span
-        stats.PHONE_CAN_BE_FOCUS = True
-        try:
-            d3 = Day()
-            d3.add(40, "Essay")
-            d3.phone(12, [(20, "Exercise Tracker", "interruption", True, False, True)])
-            sp = d3.run()["focus_spans"]
-            assert [_mins(x) for x in sp] == [12, 20], [_mins(x) for x in sp]   # with it on, they are a span of their own
-        finally:
-            stats.PHONE_CAN_BE_FOCUS = False
+
+    @case("an on-track phone call keeps the span going while the Mac sits idle")
+    def _():
+        def day(on_track):
+            d = Day()
+            d.add(15, "Essay")
+            d.add(14, "Essay")
+            d.segs[-1].update(state="idle", idle=1, label=None, content="idle")
+            d.add(15, "Essay")
+            if on_track:      # a 12-minute call, 1 minute into the idle time
+                d.phone(16, [(12, "Phone", "continuation", False, False, True)])
+            return d
+        assert [_mins(x) for x in day(False).run()["focus_spans"]] == [15, 15]
+        d = day(True)
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [44], [_mins(x) for x in sp]
+        assert [g["domain"] for g in d.segs if g.get("phone")] == ["Phone"]
 
     @case("a phone pickup judged a continuation changes nothing")
     def _():

@@ -154,6 +154,8 @@ It's the app's job to review the data and make intelligent judgements about  whe
   * Oura is sometimes used for exercise tracking. The first Oura open of the day is for syncing to the server, and is intentional.
   * Bumble is often, but not always, passive browsing.
   * Amazon is sometimes intentionally ordering something, and sometimes absent-minded browsing of my orders.
+* Phone time can count as part of a focus span if it's on track: a continuation of the thread I'm on (a call that is the task, looking something up for it). That holds even if the computer sits idle meanwhile.
+* Phone time never forms a focus span on its own. The only phone-only focus I can think of is meditation and cardio interval training, which should be tracked via toggl.
 * Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it.
 * Phone data arrives late, often hours after the fact. A stretch with phone use in it is judged when its phone data lands, so a day's numbers can change after the fact.
 * The phone data only shows which app was on the screen and when. It does not show what I was doing in the app, and there are no screenshots. A plain glance at the lock screen leaves no record at all, so most of those are not counted. The only one that is recorded is swiping to the widgets on the lock screen, which I do about once a week.
