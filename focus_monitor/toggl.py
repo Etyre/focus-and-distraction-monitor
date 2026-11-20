@@ -127,13 +127,23 @@ class TogglSync:
         with self.conn:
             before = {r["id"]: (r["start"], r["stop"], r["description"], r["project"], r["tags"]) for r in
                       self.conn.execute("SELECT * FROM toggl_entries WHERE start >= ?", (t0.timestamp(),))}
-            # For an entry that was still running when we last looked, judgments made since then
-            # assumed it ran until at least that sync - so that is the 'old end' for touch purposes.
             synced_at = {r["id"]: r["synced"] for r in
                          self.conn.execute("SELECT id, synced FROM toggl_entries WHERE stop IS NULL")}
+            # An entry with no stop is taken by the evaluator to cover everything up to the
+            # moment it judges, however long ago the last successful sync was. So the 'old end'
+            # of a running entry is the end of the newest judged segment, not the last sync:
+            # with sync failing from 00:01 to 02:21 on 2026-11-19, an entry that had stopped at
+            # 00:24 was shown as running in every call up to 02:14, and the last-sync rule
+            # queued nothing after 00:26 (segments 36083-36088 kept judgments made under it).
+            judged_to = self.conn.execute("""SELECT MAX(COALESCE(g.end, g.start)) FROM seg_evals e
+                                             JOIN segments g ON g.id = e.segment_id""").fetchone()[0] or 0.0
             seen = set()
+            details: list[dict] = []   # what changed, for the note the evaluator gets (queue_reevaluation)
             for e in entries:
                 old = before.get(e["id"])
+                if old is None:   # an entry that began before the fetched window is not new
+                    r0 = self.conn.execute("SELECT * FROM toggl_entries WHERE id=?", (e["id"],)).fetchone()
+                    old = (r0["start"], r0["stop"], r0["description"], r0["project"], r0["tags"]) if r0 is not None else None
                 pid = e.get("project_id") or 0
                 # a project newer than the cached list (refreshed every 6 h): keep the name on record
                 project = self.projects.get(pid, old[3] if (old and pid) else "") if pid else ""
@@ -142,10 +152,17 @@ class TogglSync:
                 if old != row:
                     changed += 1
                     if old is None:
-                        if row[0] < time.time() - 1800:   # an entry added after the fact, stopped or still running
-                            touched.append((row[0], row[1] if row[1] is not None else time.time()))
+                        # An entry the app has not seen before. Whatever was already judged in
+                        # its time was judged without it; queue_reevaluation skips a range with
+                        # nothing judged in it, which is the normal case of a timer just started.
+                        # (Until 2026-11-20 this needed the entry to start 30+ minutes ago, while
+                        # judging happens at 15: segments 28906-28911 on 11-03 kept judgments
+                        # made before the entry for that meeting was added.)
+                        rng = [(row[0], row[1] if row[1] is not None else max(judged_to, row[0]))]
                     else:
-                        touched += _edit_ranges(old, row, synced_at.get(e["id"]))
+                        rng = _edit_ranges(old, row, synced_at.get(e["id"]), judged_to)
+                    touched += rng
+                    details += [{"a": a, "b": b, "old": old, "new": row} for a, b in rng]
                 self.conn.execute(
                     """INSERT INTO toggl_entries(id, start, stop, description, project, tags, synced)
                        VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET start=excluded.start, stop=excluded.stop,
@@ -155,8 +172,11 @@ class TogglSync:
             gone = [i for i in before if i not in seen]
             if gone:
                 self.conn.executemany("DELETE FROM toggl_entries WHERE id=?", [(i,) for i in gone])
-                touched += [(before[i][0], before[i][1] or synced_at.get(i) or before[i][0]) for i in gone]
-            queued = queue_reevaluation(self.conn, touched, "Toggl entries corrected")
+                for i in gone:
+                    rng = (before[i][0], before[i][1] or max(synced_at.get(i) or 0.0, judged_to, before[i][0]))
+                    touched.append(rng)
+                    details.append({"a": rng[0], "b": rng[1], "old": before[i], "new": None})
+            queued = queue_reevaluation(self.conn, touched, "Toggl entries corrected", details=details)
         if changed or gone:
             log.info("toggl: %d entries in the last %.0fh, %d changed, %d deleted, %d stretch(es) queued for re-evaluation",
                      len(entries), lookback_hours, changed, len(gone), queued)
@@ -164,11 +184,14 @@ class TogglSync:
                 "reevaluate": queued}
 
 
-def _edit_ranges(old: tuple, new: tuple, old_synced: float | None) -> list[tuple[float, float]]:
-    """Which stretches an edit to an entry invalidates. An entry simply stopping is NOT an edit:
-    nothing judged while it ran assumed anything about when it would end."""
+def _edit_ranges(old: tuple, new: tuple, old_synced: float | None,
+                 judged_to: float = 0.0) -> list[tuple[float, float]]:
+    """Which stretches an edit to an entry invalidates. An entry stopping at about the time we
+    last saw it running is NOT an edit. One found to have stopped earlier than the newest
+    judgment is: everything judged after its real stop was judged with it shown as running
+    (`judged_to` = end of the newest judged segment; see resync)."""
     os_, oe, ns, ne = old[0], old[1], new[0], new[1]
-    old_end = oe if oe is not None else (old_synced or os_)   # running: judged only up to the last sync
+    old_end = oe if oe is not None else max(old_synced or os_, judged_to)   # running: shown as covering all judged time
     out: list[tuple[float, float]] = []
     if old[2:] != new[2:]:                 # description / project / tags: everything it covered, then and now
         out.append((min(os_, ns), max(old_end, ne if ne is not None else time.time())))
@@ -185,9 +208,25 @@ def _edit_ranges(old: tuple, new: tuple, old_synced: float | None) -> list[tuple
     return out
 
 
-def queue_reevaluation(conn, ranges: list[tuple[float, float]], reason: str, pad: float = 120.0) -> int:
+def queue_reevaluation(conn, ranges: list[tuple[float, float]], reason: str, pad: float = 120.0,
+                       details: list[dict] | None = None) -> int:
     """Queue already-judged stretches for re-evaluation because their upstream data changed.
-    Overlapping ranges are merged; ranges with nothing judged in them are skipped."""
+    Overlapping ranges are merged; ranges with nothing judged in them are skipped. `details`
+    ([{a, b, old, new}], old / new = (start, stop, description, project, tags) or None) says what
+    changed; it is kept beside the queue row (kv "reeval.detail.<row id>", JSON) so the note to
+    the evaluator can say what the entries were when it first judged (the table itself keeps
+    only the corrected entry)."""
+    def keep(row_id, a, b):
+        mine = [d for d in (details or []) if min(d["a"], d["b"]) - pad < b and max(d["a"], d["b"]) + pad > a]
+        if not mine:
+            return
+        try:
+            r = conn.execute("SELECT value FROM kv WHERE key=?", (f"reeval.detail.{row_id}",)).fetchone()
+            had = json.loads(r[0]) if r and r[0] else []
+            conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES (?,?)",
+                         (f"reeval.detail.{row_id}", json.dumps((had + [{"old": d["old"], "new": d["new"], "at": time.time()} for d in mine])[-40:])))
+        except Exception:   # the note is extra; never lose the queue row for it
+            log.exception("could not record what changed for re-evaluation %s", row_id)
     merged: list[list[float]] = []
     for a, b in sorted((min(a, b) - pad, max(a, b) + pad) for a, b in ranges):
         if merged and a <= merged[-1][1]:
@@ -200,10 +239,12 @@ def queue_reevaluation(conn, ranges: list[tuple[float, float]], reason: str, pad
                                  WHERE g.start < ? AND COALESCE(g.end, g.start) > ? LIMIT 1""", (b, a)).fetchone()
         if not judged:
             continue
-        dup = conn.execute("SELECT 1 FROM reeval_queue WHERE done_at IS NULL AND t0 <= ? AND t1 >= ?", (a, b)).fetchone()
+        dup = conn.execute("SELECT id FROM reeval_queue WHERE done_at IS NULL AND t0 <= ? AND t1 >= ?", (a, b)).fetchone()
         if dup:
+            keep(dup[0], a, b)
             continue
-        conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)", (a, b, reason, time.time()))
+        keep(conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)",
+                          (a, b, reason, time.time())).lastrowid, a, b)
         n += 1
     return n
 

@@ -60,11 +60,36 @@ def lookup(conn, start: float, end: float):
     return best if ok else None
 
 
-def seg_line(s) -> str:
-    t = dt.datetime.fromtimestamp(s["clip_start"]).strftime("%H:%M")
-    what = (s.get("app") or "") + ((" " + s["domain"]) if s.get("domain") else "")
-    title = (s.get("title") or "")[:70]
-    bits = [t, "%4.1fm" % (s["duration"] / 60), s.get("state", ""), what, title]
+def dur_text(seconds: float) -> str:
+    """A duration for a model to read: whole seconds under two minutes (the Rules doc's
+    pass-through limit is 15 seconds, and "0.2m" covered 9 to 15), minutes and seconds above."""
+    sec = max(0.0, float(seconds or 0.0))
+    if sec < 120:
+        return f"{sec:.0f}s"
+    m, r = divmod(int(round(sec)), 60)
+    return f"{m // 60}h{m % 60:02d}m{r:02d}s" if m >= 60 else f"{m}m{r:02d}s"
+
+
+def verdict_text(r) -> str:
+    """The fields a ruling (a seg_reviews row, or anything with those keys) sets, in the words
+    models are given. Empty when it sets none."""
+    from .seg_models import shown_switch
+    g = lambda k: (r[k] if k in r.keys() else None)
+    bits = [f"content={g('content')}" if g("content") else None,
+            f"switch={shown_switch(g('switch_label'))}" if g("switch_label") else None,
+            f"continues id={g('antecedent_id')}" if g("antecedent_id") else None,
+            None if g("focused") is None else ("focused" if g("focused") else "unfocused"),
+            None if g("self_distraction") is None else ("self-distraction" if g("self_distraction") else "not a self-distraction"),
+            None if g("next_task") is None else ("next task in the block" if g("next_task") else "not the next task"),
+            None if g("hybrid") is None else ("hybrid (inside a live discussion)" if g("hybrid") else "solo, not hybrid"),
+            "counts as independent focus by their explicit exception" if g("focus_exception") else None,
+            # the older single label for a shift, on rulings made before 2026-11-19
+            f"kind of shift (older label)={g('interruption_kind')}" if g("interruption_kind") and g("focused") is None else None]
+    return ", ".join(b for b in bits if b)
+
+
+def _tags(s) -> list[str]:
+    bits = []
     if s.get("content"):
         bits.append(f"<{s['content']}>" + (" <FOCUS EXCEPTION by ruling>" if s.get("focus_exception") else ""))
     if s.get("focused") is not None:
@@ -81,13 +106,91 @@ def seg_line(s) -> str:
         # judged before the redesign: the stored four-way label, in the words models are given
         bits.append("<switch: " + {"interruption": "shift (detour)", "distraction": "shift (self_distraction)",
                                    "task_change": "shift (focus_start)"}.get(s["label"], s["label"]) + ">")
-    if s.get("activity"):
-        bits.append(f"[{s['activity']}]")
-    if s.get("toggl_desc"):
-        bits.append(f"(toggl: {s['toggl_desc']})")
-    ia, dur2 = s.get("inact_s") or 0.0, s.get("duration") or 1.0
-    if ia >= 60 and ia >= 0.3 * dur2:
-        bits.append(f"(input idle {ia / 60:.0f}m of {dur2 / 60:.0f}m)")
+    return bits
+
+
+def seg_line(s, full: bool = False, ruling=None, quick_pass: bool = False) -> str:
+    """One activity-log line for a segment (a stats.labelled_segments row). Times are in the
+    zone the Mac was in then (config.local_dt): re-judgments used to show activity from before
+    the move to Eastern time three hours late (segment 24715: 13:39 when first judged, 16:39
+    when re-judged).
+
+    The default is the short form the question writer, the chats and the propagation check
+    use. `full` (the evaluator and the daily audit, 2026-11-20) leaves nothing out and adds
+    nothing that is not a judgment:
+      * start to the second, duration in seconds under two minutes, the whole title, the URL;
+      * the segment's real start and length even where the window shown cuts it;
+      * judgment tags ONLY for a segment the evaluator (or the person) has judged. The short
+        form also prints the app-derived state word, the old per-switch classifier's label and
+        its [activity] guess, on judged and unjudged lines alike; on unjudged lines the
+        evaluator read them as existing judgments (it said shift on 44% of lines carrying the
+        old tag against 24% without);
+      * `ruling` (the person's seg_reviews row) marks the line RULED BY THE PERSON with the
+        fields they set and their note in full;
+      * `quick_pass` marks the tags as an earlier low-effort judgment (history re-judgment)."""
+    from .config import local_dt
+    if not full:
+        t = local_dt(s["clip_start"]).strftime("%H:%M")
+        what = (s.get("app") or "") + ((" " + s["domain"]) if s.get("domain") else "")
+        title = (s.get("title") or "")[:70]
+        bits = [t, "%4.1fm" % (s["duration"] / 60), s.get("state", ""), what, title] + _tags(s)
+        if s.get("activity"):
+            bits.append(f"[{s['activity']}]")
+        if s.get("toggl_desc"):
+            bits.append(f"(toggl: {s['toggl_desc']})")
+        ia, dur2 = s.get("inact_s") or 0.0, s.get("duration") or 1.0
+        if ia >= 60 and ia >= 0.3 * dur2:
+            bits.append(f"(input idle {ia / 60:.0f}m of {dur2 / 60:.0f}m)")
+        return "  ".join(str(b) for b in bits)
+    start = s.get("start", s["clip_start"])
+    end = s.get("end_eff") or s.get("clip_end") or start
+    one = lambda v: " ".join(str(v or "").split())
+    bits = [local_dt(start).strftime("%H:%M:%S"), dur_text(end - start)]
+    if s.get("idle") or s.get("state") == "idle":
+        bits.append("AWAY (no keyboard or mouse input, or the screen locked)")
+    else:
+        bits.append(one(s.get("app")))
+        if s.get("domain"):
+            bits.append("site: " + s["domain"])
+        if one(s.get("title")):
+            bits.append("title: “" + one(s["title"]) + "”")
+        if s.get("url"):
+            bits.append("url: " + s["url"])
+        if s.get("neutral"):
+            bits.append("(neutral window, e.g. the presence-check form: recorded, never judged)")
+    if "end" in s and s.get("end") is None:
+        bits.append("(still in front when this log was written)")
+    judged = s.get("source") in ("eval", "review") and not s.get("idle")
+    if judged:
+        tags = _tags(s)
+        if s.get("focused") is not None and s.get("switch") in (None, "continuation"):
+            tags.append("<switch: continuation>")
+        elif s.get("focused") is None and s.get("redesign"):
+            # a pass-through or idle segment judged since 2026-11-19: no focus tag, but its switch is a judgment too
+            tags.append("<switch: " + {"interruption": "shift", "return": "return"}.get(s.get("switch"), "continuation") + ">")
+        if s.get("antecedent_id") and s.get("switch") in ("continuation", "return"):
+            tags.append(f"<continues id={s['antecedent_id']}>")
+        if s.get("hybrid"):
+            tags.append("<hybrid>")
+        if s.get("uncertain"):
+            tags.append("<flagged uncertain>")
+        if tags:
+            bits.append(("stands as: " if ruling is not None else
+                         "earlier quick-pass judgment: " if quick_pass else "judged: ") + " ".join(tags))
+    if ruling is not None:
+        note = one(ruling["note"])
+        bits.append("RULED BY THE PERSON: " + (verdict_text(ruling) or "(no field set)")
+                    + (f"; their note: “{note}”" if note else ""))
+    if not s.get("idle"):
+        if s.get("toggl_desc") or s.get("toggl_id"):
+            bits.append("(toggl running at its start: “" + one(s.get("toggl_desc")) + "”"
+                        + (f" | project: {s['toggl_project']}" if s.get("toggl_project") else "")
+                        + (f" | tags: {s['toggl_tags']}" if s.get("toggl_tags") else "") + ")")
+        else:
+            bits.append("(no toggl entry running at its start)")
+        ia = s.get("inact_s") or 0.0
+        if ia >= 1:
+            bits.append(f"(no input for {dur_text(ia)} of it, in pauses of a minute or more)")
     return "  ".join(str(b) for b in bits)
 
 
@@ -122,8 +225,9 @@ def generate(conn, cfg: Config, sp) -> bool:
     client = _get_client()
     if client is None:
         return False
-    t0s = dt.datetime.fromtimestamp(sp["start"]).strftime("%H:%M")
-    t1s = dt.datetime.fromtimestamp(sp["end"]).strftime("%H:%M")
+    from .config import local_dt   # the zone the Mac was in then, as in seg_line
+    t0s = local_dt(sp["start"]).strftime("%H:%M")
+    t1s = local_dt(sp["end"]).strftime("%H:%M")
     segs = [s for r_ in sp["runs"] for s in r_["segments"]]
     ids = [s["id"] for s in segs]
     rats = {}
@@ -132,7 +236,7 @@ def generate(conn, cfg: Config, sp) -> bool:
         rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
             f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", ids)
             if r2["rationale"]}
-    lines = [seg_line(s) + (f"  // {rats[s['id']][:90]}" if s["id"] in rats else "") for s in segs]
+    lines = [seg_line(s) + (f"  // {rats[s['id']]}" if s["id"] in rats else "") for s in segs]   # whole: 73% of notes were cut mid-word at 80-90 characters
     if len(lines) > 150:
         lines = lines[:75] + [f"  ... {len(lines) - 150} segments elided ..."] + lines[-75:]
     content: list = []
@@ -143,7 +247,7 @@ def generate(conn, cfg: Config, sp) -> bool:
             b = _b64(sh["path"])
             if b:
                 where = " - EXTERNAL display" if sh.get("display") else ""
-                content.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')}{where}:"})
+                content.append({"type": "text", "text": f"Screenshot at {local_dt(sh['ts']).strftime('%H:%M')}{where}:"})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
     content.append({"type": "text", "text": PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60,
                                                           log="\n".join(lines))})

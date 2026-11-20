@@ -44,11 +44,35 @@ from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # si
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
 CONTACT_HOLD_S = 24 * 3600   # after the evaluator asks for Eli, how long its chunk is left alone
-CTX_S = 10 * 60           # context shown on each side of the chunk
+CTX_S = 10 * 60           # how far around a chunk phone pickups and their stored judgments are looked up
+# Context shown to the model (2026-11-20; it was 10 minutes each side). Of 513 segments judged a
+# shift in 30 days, 178 were on a window last in front earlier that day but more than 10 minutes
+# back, so the model could not see what it was coming back to; and in 199 of 235 first-pass calls
+# activity already recorded after the window was withheld (median 5 minutes), though "then back
+# to the task" and the self-distraction test both turn on what follows.
+BEFORE_S = 45 * 60        # log shown before the chunk
+ACTIVE_BEFORE_S = 10 * 60 # ... reaching further back, past an away stretch, until this much active time is in view
+BEFORE_MAX_S = 18 * 3600  # ... but never further than this
+AFTER_FIRST_MAX_S = 2 * 3600   # first pass: everything recorded up to the call, at most this much (a backlog can be days)
+AFTER_REJUDGE_S = 30 * 60      # re-judgments: this much after the chunk
 RETURN_MAX_S = 10 * 60    # Rules doc: a return is to something left within the past 10 minutes
 HOLD_MAX_S = 60 * 60      # Rules doc: the model may hold a segment back for up to an hour
 HOLD_RETRY_S = 15 * 60    # after a hold, ask again this much later (more activity will be logged)
-MAX_SHOTS = 8
+# Images per call (2026-11-20; a fixed 8 before, whatever the number of segments: 29% of all
+# targets were judged with no screenshot though one existed). Every target gets its captures
+# first; a call never carries more targets than this budget can show, it judges fewer segments
+# instead (evaluate_chunk sets last_end, and the callers go on from there). 60: a capture is
+# 1280 px wide, about 1,400 tokens, so 60 are about 85k tokens and 6 MB of base64, inside the
+# API's limits as far as known (100 images and 32 MB per request; above 20 images each must be
+# at most 2000 px on a side, which the 1280 px captures are).
+IMAGE_BUDGET = 60
+PAGE_LOADS_MAX = 150      # page loads listed under one segment (the rest are counted, not listed)
+CONTEXT_IMAGES_MIN = 20   # of the budget, kept for context segments when the targets could fill it
+SEG_MOMENTS_MAX = 12      # capture moments shown for one target (a moment is up to two images: both displays)
+# Output room (2026-11-20; 8,000 before, and one answer reached 8,128 tokens and was cut off).
+# Thinking counts against it too. 20,000 is the most the SDK takes without streaming (it refuses
+# a non-streaming request whose max_tokens implies more than 10 minutes: above about 21,300).
+MAX_TOKENS = 20000
 
 
 class AnteCand(BaseModel):
@@ -98,8 +122,10 @@ def kind_of(switch: str | None, focused, self_distraction) -> str | None:
 
 SYSTEM = """You are the segment evaluator for a personal attention monitor. You receive a stretch \
 of one person's computer activity - an ordered log of segments (one active window each), with \
-surrounding context before and after, Toggl entries, and sampled screenshots - and you judge every \
-segment marked EVALUATE. For each one output:
+the activity before and after it as context, their Toggl time entries for the day, a summary of \
+the day so far, and screenshots - and you judge every segment marked EVALUATE. How to read the \
+log, the screenshots and the person's own past rulings is explained in sections 6 to 9. For each \
+segment marked EVALUATE output:
 
 1. content - what the activity IS:
    - creative: making something (writing an essay/doc, coding, video editing).
@@ -140,7 +166,7 @@ Toggl entry naming another person ("with Dave"), notes growing through input-idl
 a transcript side panel. Hybrid stretches count as meeting time, not independent focus.
    - idle: the window was open but keyboard/mouse input was idle for most of the segment and \
 nothing suggests engaged reading or watching - the person was likely away or disengaged. \
-Log lines show "(input idle ...)" when recorded. A mostly-input-idle segment can NOT be task, \
+Log lines show "(no input for ... of it ...)" when pauses were recorded. A mostly-input-idle segment can NOT be task, \
 creative, or planning (those require interaction); it can still be reading or passive if they \
 were plausibly reading/watching the screen.
    - transition: rapidly passing through desktops, windows, or tabs on the WAY to a specific \
@@ -148,10 +174,14 @@ target - travel, not attention. Typically a chain of very short segments ending 
 person settles. Transitions are never attention shifts in themselves; their switch is \
 'continuation' of whatever the person is heading toward. Also transition: a window that was \
 already sitting open on a desktop and got cycled past - a segment of roughly 15 seconds or less \
-with no screenshot and no scroll/typing evidence, flanked by segments of the same thread, is a \
-pass-through regardless of what the window contains (a Substack post, a feed, a comic). Ten \
-seconds is not consumption; do not label it passive or a shift on the strength of the \
-window's name alone.
+with no scrolling or typing in it, flanked by segments of the same thread, is a pass-through \
+regardless of what the window contains (a Substack post, a feed, a comic). Ten seconds is not \
+consumption; do not label it passive or a shift on the strength of the window's name alone. \
+Whether a screenshot of the segment is attached has no bearing on this: captures are taken when \
+a window comes forward and about once a minute after that, files are sometimes no longer on \
+disk, and each call says which segments have none and why. A missing image is missing evidence, \
+never a sign of a pass-through; judge such a segment from its duration, its input counts and its \
+neighbours.
 2. focused - the QUALITY of the person's attention during this segment: focused or unfocused.
    - focused (true): doing one thing with intent, engaged with it. This holds for small things \
 and for things off the main work: jumping to a shop to buy one specific item is focused, even \
@@ -228,7 +258,13 @@ next_task. For each line marked EVALUATE PHONE add an entry to `phone`. What is 
 only what you can see:
    - You know the app and the timing, nothing else: not what was in the app, and there are no \
 phone screenshots. Lean on the app, the duration, how it was opened, what was happening on the \
-computer, and the person's notes about their apps in the rules below.
+computer, and the person's notes about their apps in the rules below. The screenshots attached \
+for a pickup are of the Mac's screen just before and just after it.
+   - "[Mac input during this: ...]" on a PHONE line says whether the Mac's keyboard, mouse or \
+trackpad were used while the phone app was on screen, and how long before and after the nearest \
+Mac input was. It is counted in 10-second steps and exists only from 2026-11-20. Mac input all \
+through a phone segment suggests the phone was lying open beside the keyboard, not in hand; none, \
+with a gap on both sides, suggests they were on the phone.
    - "(phone unlocked)" marks the first line of a pickup. Unlocking puts the phone on whatever \
 app was open when it was last locked, so a first line of a few seconds with no "opened from" is \
 usually them passing through that app on the way to another, or looking and locking again: by \
@@ -263,8 +299,9 @@ segment as a return. So do not turn a computer segment into a shift or a return 
 line sits inside it. PHONE lines that already have a judgment carry the same tags as computer \
 lines.
 
-6. SIGNALS IN SQUARE BRACKETS. A computer line may end with notes in [brackets]: things the \
-Mac recorded beside the capture. They are evidence, not verdicts, and older lines have none.
+6. SIGNALS IN SQUARE BRACKETS. A computer line may carry notes in [brackets]: things the \
+Mac recorded beside the capture. They are evidence, not verdicts, and older lines have none \
+(clicks and input counts exist from 2026-11-20, page loads from 2026-11-17).
    - "arrived by": what the person did just before this app came forward. "a click on a \
 notification banner" means something arrived and they followed it: an outside prompt, not \
 stimulation-seeking (whether it was a shift still depends on what it was about). "a click on the \
@@ -279,18 +316,86 @@ or video site in the middle of work, the mark of a self-started visit. "a link o
 new tab opened from <site>" means it grew out of that page. "link opened from another app" means \
 it was clicked in a message, document or other app. "no new page load" means they switched to a \
 tab they already had open, or moved around inside a page.
-   - "input": keys, clicks and scroll events per minute. Steady typing is writing or chatting; \
-scrolling with few keys is reading or browsing; almost nothing is watching, listening, thinking \
-or being away from the keyboard. Only counts are recorded, never what was typed.
+   - "input": keys, clicks, scroll events and pointer-move events per minute, averaged over the \
+segment. Steady typing is writing or chatting; scrolling with few keys is reading or browsing; \
+almost nothing is watching, listening, thinking or being away from the keyboard. Only counts are \
+recorded, never what was typed. They are counted in 10-second steps, so for a segment shorter \
+than about 20 seconds they are partly the neighbouring segments' input, and the line says so.
+   - Under a segment longer than two minutes, "input by minute" gives the same counts for each \
+clock minute as keys/clicks/scroll events/pointer moves, followed by a (audio playing), m \
+(microphone on) or c (camera on) when that was so for at least half of that minute: \
+"14:03 212/3/0/40 a" is 212 key presses, 3 clicks, no scrolling, 40 pointer moves, audio on. Use \
+it to see when in a long segment the person was typing, reading, or doing nothing.
+   - "no input" under a line lists the recorded pauses inside it, with times: stretches of a \
+minute or more with no keyboard or mouse input that did not become an AWAY line (that takes ten \
+minutes). Recorded for all dates.
+   - "page loads during this segment" lists every page Chrome loaded while the segment was in \
+front: time, how it was reached, the address, the page title, and the page it came from. The \
+segment's own title and url are those of the window when the segment began; when the loads show \
+other pages, the person moved on inside that window, and the loads (and the screenshots) say \
+where to. No list means no load was recorded, not that nothing happened in the page.
    - "audio playing", "microphone on", "camera on": share of the segment. Microphone or camera \
 on for most of a segment means a call or a recording - or, with the microphone alone and for \
 short bursts, voice dictation in place of typing (low key counts then do not mean idleness). Audio playing with \
 little input usually means a video or a call is actually running, not just open.
 
-Log lines for segments that already have a judgment show it as tags: <focused> / <unfocused>, \
-and <switch: shift> or <switch: return> (no switch tag = continuation). Segments judged before \
-2026-11-19 carry an older tag instead - <switch: shift (detour)>, (self_distraction) or \
-(focus_start) - from when the kind of shift was a single label; read those as a shift.
+7. HOW TO READ A LOG LINE. Each computer line is, in order: its mark ("EVALUATE id=N:" for a \
+segment to judge, "(context id=N)" for one shown as context); the time it began, to the second, \
+in the time zone the person was in that day; how long it lasted in all (seconds under two \
+minutes), also when it began before or ran on after the stretch shown; the app; "site:", \
+"title:" and "url:" in full where the Mac recorded them (most apps other than browsers have no \
+title). An "AWAY" line is a stretch of ten minutes or more with no input, or the screen locked. \
+"(toggl running at its start: ...)" names the Toggl entry running when the segment began, or \
+says there was none; an entry started or stopped inside a segment shows only in the day's Toggl \
+list, which has times to the second.
+   - A line with NO "judged:" part has not been judged by anyone yet; nothing on it is a verdict.
+   - "judged: <content> <focused|unfocused> <switch: continuation|shift|return> ..." is the \
+judgment the app holds for that segment, normally your own from an earlier call. "<continues \
+id=N>" is its thread pointer, "<hybrid>" marks activity inside a live discussion, "<flagged \
+uncertain>" that it was flagged for review. A 'transition' or 'idle' line has no focus tag. \
+Segments judged before 2026-11-19 carry an older switch tag - <switch: shift (detour)>, \
+(self_distraction) or (focus_start) - from when the kind of shift was a single label; read \
+those as a shift, and no switch tag on such a line as a continuation. "// note:" after it is \
+the one-sentence reasoning stored with that judgment, in full. These are earlier judgments, not \
+facts: weigh them as you would a colleague's notes. "earlier quick-pass judgment:" marks one \
+made at low effort that has not been redone; treat it as a hint at most.
+   - "RULED BY THE PERSON: ..." marks a segment the person has ruled on themselves, with the \
+fields they set and their note. Those fields are FIXED ANCHORS: they are what happened. Build \
+your judgment of the neighbouring segments around them (a segment they ruled the start of a new \
+thread is one; a segment they ruled a continuation of id=N is in N's thread). "stands as:" on \
+such a line is the judgment in force, their fields over the app's. When a ruled segment is \
+itself marked EVALUATE, give the fields they set exactly as they set them and judge the rest.
+   - Lines under a segment, indented, belong to it: the input and page-load lists of section \
+6; "earlier today:" (when this same window - same app, title and url - was last in front before \
+the log shown, for how long, and how that visit was judged); and "screenshot:" when it has none.
+   - The header of each call gives the date, the weekday, the time zone and when the call is \
+being made. "DAY SO FAR" above the log is the app's own picture of the day, built from \
+judgments like yours: the focus spans it has summarized, the threads it has put together from \
+thread pointers, and all of the day's Toggl entries. It is background for recognising what a \
+segment belongs to (work resumed after an hour is visible there and nowhere else); it is not \
+evidence about the segments you are judging.
+
+8. SCREENSHOTS. Before the log come screenshots, in time order, each with a label naming the \
+segment it belongs to and the time it was taken. Every EVALUATE segment has at least one where a \
+file exists, long ones several spread over their length; context segments have their first and \
+last capture as far as the call's image allowance reaches, nearest the EVALUATE stretch first. \
+When the person had two displays, both are attached for the same moment: "active display" is \
+the one holding the window the segment is about, "other display" is what else was in view (notes \
+beside a text being read, a call, a video). The other display is context: activity is judged by \
+the active one. The log says, under its line, which EVALUATE segment has no screenshot and why \
+("no capture exists": none was ever taken, which happens with segments of a few seconds; "file \
+no longer on disk": taken, since deleted). Window titles are sometimes \
+stale or wrong; where a screenshot and a title disagree, the screenshot is what was on screen.
+
+9. THE PERSON'S RULINGS. At the end of these instructions are all the rulings the person has \
+made on past segments, each with what was on screen, what came before and after, what the app \
+had judged, the question they were answering if there was one, and their note. They are your \
+best evidence of how this person wants cases judged: follow them where a segment in front of \
+you is the same kind of case, and say so in your note. A ruling is about its own situation: a \
+"shift" or "continuation" ruling says what that segment was relative to what preceded it, so \
+check that the situation matches, not only the app or site. Each call may list a few rulings \
+whose site or window title matches its segments; that list is a pointer, not a selection - the \
+others apply just as much.
 
 Judge each segment in the context of the whole stretch - what came before AND after it. A flip to \
 a notes app mid-video does not make the video session work; a quick message check inside a writing \
@@ -303,6 +408,340 @@ About this person (their own words):
 {about_me}
 
 {examples}"""
+
+
+# ---- what the evaluator is shown (2026-11-20) ---------------------------------------------------
+# Eli: "We should also make sure that all the model calls are given all the information that
+# could possibly be relevant for their judgement and nothing is left out." The helpers below
+# build the pieces of a call: the context window, the log lines, the day so far, the person's
+# rulings, and the screenshots. Every time a model reads comes from config.local_dt (the zone
+# the Mac was in then).
+
+def _t(ts: float, fmt: str = "%H:%M:%S") -> str:
+    from .config import local_dt
+    return local_dt(ts).strftime(fmt)
+
+
+def _one(v) -> str:
+    return " ".join(str(v or "").split())
+
+
+def _context_start(conn, t0: float) -> float:
+    """Where the log shown before a chunk begins: BEFORE_S earlier, and further back when that
+    stretch is mostly an away line, until ACTIVE_BEFORE_S of activity is in view. 284 segments in
+    30 days directly followed an absence of 10+ minutes and were judged with a single idle line
+    before them (run 13441: "counts as a new start", unable to see what had been left)."""
+    lo, now = t0 - BEFORE_S, time.time()
+    act = sum(max(0.0, min(r[1], t0) - max(r[0], lo)) for r in conn.execute(
+        "SELECT start, COALESCE(end, ?) FROM segments WHERE idle=0 AND start < ? AND COALESCE(end, ?) > ?", (now, t0, now, lo)))
+    need = ACTIVE_BEFORE_S - act
+    if need <= 0:
+        return lo
+    for r in conn.execute("SELECT start, COALESCE(end, start) FROM segments WHERE idle=0 AND start < ? AND start >= ?"
+                          " ORDER BY start DESC", (lo, t0 - BEFORE_MAX_S)):
+        d = min(r[1], lo) - r[0]
+        if d <= 0:
+            continue
+        lo, need = r[0], need - d
+        if need <= 0:
+            break
+    return lo
+
+
+def _seg_brief(g) -> str:
+    """A segments row in one short line, for the rulings list: when, how long, what."""
+    end = g["end"] if g["end"] is not None else g["start"]
+    if g["idle"]:
+        return f"{_t(g['start'])} {_durtext(end - g['start'])} AWAY (no input)"
+    return (f"{_t(g['start'])} {_durtext(end - g['start'])} {_one(g['app'])}"
+            + (f" | site: {g['domain']}" if g["domain"] else "")
+            + (f" | title: “{_one(g['title'])}”" if _one(g["title"]) else "")
+            + (f" | url: {g['url']}" if g["url"] else ""))
+
+
+def _durtext(sec: float) -> str:
+    from .summaries import dur_text
+    return dur_text(sec)
+
+
+def _seg_moments(mom: dict, s: dict) -> list[dict]:
+    """The capture moments to show for one segment to judge: all of them up to three, then about
+    one per two minutes with the first and the last, at most SEG_MOMENTS_MAX."""
+    ms = mom.get(s["id"]) or []
+    if len(ms) <= 3:
+        return list(ms)
+    from . import shots as _shots
+    dur = (s.get("end_eff") or s.get("clip_end") or 0) - s.get("start", 0)
+    return _shots.spread(ms, min(len(ms), SEG_MOMENTS_MAX, max(3, int(dur // 120) + 2)))
+
+
+def _moment_images(m: dict, what: str, app: str, both: bool = True) -> list[dict]:
+    """Label + file for the image(s) of one capture moment: the active display, then the other
+    display(s) when `both`. Until 2026-11-20 only the active display was ever sent, though a
+    quarter of capture moments have a second file: notes beside a text, a call, a video."""
+    a = m["active"]
+    out = [{"ts": m["ts"], "path": a["path"],
+            "label": f"Screenshot - {what} id={m['segment_id']} (taken {_t(m['ts'])}, {app}) - "
+                     + ("active display:" if m.get("active_known", True) else
+                        f"display {a['display']} (the active display's file is no longer on disk):")}]
+    for o in (m["others"] if both else []):
+        out.append({"ts": m["ts"] + 0.001, "path": o["path"],
+                    "label": f"Screenshot - {what} id={m['segment_id']} (taken {_t(m['ts'])}, {app}) - "
+                             "other display (not the one holding this segment's window):"})
+    return out
+
+
+def _image_content(images: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(message content blocks, [{path, label}] for eval_runs.shots) for the chosen images, in
+    time order. A file that cannot be read after all is left out (and so not claimed)."""
+    from .classifiers.claude_vision import _b64
+    content, meta = [], []
+    for im in sorted(images, key=lambda x: x["ts"]):
+        b = _b64(im["path"])
+        if not b:
+            continue
+        meta.append({"path": im["path"], "label": im["label"]})
+        content.append({"type": "text", "text": im["label"]})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+    return content, meta
+
+
+def _last_seen(conn, s: dict, d0: float, ctx0: float) -> str:
+    """For a segment to judge: when the same window (app + title + URL) was last in front
+    earlier in its day, before the log shown. A comeback after 12 minutes or two hours looks the
+    same as a new start when the earlier visit is out of view (35% of segments judged a shift)."""
+    if not (s.get("title") or s.get("url")):
+        return ""     # an app with no recorded title: "the same app" says too little
+    r = conn.execute("""SELECT g.id, g.start, g.end, e.content, e.switch_label, e.focused, e.self_distraction
+                        FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+                        WHERE g.app=? AND g.title=? AND g.url=? AND g.idle=0 AND g.start >= ? AND g.start < ?
+                          AND COALESCE(g.end, g.start) <= ? ORDER BY g.start DESC LIMIT 1""",
+                     (s["app"], s.get("title") or "", s.get("url") or "", d0, s["start"], ctx0)).fetchone()
+    if r is None:
+        return ""
+    n, tot = conn.execute("""SELECT COUNT(*), COALESCE(SUM(COALESCE(end, start) - start), 0) FROM segments
+                             WHERE app=? AND title=? AND url=? AND idle=0 AND start >= ? AND start < ?""",
+                          (s["app"], s.get("title") or "", s.get("url") or "", d0, s["start"])).fetchone()
+    if r["content"]:
+        j = f"judged <{r['content']}>" + ("" if r["focused"] is None else (" <focused>" if r["focused"] else " <unfocused>")) \
+            + f" <switch: {shown_switch(r['switch_label']) or 'continuation'}" + (", self-distraction" if r["self_distraction"] else "") + ">"
+    else:
+        j = "not judged"
+    return (f"earlier today: before the log shown here, this same window (app, title and url) was last in front at {_t(r['start'])} for "
+            f"{_durtext((r['end'] or r['start']) - r['start'])} (id={r['id']}), {j}; {n} earlier visit(s) today, {_durtext(tot)} in all")
+
+
+def _toggl_lines(conn, lo: float, hi: float, T0: float | None, T1: float | None, mark: str = "EVALUATE") -> tuple[list[str], dict]:
+    """The Toggl entries overlapping [lo, hi), one line each with times to the second, project
+    and tags, and which were running during the stretch to judge [T0, T1]. Until 2026-11-20 only
+    the entries overlapping the 20-odd minutes shown were listed, description only: of 2,409
+    first-pass prompts that said "(none)", 1,894 had entries earlier that day. An entry with no
+    stop is printed as still running with the time of the last sync - it used to be printed as
+    ending at the time of the call, which reads as stopped. Returns (lines, {entry id: row})."""
+    from . import toggl
+    rows = toggl.entries_between(conn, lo, hi)
+    out = []
+    for e in rows:
+        stop = e["stop"]
+        span = (f"{_t(e['start'])}-{_t(stop)} ({_durtext(stop - e['start'])})" if stop is not None else
+                f"{_t(e['start'])}-still running (as of the last sync with Toggl, {_t(e['synced'], '%Y-%m-%d %H:%M')})")
+        what = (f"“{_one(e['description'])}”" if e["description"] else "(no description)") \
+            + (f" | project: {e['project']}" if e["project"] else "") + (f" | tags: {e['tags']}" if e["tags"] else "")
+        note = ""
+        if T0 is not None and e["start"] < T1 and (stop is None or stop > T0):
+            whole = e["start"] <= T0 and (stop is None or stop >= T1)
+            note = f"   <- running during {'all' if whole else 'part'} of the {mark} stretch"
+        out.append(f"  {span}  {what}{note}")
+    return out, {e["id"]: e for e in rows}
+
+
+def _day_block(conn, t0: float, T0: float | None, T1: float | None, ctx0: float, ctx1: float, now: float,
+               mark: str = "EVALUATE") -> tuple[str, dict]:
+    """The "day so far" part of a call: the logical day's focus-span summaries, its judged
+    threads, and all its Toggl entries. What a segment belongs to is often visible only here
+    (work picked up again after an hour). Returns (text, {toggl entry id: row})."""
+    from . import stats
+    from .config import day_bounds, logical_date
+    d0, d1 = day_bounds(logical_date(t0))
+    hi = min(d1, now)
+    parts = []
+    sums = conn.execute("SELECT * FROM span_summaries WHERE start < ? AND end > ? ORDER BY start", (d1, d0)).fetchall()
+    if sums:
+        parts.append("Focus-span candidates the app has summarized this day (each written by a model from the judgments "
+                     "in force at the time; descriptions, not rulings):\n" + "\n".join(
+                         f"  {_t(r['start'])}-{_t(r['end'])} ({_durtext(r['end'] - r['start'])})"
+                         + (f"  “{_one(r['title'])}”" if r["title"] else "") + f": {_one(r['summary'])}"
+                         + ("" if r["coherent"] else f"  [the app's own check doubted this is one object of attention: {_one(r['issue'])}]")
+                         for r in sums))
+    else:
+        parts.append("Focus-span candidates summarized this day: none yet.")
+    # Threads: chains of judged segments linked by thread pointers; a shift (or a first segment) starts one.
+    day = [s for s in stats.labelled_segments(conn, d0, hi, phone=False)
+           if s["duration"] > 0 and not s["idle"] and not s.get("neutral") and s.get("source") in ("eval", "review")]
+    root: dict = {}
+    prev = None
+    for s in day:
+        a = s.get("antecedent_id")
+        if s.get("switch") in ("continuation", "return") and a in root:
+            root[s["id"]] = root[a]
+        elif s.get("switch") == "continuation" and prev is not None:
+            root[s["id"]] = root[prev]     # a continuation stored without a pointer continues the line before it
+        else:
+            root[s["id"]] = s["id"]
+        prev = s["id"]
+    threads: dict = {}
+    for s in day:
+        th = threads.setdefault(root[s["id"]], {"start": s["clip_start"], "end": s["clip_end"], "sec": 0.0, "n": 0,
+                                                "content": {}, "foc": 0.0, "focn": 0.0, "win": {}})
+        th["end"] = max(th["end"], s["clip_end"])
+        th["sec"] += s["duration"]
+        th["n"] += 1
+        th["content"][s.get("content") or "?"] = th["content"].get(s.get("content") or "?", 0.0) + s["duration"]
+        if s.get("focused") is not None:
+            th["focn"] += s["duration"]
+            th["foc"] += s["duration"] if s["focused"] else 0.0
+        w = _one(s.get("app")) + (f" | {s['domain']}" if s.get("domain") else "") + (f" | “{_one(s['title'])}”" if _one(s.get("title")) else "")
+        th["win"][w] = th["win"].get(w, 0.0) + s["duration"]
+    big = [th for th in threads.values() if th["sec"] >= 60]
+    small = [th for th in threads.values() if th["sec"] < 60]
+    if big:
+        lines = []
+        for th in sorted(big, key=lambda x: x["start"]):
+            cont = ", ".join(f"{c} {_durtext(v)}" for c, v in sorted(th["content"].items(), key=lambda x: -x[1]))
+            wins = "; ".join(f"{w} ({_durtext(v)})" for w, v in sorted(th["win"].items(), key=lambda x: -x[1])[:3])
+            foc = f", {100 * th['foc'] / th['focn']:.0f}% of it judged focused" if th["focn"] else ""
+            lines.append(f"  {_t(th['start'])}-{_t(th['end'])}: {_durtext(th['sec'])} in {th['n']} segment(s); {cont}{foc}; mostly {wins}")
+        parts.append("Threads the app has put together this day from the judgments it holds (a thread = segments linked by "
+                     "thread pointers; first to last time, time in it, content, main windows; threads of a minute or more):\n"
+                     + "\n".join(lines)
+                     + (f"\n  plus {len(small)} shorter thread(s), {_durtext(sum(th['sec'] for th in small))} in all" if small else ""))
+    else:
+        parts.append("Threads judged this day so far: none of a minute or more"
+                     + (f" ({len(small)} shorter, {_durtext(sum(th['sec'] for th in small))} in all)." if small else "."))
+    tl, entries = _toggl_lines(conn, min(d0, ctx0), max(hi, ctx1), T0, T1, mark)
+    parts.append("Toggl entries this day (all of them, as Toggl has them now; times to the second):\n"
+                 + ("\n".join(tl) if tl else "  (none)"))
+    return "\n\n".join(parts), entries
+
+
+def _log_lines(conn, segs: list[dict], marks: dict, entries: dict, history: bool = False,
+               notes: dict | None = None) -> list[tuple[float, int, str]]:
+    """The activity log's computer lines, one entry per segment (with its indented sub-lines):
+    [(start, 0, text)]. `marks` {segment id: prefix} names the segments to judge; every other
+    line is "(context id=N)". `notes` {segment id: [extra sub-lines]}. One builder for the
+    evaluator and the daily audit, so both read the same thing."""
+    from . import signals as _signals, summaries
+    ids = [s["id"] for s in segs if s["duration"] > 0]
+    evrow, rulings = {}, {}
+    for k in range(0, len(ids), 500):
+        part = ids[k:k + 500]
+        qs = ",".join("?" * len(part))
+        evrow.update({r["segment_id"]: r for r in conn.execute(
+            f"SELECT segment_id, rationale, created FROM seg_evals WHERE segment_id IN ({qs})", part)})
+        rulings.update({r["segment_id"]: r for r in conn.execute(f"SELECT * FROM seg_reviews WHERE segment_id IN ({qs})", part)})
+    out, prev_app = [], None
+    for s in segs:
+        if s["duration"] <= 0:
+            continue
+        idle = bool(s["idle"]) or s.get("state") == "idle"
+        e, rv = evrow.get(s["id"]), rulings.get(s["id"])
+        te = entries.get(s.get("toggl_id"))
+        s2 = dict(s, toggl_project=(te["project"] if te else ""))
+        real = dict(s, clip_start=s["start"], clip_end=s["end_eff"])   # signals over the whole segment, not the part in the window
+        # Context lines carry their id too: the antecedent of the first segment to judge is
+        # usually a context line, and without an id there the evaluator named a LATER segment
+        # instead (195 pointers dropped as invalid, 2026-11-13 to 11-20).
+        mark = marks.get(s["id"]) or f"(context id={s['id']}) "
+        # what the Mac recorded beside the capture: how the app came forward, how the page
+        # was reached, input rates, audio / microphone / camera (signals.py)
+        sig = _signals.describe(conn, real, prev_app, full=True) if not idle else []
+        prev_app = None if idle else s.get("app")
+        # (history re-judgment: a judgment from before the effort fix is an earlier quick pass, not settled fact)
+        quick = history and e is not None and e["created"] < LOW_EFFORT_FIXED_AT
+        line = (mark + summaries.seg_line(s2, full=True, ruling=rv, quick_pass=quick)
+                + (f"  [{'; '.join(sig)}]" if sig else "")
+                # the whole note: cut at 80 characters, 73% of them ended mid-word, and in a context
+                # line the note is the only description of what was on screen
+                + ((("  // the app's note (it may predate their ruling): " if rv is not None else
+                     "  // quick-pass note: " if quick else "  // note: ") + _one(e["rationale"]))
+                   if e is not None and e["rationale"] and not idle else ""))
+        subs = []
+        if not idle:
+            a, b = s["start"], s["end_eff"]
+            if b - a > 120:
+                strip = _signals.minute_strip(conn, a, b)
+                if strip:
+                    subs.append("input by minute (keys/clicks/scroll events/pointer moves): " + strip)
+            ps = _signals.pauses(conn, a, b)
+            if ps:
+                subs.append("no input: " + "; ".join(f"{_t(x)}-{_t(y)} ({_durtext(y - x)})" for x, y in ps))
+            if s.get("app") == "Google Chrome":
+                loads = _signals.page_load_lines(conn, a, b)
+                if loads:
+                    more = len(loads) - PAGE_LOADS_MAX
+                    subs.append("page loads during this segment:\n" + "\n".join("        " + x for x in loads[:PAGE_LOADS_MAX])
+                                + (f"\n        ... and {more} more page load(s) after these, not listed" if more > 0 else ""))
+        subs += (notes or {}).get(s["id"], [])
+        out.append((s["clip_start"], 0, line + "".join("\n      " + x for x in subs)))
+    return out
+
+
+def _phone_lines(conn, picks_all: list[dict], pick_keys: set, pk_have: dict) -> list[tuple[float, int, str]]:
+    """PHONE lines, one per app segment of each pickup in view: [(start, 1, text)]. Those of a
+    pickup in `pick_keys` are marked EVALUATE PHONE; the rest are context and carry the judgment
+    they already have."""
+    from . import signals as _signals
+    out = []
+    for p in picks_all:
+        for gi, g in enumerate(p["segs"]):
+            had = pk_have.get(g["key"])
+            bits = [_t(g["start"]), _durtext(g["end"] - g["start"])]
+            if p["lock_screen"]:
+                bits.append("glanced at the iPhone's lock screen, did not unlock it")
+            else:
+                bits.append("iPhone: " + g["app"])
+                if g["how"]:
+                    bits.append("(opened from " + ("a notification" if g["how"] == "notification" else
+                                                   g["how"] if g["how"] == "another app" else "the " + g["how"]) + ")")
+                if gi == 0:
+                    bits.append("(phone unlocked)")
+                if g["first_today"]:
+                    bits.append(f"(first {g['app']} open today)")
+                if gi == len(p["segs"]) - 1:
+                    bits.append("(then left open, untouched)" if p["put_down"] else "(then locked)")
+            if (p["key"] not in pick_keys or p["lock_screen"]) and had is not None and had["switch_label"]:
+                bits.append(f"<{had['content']}>")
+                bits.append("<focused>" if had["focused"] else "<unfocused>")
+                if had["switch_label"] == "interruption":
+                    bits.append("<switch: shift" + (", self-distraction" if had["self_distraction"] else "")
+                                + (", next task in the block" if had["next_task"] else "") + ">")
+                elif had["switch_label"] == "return":
+                    bits.append("<switch: return>")
+            # Whether the Mac was being used meanwhile is the one direct sign of whether the phone
+            # was in hand (run 13251: a 20 s Oura look attached to the work on screen, unseen).
+            used = "" if p["lock_screen"] else _signals.input_around(conn, g["start"], g["end"])
+            if used:
+                bits.append(f"[{used}]")
+            out.append((g["start"], 1, (f"EVALUATE PHONE id=P{g['key']}: " if p["key"] in pick_keys and not p["lock_screen"]
+                                         else "(context) PHONE ") + "  ".join(bits)))
+    return out
+
+
+def _call_header(t0: float, T0: float | None, T1: float | None, now: float, what: str = "judge") -> str:
+    from .config import day_start_hour, system_zone_name, zone_at
+    z = zone_at(t0)
+    zn = getattr(zone_at(now), "key", None) or system_zone_name() or "the Mac's system zone"
+    zone = getattr(z, "key", None) or system_zone_name() or "the Mac's system zone"
+    ago = ""
+    if T1 is not None:
+        d = now - T1
+        ago = (f"; the last segment to {what} ended " +
+               (f"{d / 60:.0f} minutes" if d < 2 * 3600 else f"{d / 3600:.0f} hours" if d < 2 * 86400 else f"{d / 86400:.0f} days")
+               + " before that")
+    return (f"THIS CALL: activity of {_t(t0, '%A %Y-%m-%d')} (the person's days run from {day_start_hour()}:00 to {day_start_hour()}:00; times are in "
+            f"{zone}, the zone their Mac was in that day)"
+            + (f". Segments to {what}: {_t(T0)} to {_t(T1)}" if T0 is not None else "")
+            + f". This call is being made at {_t(now, '%Y-%m-%d %H:%M')} ({zn} time){ago}.")
 
 
 _ev = None
@@ -326,87 +765,254 @@ class ChunkEvaluator:
             raise RuntimeError("no Anthropic credentials")
         self._examples_stamp = None
         self._system = None
+        self._judged_cache: dict = {}   # (segment id, ruling time) -> what the app had judged before that ruling
+        self.last_end = 0.0             # where the last evaluate_chunk call stopped (see there)
 
-    # Precedents (the person's rulings on past segments) reach the model two ways. The newest
-    # RECENT_PRECEDENTS go in the system prompt: they carry his latest thinking, and the prompt
-    # stays cacheable. The ones that RESEMBLE the segments being judged go in each call's own
-    # message (_similar_precedents) - before 2026-11-19 only the latest 20 of ~300 were ever
-    # shown, picked by recency, so most of what he had taught was invisible on any given call.
-    RECENT_PRECEDENTS = 8
+    # The person's rulings on past segments reach the model in full, in the cached system prompt
+    # (_rulings_block). Until 2026-11-19 only the latest 20 of ~300 were shown; then the 8 newest
+    # plus up to 20 "similar" ones per call, as one line each (app, site, 60 characters of title,
+    # verdict, note). Measured on 2026-11-20: only 115 of 326 rulings had appeared in any prompt;
+    # 96 had neither title nor site, so they read "Agent Coding | -> shift"; a Chrome ruling with
+    # no site matched every Chrome segment (one was shown in 59 runs, one for a cloud console
+    # page); and none said what the segment had continued or left, though a switch ruling is
+    # about exactly that. Each call still names the few rulings whose site or title matches its
+    # segments (_similar_precedents), as a pointer into the full list.
     SIMILAR_PRECEDENTS = 20
-    _PREC_SQL = """SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task,
-                          r.note, r.hybrid, r.created, g.app, g.domain, g.title
+    _PREC_SQL = """SELECT r.*, g.app, g.domain, g.title, g.url, g.start AS g_start, g.end AS g_end
                    FROM seg_reviews r JOIN segments g ON g.id = r.segment_id ORDER BY r.created DESC"""
 
     @staticmethod
     def _precedent_line(r) -> str:
-        what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
-        verdict = " / ".join(v for v in (
-            r["content"], shown_switch(r["switch_label"]),
-            None if r["focused"] is None else ("focused" if r["focused"] else "unfocused"),
-            "self-distraction" if r["self_distraction"] else None,
-            "next task in the block" if r["next_task"] else None) if v)
-        if r["hybrid"]:
-            verdict += " + hybrid (inside a live discussion)"
-        elif r["hybrid"] == 0:
-            verdict += " (solo, not hybrid)"
-        note = f" ({r['note']})" if r["note"] else ""
-        return f"- {what} -> {verdict}{note}"
+        """One ruling in one line (the question writer's precedents, and the per-call pointers)."""
+        from .summaries import verdict_text
+        what = (f"{_one(r['app'])}" + (f" | site: {r['domain']}" if r["domain"] else "")
+                + (f" | title: “{_one(r['title'])}”" if _one(r["title"]) else "") + (f" | url: {r['url']}" if r["url"] else ""))
+        note = f" ({_one(r['note'])})" if r["note"] else ""
+        return f"- segment id={r['segment_id']}, {_t(r['g_start'], '%Y-%m-%d %H:%M')}: {what} -> {verdict_text(r)}{note}"
 
-    def _examples(self, conn) -> str:
-        rows = conn.execute(self._PREC_SQL + " LIMIT ?", (self.RECENT_PRECEDENTS,)).fetchall()
+    @staticmethod
+    def _group_key(r):
+        """Rulings made in one act (one chat proposal applied to a run of segments, or one bulk
+        edit: the same second and note) are one entry: four notes cover 134 of 326 rulings."""
+        return (r["chat_message_id"] if r["chat_message_id"] is not None else int(r["created"]), r["note"] or "")
+
+    def _rulings(self, conn) -> list:
+        """Every ruling that sets at least one field, newest first. One that sets none says
+        nothing (the ruling on 36249 stood in every prompt as "->  (solo, not hybrid)" beside a
+        note about a Toggl entry, until hybrid was its only field; a row with no field at all
+        would read as an empty verdict)."""
+        from .summaries import verdict_text
+        # ("solo, not hybrid" alone is that case: the block editor stored hybrid=0 with every save)
+        return [r for r in conn.execute(self._PREC_SQL).fetchall() if verdict_text(r) not in ("", "solo, not hybrid")]
+
+    def _app_judged(self, conn, r) -> str:
+        """What the app had judged for a ruled segment BEFORE the person ruled - the thing they
+        corrected or confirmed. The live seg_evals row when it is older than the ruling; when
+        the segment was judged again since (102 of 326), the answer in the transcript of the
+        last evaluation run before the ruling (eval_runs.response)."""
+        from .summaries import verdict_text
+        e = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (r["segment_id"],)).fetchone()
+        if e is not None and e["created"] <= r["created"]:
+            bits = [f"content={e['content']}", f"switch={shown_switch(e['switch_label']) or 'continuation'}",
+                    f"continues id={e['antecedent_id']}" if e["antecedent_id"] else None,
+                    None if e["focused"] is None else ("focused" if e["focused"] else "unfocused"),
+                    "self-distraction" if e["self_distraction"] else None,
+                    "next task in the block" if e["next_task"] else None,
+                    "hybrid (inside a live discussion)" if e["hybrid"] else None,
+                    f"kind of shift (older label)={e['interruption_kind']}" if e["interruption_kind"] and e["focused"] is None else None,
+                    "flagged uncertain" if e["uncertain"] else None]
+            return ", ".join(b for b in bits if b) + (f" - “{_one(e['rationale'])}”" if e["rationale"] else "")
+        for run in conn.execute("""SELECT response FROM eval_runs WHERE t0 <= ? AND t1 >= ? AND created < ?
+                                   AND response IS NOT NULL ORDER BY created DESC LIMIT 6""",
+                                (r["g_start"], r["g_start"], r["created"])):
+            try:
+                js = json.loads(run["response"])
+                j = next((x for x in (js.get("segments", []) if isinstance(js, dict) else js)
+                          if x.get("segment_id") == r["segment_id"]), None)
+            except (ValueError, AttributeError, TypeError):
+                j = None
+            if j:
+                sw = shown_switch(stored_switch(str(j.get("switch") or "").strip().lower())) or j.get("switch")
+                kind = j.get("shift_kind") or j.get("interruption_kind")
+                bits = [f"content={j.get('content')}", f"switch={sw}",
+                        None if "focused" not in j else ("focused" if j["focused"] else "unfocused"),
+                        "self-distraction" if j.get("self_distraction") else None,
+                        "next task in the block" if j.get("next_task") else None,
+                        "hybrid (inside a live discussion)" if j.get("hybrid") else None,
+                        f"kind of shift (older label)={kind}" if kind and "focused" not in j else None]
+                return ", ".join(b for b in bits if b) + (f" - “{_one(j.get('note'))}”" if j.get("note") else "")
+        return "not on record (no judgment was stored for it before the ruling)"
+
+    def _rulings_block(self, conn) -> str:
+        """All of the person's rulings, oldest first, for the system prompt. Per ruling: when and
+        what the segment was (app, site, whole title, URL), the Toggl entry then, the line before
+        and the line after, what it continued (for a continuation / return ruling), what the app
+        had judged, the review question and its context when the ruling was an answer to one,
+        and the fields they set with their note."""
+        from . import toggl
+        from .summaries import verdict_text
+        rows = self._rulings(conn)
         if not rows:
             return ""
-        return "\n".join(["The person has corrected past judgments - follow these precedents (their most recent"
-                          " rulings; each call also lists the past rulings that resemble its own segments):"]
-                         + [self._precedent_line(r) for r in rows])
+        qs = [q for q in conn.execute("SELECT * FROM review_questions WHERE status='answered' AND answered_at IS NOT NULL")]
+        qopts = {}
+        for q in qs:
+            try:
+                o = json.loads(q["options"])[q["answer_index"]] if q["answer_index"] is not None else {}
+            except (ValueError, IndexError, TypeError):
+                o = {}
+            qopts[q["id"]] = o.get("segment_id") if isinstance(o, dict) else None
+        groups: dict = {}
+        for r in reversed(rows):     # oldest first
+            groups.setdefault(self._group_key(r), []).append(r)
+        out = [f"THE PERSON'S RULINGS ({len(rows)} segments ruled on, in {len(groups)} entries, oldest first; where two "
+               "disagree the later one is their current view). Times are in the zone they were in that day. \"the app had "
+               "judged\" is what stood before they ruled: where their ruling differs it is a correction, where it matches "
+               "they confirmed it."]
+        for members in groups.values():
+            members = sorted(members, key=lambda r: r["g_start"])
+            ids = {r["segment_id"] for r in members}
+            note = _one(members[0]["note"])
+            verdicts = {verdict_text(r) for r in members}
+            head = (f"Ruling on segment id={members[0]['segment_id']}" if len(members) == 1 else
+                    f"One ruling covering {len(members)} segments (ids {', '.join(str(r['segment_id']) for r in members)})")
+            lines = [f"{head}, made {_t(members[0]['created'], '%Y-%m-%d %H:%M')}:"]
+            for r in members:
+                end = r["g_end"] if r["g_end"] is not None else r["g_start"]
+                pre = "  " if len(members) == 1 else "    "
+                if len(members) > 1:
+                    lines.append(f"  - segment id={r['segment_id']}")
+                lines.append(f"{pre}the segment: {_t(r['g_start'], '%a %Y-%m-%d')} " + _seg_brief(
+                    {"start": r["g_start"], "end": end, "idle": 0, "app": r["app"], "domain": r["domain"], "title": r["title"], "url": r["url"]}))
+                te = toggl.entry_at(conn, r["g_start"])
+                lines.append(f"{pre}toggl then: " + (toggl.describe(te) if te else "no entry running"))
+                b = conn.execute("SELECT * FROM segments WHERE start < ? AND COALESCE(end, start) > start ORDER BY start DESC LIMIT 1",
+                                 (r["g_start"],)).fetchone()
+                a = conn.execute("SELECT * FROM segments WHERE start > ? AND COALESCE(end, start) > start ORDER BY start LIMIT 1",
+                                 (r["g_start"],)).fetchone()
+                if b is not None:
+                    lines.append(f"{pre}just before: " + (f"segment id={b['id']} of this ruling" if b["id"] in ids else _seg_brief(b)))
+                if a is not None:
+                    lines.append(f"{pre}just after: " + (f"segment id={a['id']} of this ruling" if a["id"] in ids else _seg_brief(a)))
+                if r["antecedent_id"]:
+                    g2 = conn.execute("SELECT * FROM segments WHERE id=?", (r["antecedent_id"],)).fetchone()
+                    if g2 is not None:
+                        lines.append(f"{pre}what they say it continued (id={g2['id']}): " + _seg_brief(g2))
+                key = (r["segment_id"], r["created"])
+                if key not in self._judged_cache:
+                    self._judged_cache[key] = self._app_judged(conn, r)
+                lines.append(f"{pre}the app had judged: " + self._judged_cache[key])
+                q = next((q for q in qs if abs(q["answered_at"] - r["created"]) < 5
+                          and r["segment_id"] in (q["segment_id"], qopts.get(q["id"]))), None)
+                if q is not None:
+                    lines.append(f"{pre}they were asked: {_one(q['context'])} {_one(q['question'])}")
+                    lines.append(f"{pre}they answered: “{_one(q['answer'])}”"
+                                 + (f"; their note on the answer: “{_one(q['note'])}”" if _one(q["note"]) and _one(q["note"]) != note else ""))
+                if len(verdicts) > 1:
+                    lines.append(f"{pre}THEIR RULING for this segment: " + verdict_text(r))
+            lines.append("  THEIR RULING" + (" (each segment as listed)" if len(verdicts) > 1 else ": " + next(iter(verdicts)))
+                         + (f"; their note: “{note}”" if note else ""))
+            out.append("\n".join(lines))
+        try:
+            ph = conn.execute("""SELECT v.*, p.app, p.start AS p_start, p.end AS p_end, p.content AS e_content, p.switch_label AS e_switch,
+                                        p.focused AS e_focused, p.rationale FROM phone_reviews v JOIN phone_evals p ON p.seg_key = v.seg_key
+                                 ORDER BY v.created""").fetchall()
+        except Exception:   # a database from before the phone tables
+            ph = []
+        if ph:
+            lines = ["Their rulings on PHONE segments (app on the iPhone's screen; nothing else is known of them):"]
+            for v in ph:
+                bits = [f"switch={shown_switch(v['switch_label'])}" if v["switch_label"] else None,
+                        f"content={v['content']}" if v["content"] else None,
+                        None if v["focused"] is None else ("focused" if v["focused"] else "unfocused"),
+                        None if v["self_distraction"] is None else ("self-distraction" if v["self_distraction"] else "not a self-distraction"),
+                        None if v["away"] is None else ("time away from what was on the Mac" if v["away"] else "part of what was on the Mac")]
+                lines.append(f"  - {_t(v['p_start'], '%a %Y-%m-%d %H:%M:%S')} {_durtext(v['p_end'] - v['p_start'])} iPhone: {v['app']}; "
+                             f"the app had judged: content={v['e_content']}, switch={shown_switch(v['e_switch'])} - “{_one(v['rationale'])}”; "
+                             f"THEIR RULING: {', '.join(b for b in bits if b) or '(no field set)'}"
+                             + (f"; their note: “{_one(v['note'])}”" if v["note"] else ""))
+            out.append("\n".join(lines))
+        return "\n\n".join(out)
+
+    def _examples(self, conn) -> str:
+        return self._rulings_block(conn)
 
     @staticmethod
     def _title_words(t: str | None) -> set:
         return {w for w in re.findall(r"[a-z0-9]{3,}", (t or "").lower())}
 
-    def _similar_precedents(self, conn, target: list[dict], skip_recent: bool = True) -> str:
-        """The person's past rulings on segments like the ones in `target`: same site (4), same
-        app where there is no site to compare (3), same app but another site (1), plus up to 3
-        for shared window-title words. A ruling needs 2 or more against some target segment;
-        the best SIMILAR_PRECEDENTS are listed, at most 5 per app+site so one busy site does
-        not crowd out the rest, newer first among equals. The newest few are in the system
-        prompt already and are left out here (skip_recent=False keeps them, for a caller that
-        does not use that system prompt: the question writer)."""
-        rows = conn.execute(self._PREC_SQL).fetchall()[self.RECENT_PRECEDENTS if skip_recent else 0:]
+    def _similar_precedents(self, conn, target: list[dict], skip_recent: bool = True, pointers: bool = False) -> str:
+        """The person's past rulings on segments like the ones in `target`. A ruling counts only
+        on a REAL match: the same site (an empty site and Chrome's "newtab" are not sites), or
+        window titles that share most of their words, or - for an app that never records titles -
+        the same app. (Until 2026-11-20 "same app, no site on either side" scored as a match, so
+        a Chrome ruling with no site was listed for every Chrome segment.) Rulings made in one
+        act are listed once; at most 5 per app+site, the best SIMILAR_PRECEDENTS in all, newer
+        first among equals. With `pointers` (the evaluator, which has every ruling in its system
+        prompt) the lines point into that list; without (the question writer) they stand alone.
+        `skip_recent` is kept for the callers that pass it; it no longer changes anything."""
+        rows = self._rulings(conn)
         tids = {s["id"] for s in target}
-        tg = [(s.get("app") or "", s.get("domain") or "", self._title_words(s.get("title"))) for s in target]
-        scored = []
+        real = lambda d: d if d and d != "newtab" else ""
+        tg = [(s.get("app") or "", real(s.get("domain") or ""), self._title_words(s.get("title")), s["id"]) for s in target]
+        titled: dict = {}
+
+        def has_titles(app):
+            if app not in titled:
+                titled[app] = conn.execute("SELECT 1 FROM segments WHERE app=? AND title != '' LIMIT 1", (app,)).fetchone() is not None
+            return titled[app]
+        scored, seen = [], set()
         for r in rows:
             if r["segment_id"] in tids:
                 continue
-            ra, rd, rw = r["app"] or "", r["domain"] or "", self._title_words(r["title"])
-            best = 0.0
-            for ta, td, tw in tg:
-                sc = 4.0 if rd and rd == td else (0.0 if ra != ta else 3.0 if not (rd and td) else 1.0)
-                if rw and tw:
-                    sc += 3.0 * len(rw & tw) / len(rw | tw)
-                best = max(best, sc)
-            if best >= 2.0:
-                scored.append((best, r))
+            ra, rd, rw = r["app"] or "", real(r["domain"] or ""), self._title_words(r["title"])
+            best, like = 0.0, None
+            for ta, td, tw, tid in tg:
+                sc = 4.0 if rd and rd == td else 0.0
+                shared = rw & tw
+                if rw and tw and (rw == tw or (len(shared) >= 2 and len(shared) / len(rw | tw) >= 0.34)):
+                    sc += 3.0 * len(shared) / len(rw | tw) + (0.5 if ra == ta else 0.0)
+                if not sc and ra == ta and not rd and not td and not rw and not tw and not has_titles(ra):
+                    sc = 2.0
+                if sc > best:
+                    best, like = sc, tid
+            dedupe = (self._group_key(r), ra, rd, _one(r["title"]))
+            if best > 0 and dedupe not in seen:
+                seen.add(dedupe)
+                scored.append((best, r, like))
         scored.sort(key=lambda x: (-x[0], -x[1]["created"]))
         out, per = [], {}
-        for _, r in scored:
+        for _, r, like in scored:
             k = (r["app"], r["domain"])
             if per.get(k, 0) >= 5:
                 continue
             per[k] = per.get(k, 0) + 1
-            out.append(r)
+            out.append(self._precedent_line(r) + (f"   [same site or title as id={like}]" if pointers else ""))
             if len(out) >= self.SIMILAR_PRECEDENTS:
                 break
         if not out:
             return ""
-        return "\n".join(["The person's past rulings on segments that resemble ones in this stretch - follow these precedents:"]
-                         + [self._precedent_line(r) for r in out])
+        head = ("Rulings of theirs on the same site or window title as a segment in this call (each is in full in your "
+                "instructions, under its segment id; this list is a pointer, not a selection - their other rulings apply as much):"
+                if pointers else
+                "The person's past rulings on segments that resemble ones in this stretch - follow these precedents:")
+        return "\n".join([head] + out)
 
     def _system_blocks(self, conn) -> list[dict]:
         from .classifiers.claude_vision import _rules_doc, _rules_mtime
-        stamp = (conn.execute("SELECT COALESCE(MAX(created),0) FROM seg_reviews").fetchone()[0], _rules_mtime())
+        # Rebuilt when ANY ruling is added, changed or removed. The stamp used to be the newest
+        # ruling's time, so undoing or editing an older one left it in the prompt until the next
+        # ruling came in.
+        import hashlib
+        h = hashlib.md5()
+        for r in conn.execute("SELECT * FROM seg_reviews ORDER BY segment_id"):
+            h.update(repr(tuple(r)).encode())
+        try:
+            for r in conn.execute("SELECT * FROM phone_reviews ORDER BY seg_key"):
+                h.update(repr(tuple(r)).encode())
+        except Exception:
+            pass
+        stamp = (h.hexdigest(), _rules_mtime())
         if self._system is None or stamp != self._examples_stamp:
             self._system = SYSTEM.format(rules=_rules_doc(),
                                          about_me=self.cfg.about_me.strip() or "(no description given)",
@@ -415,23 +1021,37 @@ class ChunkEvaluator:
         return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
 
     def evaluate_chunk(self, conn, t0: float, t1: float, extra: str | None = None,
-                       phone_only: bool = False) -> int:
+                       phone_only: bool = False, history: bool = False) -> int:
         """Evaluate all real segments starting in [t0, t1). Local models predict first (and are
         stored for track-record scoring); segments where the locals have EARNED confident
         deferral skip the LLM; the rest go into one LLM call, and the resolved judgment is the
-        accuracy-weighted ensemble of all models. Returns how many segments were judged."""
-        from . import seg_models, stats, summaries, toggl
-        from .classifiers.claude_vision import _b64
-        segs = stats.labelled_segments(conn, t0 - CTX_S, t1 + CTX_S, phone=False)  # pickups are shown as their own lines
+        accuracy-weighted ensemble of all models. Returns how many segments were judged.
+
+        A call never carries more segments than its image budget can show (IMAGE_BUDGET): when
+        the stretch holds more, only its first part is judged, and `self.last_end` says where
+        this call stopped (t1 when it took everything). Callers that re-judge a fixed stretch
+        go on from there; the first pass finds the rest by itself, as unjudged segments.
+        `history` marks a call of the history re-judgment (older judgments in view are shown as
+        an earlier quick pass)."""
+        from . import seg_models, shots as _shots, stats
+        now0 = time.time()
+        self.last_end = t1
+        first_pass = extra is None and not phone_only
+        ctx0 = _context_start(conn, t0)
+        ctx1 = max(t1, min(now0, t1 + (AFTER_FIRST_MAX_S if first_pass else AFTER_REJUDGE_S)))
+        segs = stats.labelled_segments(conn, ctx0, ctx1, phone=False)  # pickups are shown as their own lines
         target = [s for s in segs if t0 <= s["clip_start"] < t1 and not s["idle"]
                   and not s.get("neutral") and s["duration"] > 0]
-        if extra is None and not phone_only:
-            # First pass: only segments that ended at least LAZY_S ago. A long segment starting
-            # just after a short one used to be judged along with it, on its first ten minutes
-            # and sometimes before it had ended (a 33-minute segment judged at minute 15,
-            # 2026-11-19); the judgment was final. It waits for the next cycle instead.
-            settled = time.time() - LAZY_S
-            target = [s for s in target if (s.get("end") or time.time()) <= settled]
+        if not phone_only:
+            # Only segments that ended at least LAZY_S ago. A long segment starting just after a
+            # short one used to be judged along with it, on its first ten minutes and sometimes
+            # before it had ended (a 33-minute segment judged at minute 15, 2026-11-19); the
+            # judgment was final. It waits for the next cycle instead. Re-judgments skipped this
+            # filter until 2026-11-20: run 13375, after a ruling, judged segment 36431 twenty
+            # seconds before it ended, and 20 such early judgments stood. The first pass takes
+            # whatever a re-judgment leaves.
+            settled = now0 - LAZY_S
+            target = [s for s in target if (s.get("end") or now0) <= settled]
         if phone_only:
             # Phone data that arrived late: judge the pickups against the activity already
             # judged, and leave the computer segments' judgments alone. Re-judging them too was
@@ -441,12 +1061,13 @@ class ChunkEvaluator:
         # iPhone pickups in view (phone.pickups). Those starting in [t0, t1) that have no
         # judgment yet are judged in this call; on a re-judgment of the segments all of them are.
         from . import phone as _phone
-        picks_all = _phone.pickups(self.cfg, t0 - CTX_S, t1 + CTX_S)
+        p0 = max(ctx0, t0 - BEFORE_S)
+        picks_all = _phone.pickups(self.cfg, p0, ctx1)
         for p in picks_all:   # lock-screen glances are settled by rule, not by the model
             if p["lock_screen"] and t0 <= p["start"] < t1:
                 store_lock_glance(conn, p)
         pk_have = {r["seg_key"]: r for r in conn.execute(
-            "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (t0 - 2 * CTX_S - 1800, t1 + 2 * CTX_S + 1800))}
+            "SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (p0 - CTX_S - 1800, ctx1 + CTX_S + 1800))}
         # A pickup is judged whole: every app segment in it, when any of them has no judgment.
         picks = [p for p in picks_all if t0 <= p["start"] < t1 and not p["lock_screen"]
                  and ((extra is not None and not phone_only) or any(
@@ -494,91 +1115,120 @@ class ChunkEvaluator:
             conn.execute("INSERT INTO eval_runs(t0, t1, n_segments, cost_usd, created) VALUES (?,?,?,?,?)",
                          (t0, t1, len(deferred), 0.0, now))
             return len(deferred)
-        target_ids = {s["id"] for s in target}
-        all_ids = [s["id"] for s in segs if s["duration"] > 0]
-        rats = {}
-        if all_ids:
-            qsr = ",".join("?" * len(all_ids))
-            rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
-                f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", all_ids)
-                if r2["rationale"]}
-        lines, line_ts = [], []
-        from . import signals as _signals
-        prev_app = None
-        for s in segs:
-            if s["duration"] <= 0:
-                continue
-            # Context lines carry their id too: the antecedent of the first segment to judge is
-            # usually a context line, and without an id there the evaluator named a LATER segment
-            # instead (195 pointers dropped as invalid, 2026-11-13 to 11-20).
-            mark = f"EVALUATE id={s['id']}: " if s["id"] in target_ids else f"(context id={s['id']}) "
-            # what the Mac recorded beside the capture: how the app came forward, how the page
-            # was reached, input rates, audio / microphone / camera (signals.py)
-            sig = _signals.describe(conn, s, prev_app) if s.get("state") != "idle" else []
-            prev_app = None if s.get("state") == "idle" else s.get("app")
-            lines.append(mark + summaries.seg_line(s)
-                         + (f"  [{'; '.join(sig)}]" if sig else "")
-                         + (f"  // prior judgment: {rats[s['id']][:80]}" if s["id"] in rats else ""))
-            line_ts.append(s["clip_start"])
-        pick_keys = {p["key"] for p in picks}
-        hms = lambda t: dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
-        for p in picks_all:   # PHONE lines, one per app segment, slotted into the log by time
-            for gi, g in enumerate(p["segs"]):
-                had = pk_have.get(g["key"])
-                bits = [hms(g["start"]), "%5s" % _dur(g["end"] - g["start"])]
-                if p["lock_screen"]:
-                    bits.append("glanced at the iPhone's lock screen, did not unlock it")
-                else:
-                    bits.append("iPhone: " + g["app"])
-                    if g["how"]:
-                        bits.append("(opened from " + ("a notification" if g["how"] == "notification" else
-                                                       g["how"] if g["how"] == "another app" else "the " + g["how"]) + ")")
-                    if gi == 0:
-                        bits.append("(phone unlocked)")
-                    if g["first_today"]:
-                        bits.append(f"(first {g['app']} open today)")
-                    if gi == len(p["segs"]) - 1:
-                        bits.append("(then left open, untouched)" if p["put_down"] else "(then locked)")
-                if (p["key"] not in pick_keys or p["lock_screen"]) and had is not None and had["switch_label"]:
-                    bits.append(f"<{had['content']}>")
-                    bits.append("<focused>" if had["focused"] else "<unfocused>")
-                    if had["switch_label"] == "interruption":
-                        bits.append("<switch: shift" + (", self-distraction" if had["self_distraction"] else "")
-                                    + (", next task in the block" if had["next_task"] else "") + ">")
-                    elif had["switch_label"] == "return":
-                        bits.append("<switch: return>")
-                line = ((f"EVALUATE PHONE id=P{g['key']}: " if p["key"] in pick_keys else "(context) PHONE ")
-                        + "  ".join(bits))
-                i = sum(1 for t in line_ts if t <= g["start"])
-                lines.insert(i, line)
-                line_ts.insert(i, g["start"])
-        tg = toggl.entries_between(conn, t0 - CTX_S, t1 + CTX_S)
-        tgtxt = "\n".join(f"  {dt.datetime.fromtimestamp(e['start']).strftime('%H:%M')}"
-                          f"-{dt.datetime.fromtimestamp(e['stop'] or time.time()).strftime('%H:%M')}: "
-                          f"{e['description'] or '(unnamed)'}" for e in tg) or "  (none)"
-        content: list[dict] = []
-        from . import shots as _shots
-        shot_ids = list(target_ids) or [s["id"] for s in segs if s["duration"] > 0 and not s["idle"] and any(
-            s["clip_start"] < p["end"] and s["clip_end"] > p["start"] for p in picks)]  # the Mac window behind a pickup
-        shot_rows = _shots.pick(conn, shot_ids, MAX_SHOTS) if shot_ids else []  # the active display at each moment
-        if not shot_rows:  # segments recorded before per-shot history existed
-            shot_rows = [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
-                         for s in target if s.get("first_screenshot")]
+        # -- screenshots ------------------------------------------------------------------
+        shown = [s for s in segs if s["duration"] > 0 and not s["idle"]]
+        mom = _shots.moments(conn, list({s["id"] for s in shown}))
+        if extra is not None and target:
+            # A RE-judgment with no image of a segment must not replace a judgment that may have
+            # been made with one. Files exist only from 2026-10-27 13:35; of the wrong-display
+            # re-judgments on 11-17, 30 runs (activity of 10-13 to 10-27) attached no screenshot
+            # at all and their 244 judgments replaced earlier ones (run 12807, segment 23931:
+            # "With no screenshot from the right display I can't confirm it was publishing work,
+            # so I'm leaning passive"). Such a segment keeps its judgment and is shown as context.
+            judged_ids = {r[0] for r in conn.execute(
+                f"SELECT segment_id FROM seg_evals WHERE segment_id IN ({','.join('?' * len(target))})", [s["id"] for s in target])}
+            blind = [s for s in target if not mom.get(s["id"]) and s["id"] in judged_ids]
+            if blind:
+                log.info("re-judgment %s-%s: %d segment(s) have no screenshot on disk and keep their judgment (ids %s)",
+                         dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"), dt.datetime.fromtimestamp(t1).strftime("%H:%M"),
+                         len(blind), ", ".join(str(s["id"]) for s in blind[:30]))
+                target = [s for s in target if s not in blind]
+                if not target:
+                    # nothing on the Mac can be re-judged here, so the pickups keep their judgments
+                    # too; only one that has none yet is still judged
+                    picks = [p for p in picks if any(g["key"] not in pk_have or pk_have[g["key"]]["switch_label"] is None
+                                                     for g in p["segs"])]
+                if not target and not picks:
+                    return len(deferred)
         app_of = {s["id"]: s["app"] for s in segs}
-        shot_meta: list[dict] = []
-        for r2 in shot_rows[:MAX_SHOTS]:
-            b = _b64(r2["path"])
-            if b:
-                where = f" - EXTERNAL display {r2['display']}" if r2.get("display") else ""
-                label = f"Screenshot of segment id={r2['segment_id']} ({dt.datetime.fromtimestamp(r2['ts']).strftime('%H:%M')} {app_of.get(r2['segment_id'], '')}{where}):"
-                shot_meta.append({"path": r2["path"], "label": label})
-                content.append({"type": "text", "text": label})
-                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        images: list[dict] = []
+        cut = None
+        kept: list[dict] = []
+        room = IMAGE_BUDGET - CONTEXT_IMAGES_MIN
+        for s in target:   # every target's captures first; a target that does not fit is left for the next call
+            ims = [im for m in _seg_moments(mom, s) for im in _moment_images(m, "EVALUATE segment", s["app"])]
+            if kept and len(images) + len(ims) > room:
+                cut = s["clip_start"]
+                break
+            kept.append(s)
+            images += ims
+        if cut is not None:
+            log.info("chunk %s: %d of %d segments fit the image budget (%d images); the rest from %s wait for the next call",
+                     dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"), len(kept), len(target), len(images),
+                     dt.datetime.fromtimestamp(cut).strftime("%H:%M:%S"))
+            target = kept
+            picks = [p for p in picks if p["start"] < cut]
+            t1 = self.last_end = cut
+        # A pickup: what was on the Mac's screen just before it and just after it. (Phone-only
+        # calls used to spread 8 images over the whole Mac segment behind the pickup: in run
+        # 13251 all 8 were from 01:28-01:35 and none bore on the 01:18 pickup.)
+        kept_p: list[dict] = []
+        for p in picks:
+            ims = []
+            for side, m in (("just before", _shots.nearest(conn, p["start"], True)), ("just after", _shots.nearest(conn, p["end"], False))):
+                if m is not None and not any(i["path"] == m["active"]["path"] for i in images + ims):
+                    for im in _moment_images(m, f"the Mac's screen {side} the phone pickup of {_t(p['start'])}, segment", app_of.get(m["segment_id"]) or "", both=not target):
+                        ims.append(im)
+            if len(images) + len(ims) > IMAGE_BUDGET:
+                if not target and kept_p:      # a phone-only call: judge fewer pickups, as with segments
+                    picks = kept_p
+                    t1 = self.last_end = p["start"]
+                    break
+                ims = []                       # beside segments to judge, their own captures come first
+            kept_p.append(p)
+            images += ims
+        # Context segments: first and last capture each, nearest the stretch to judge first, as far
+        # as the budget reaches. A window title can be wrong (run 13302: context lines titled as a
+        # food-delivery page while the screen showed developer documentation), and only an image shows it.
+        T0 = min([s["clip_start"] for s in target] + [p["start"] for p in picks])
+        T1 = max([s["clip_end"] for s in target] + [p["end"] for p in picks])
+        target_ids = {s["id"] for s in target}
+        have_img = {im["path"] for im in images}
+        ctx_segs = sorted((s for s in shown if s["id"] not in target_ids and mom.get(s["id"])),
+                          key=lambda s: min(abs(s["clip_start"] - T1), abs(s["clip_end"] - T0)) if (s["clip_end"] <= T0 or s["clip_start"] >= T1) else 0.0)
+        for s in ctx_segs:
+            ms = mom[s["id"]]
+            ims = [im for m in ([ms[0]] if len(ms) == 1 else [ms[0], ms[-1]])
+                   for im in _moment_images(m, "context segment", s["app"], both=False) if im["path"] not in have_img]
+            if len(images) + len(ims) > IMAGE_BUDGET:
+                break
+            images += ims
+        content, shot_meta = _image_content(images)
+        sent = {m["path"] for m in shot_meta}
+        with_img = {s["id"] for s in target if any(m["active"]["path"] in sent for m in mom.get(s["id"]) or [])}
+        no_img = {s["id"]: _shots.why_none(conn, s["id"]) for s in target if s["id"] not in with_img}
+        # -- the log ----------------------------------------------------------------------
+        from .config import day_bounds, logical_date
+        d0 = day_bounds(logical_date(t0))[0]
+        day_text, entries = _day_block(conn, t0, T0, T1, ctx0, ctx1, now0)
+        notes: dict = {}
+        for s in target:
+            seen_before = _last_seen(conn, s, d0, ctx0)
+            notes[s["id"]] = ([seen_before] if seen_before else []) + (
+                [f"screenshot: none for this segment ({no_img[s['id']]}). That says nothing about what the segment was."]
+                if s["id"] in no_img else [])
+        pick_keys = {p["key"] for p in picks}
+        rows = (_log_lines(conn, segs, {i: f"EVALUATE id={i}: " for i in target_ids}, entries, history=history, notes=notes)
+                + _phone_lines(conn, picks_all, pick_keys, pk_have))
+        lines = [x[2] for x in sorted(rows, key=lambda x: (x[0], x[1]))]   # phone lines slotted in by time
+        all_ids = [s["id"] for s in segs if s["duration"] > 0]
         # Hold-off (Rules doc): only for first-time judgments of activity under an hour old.
         can_hold = extra is None and bool(target) and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
-        similar = self._similar_precedents(conn, target)
-        prompt_text = ((similar + "\n\n" if similar else "")
-                       + f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
+        # phone-only calls: the rulings that resemble the Mac windows behind the pickups (they got none before)
+        like = target or [s for s in shown if any(s["clip_start"] < p["end"] and s["clip_end"] > p["start"] for p in picks)]
+        similar = self._similar_precedents(conn, like, pointers=True)
+        n_ctx_img = sum(1 for m in shot_meta if "context segment" in m["label"])
+        shots_note = (f"Screenshots attached above: {len(shot_meta)}"
+                      + (f" ({len(shot_meta) - n_ctx_img} of the segments to judge or around the pickups, {n_ctx_img} of context segments)" if shot_meta else "")
+                      + ". " + (("EVALUATE segments with NO screenshot: "
+                                 + "; ".join(f"id={i} ({why})" for i, why in no_img.items())
+                                 + ". A missing screenshot is missing evidence, not a sign of anything.") if no_img else
+                                ("Every EVALUATE segment has at least one." if target else "")))
+        prompt_text = (_call_header(t0, T0, T1, now0)
+                       + "\n\nDAY SO FAR\n" + day_text
+                       + ("\n\n" + similar if similar else "")
+                       + "\n\n" + shots_note
+                       + "\n\nActivity log (" + _t(ctx0) + " to " + _t(ctx1) + "; the lines marked EVALUATE are the ones to judge):\n" + "\n".join(lines)
                        + (f"\n\nIMPORTANT - {extra}" if extra else "")
                        + ("\n\nJudge every segment marked EVALUATE (all of them, by id)." if target else
                           "\n\nNo segment is marked EVALUATE: leave `segments` empty.")
@@ -592,7 +1242,7 @@ class ChunkEvaluator:
         content.append({"type": "text", "text": prompt_text})
         system_text = self._system_blocks(conn)[0]["text"]
         resp = llm.parse(self.client, site="evaluator", 
-            model=self.cfg.claude_model, max_tokens=8000,
+            model=self.cfg.claude_model, max_tokens=MAX_TOKENS,
             system=self._system_blocks(conn),
             messages=[{"role": "user", "content": content}],
             output_format=ChunkJudgement,
@@ -702,6 +1352,9 @@ class ChunkEvaluator:
                                         cand.segment_id, j.segment_id)
                     # Rules doc: coming back to something after more than 10 minutes is a shift,
                     # not a return. The pointer says how long ago the old thread was last touched.
+                    # Sorted first: the rule used to read the first candidate LISTED, and three
+                    # returns by 2026-11-20 had a different one on top by probability.
+                    cands.sort(key=lambda x: -x[1])
                     if rsw == "return" and cands and cands[0][0] in seg_ends:
                         if seg_starts[j.segment_id] - seg_ends[cands[0][0]] > RETURN_MAX_S:
                             rsw = "interruption"
@@ -745,6 +1398,8 @@ class ChunkEvaluator:
                 pj = {j.phone_id: j for j in (resp.parsed_output.phone or [])}
                 # earlier phone lines in view, so a return to an app from the pickup before attaches to it
                 away_of: dict = {k: bool(r["away"]) for k, r in pk_have.items() if r["away"] is not None}
+                # (start, app, away) of the same, for a return that names no usable line
+                phone_seen = sorted((r["start"], r["app"], bool(r["away"])) for r in pk_have.values() if r["away"] is not None)
                 for p in picks:
                     prev_away = False
                     for g in p["segs"]:
@@ -758,15 +1413,31 @@ class ChunkEvaluator:
                         m = re.fullmatch(r"[Pp](\d+)", cont)
                         if psw == "interruption":
                             away, cont = True, ""
-                        elif m and int(m.group(1)) in away_of:
+                        elif m and int(m.group(1)) in away_of and int(m.group(1)) != g["key"]:
                             away = away_of[int(m.group(1))]        # attaches to an earlier phone line
-                        elif cont and not m:
-                            away = False                           # attaches to a computer segment
+                        elif cont.isdigit() and int(cont) in seg_starts:
+                            away = False                           # attaches to a computer segment in view
                         else:
-                            away = prev_away if psw == "continuation" else False   # a bare return: back to the work
+                            # No usable pointer: none, itself (run 13317), or an id that does not
+                            # exist ("P1795045XXX", run 13277). A continuation goes on from the
+                            # line before it. A return used to be stored as "back on the work"
+                            # with its self-distraction flag dropped: run 13327, 74 s of a dating
+                            # app, "browsing with no clear purpose", return + self-distraction,
+                            # stored away=0 and no flag. It now takes `away` from the nearest
+                            # earlier phone line of the same app in view, and is away in any case
+                            # when the model called it a self-distraction or passive.
+                            cont = ""
+                            if psw == "continuation":
+                                away = prev_away
+                            else:
+                                same = [a for st, app, a in phone_seen if app == g["app"] and st < g["start"]]
+                                away = same[-1] if same else False
+                                if (j is not None and j.self_distraction) or pc == "passive":
+                                    away = True
                         if pc == "transition" and psw == "continuation" and not prev_away:
                             away = False                           # a pass-through is not a diversion
                         away_of[g["key"]] = prev_away = away
+                        phone_seen.append((g["start"], g["app"], away))
                         psd = bool(j is not None and j.self_distraction and psw in ("interruption", "return") and away)
                         conn.execute(
                             "INSERT OR REPLACE INTO phone_evals(seg_key, pickup_key, start, end, app, switch_label, content,"
@@ -790,9 +1461,11 @@ class ChunkEvaluator:
                         continue
                     if s["id"] not in judged:
                         conn.execute(
-                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, rationale, created, run_id)"
-                            " VALUES (?,?,?,?,?,?,?)",
-                            (s["id"], "other", "continuation", None, "(model omitted this segment; defaulted)", now, run_id))
+                            # flagged for review: the default is not a judgment (21 such rows stood
+                            # as "other / continuation" with no flag by 2026-11-20, e.g. 36227)
+                            "INSERT OR IGNORE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, created, run_id)"
+                            " VALUES (?,?,?,?,?,?,?,?)",
+                            (s["id"], "other", "continuation", None, 1, "(model omitted this segment; defaulted)", now, run_id))
                 # a correction carried over from the person's ruling on a similar segment survives a new judgment
                 from . import propagation
                 propagation.reapply(conn, [s["id"] for s in target])
@@ -806,7 +1479,7 @@ class ChunkEvaluator:
 
             def _call(eff):
                 return llm.parse(self.client, site="evaluator_shadow", 
-                    model=self.cfg.claude_model, max_tokens=8000,
+                    model=self.cfg.claude_model, max_tokens=MAX_TOKENS,
                     system=self._system_blocks(conn),
                     messages=[{"role": "user", "content": content}],
                     output_format=ChunkJudgement,
@@ -855,17 +1528,40 @@ def refine_incoherent(conn, cfg: Config | None = None, max_spans: int = 1) -> in
                      dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"))
             continue
         try:
-            extra = (f"a whole-span coherence review of this stretch found: {r['issue']} "
-                     f"Re-judge with that in hand. If a NEW piece of work begins mid-stretch, "
+            # The whole summary, not only its finding: the reviewer's title and description say
+            # which object of attention it took the span for, and the bounds say which lines it read.
+            extra = (f"a whole-span review looked at the stretch from {_t(r['start'])} to {_t(r['end'])} "
+                     f"({_durtext(r['end'] - r['start'])}), which the app had assembled as ONE focus span from your "
+                     f"judgments. It described the span as"
+                     + (f" “{_one(r['title'])}”:" if r["title"] else ":") + f" “{_one(r['summary'])}” "
+                     f"It then found that this is not one object of attention: {_one(r['issue'])} "
+                     f"That review read the same log with a few screenshots; it is a second opinion, not a ruling. "
+                     f"Re-judge with it in hand. If a NEW piece of work begins mid-stretch, "
                      f"mark the segment where it begins as switch='shift' (with focused=true "
                      f"if the new work is focused).")
-            self_n = _get().evaluate_chunk(conn, r["start"] - 1, r["end"] + 1, extra=extra)
+            self_n = _rejudge_stretch(conn, r["start"] - 1, r["end"] + 1, extra)
             log.info("coherence-driven re-evaluation of %s-%s: %d segments re-judged",
                      dt.datetime.fromtimestamp(r["start"]).strftime("%H:%M"),
                      dt.datetime.fromtimestamp(r["end"]).strftime("%H:%M"), self_n)
             n += 1
         except Exception:
             log.exception("refinement failed")
+    return n
+
+
+def _rejudge_stretch(conn, a: float, b: float, extra: str) -> int:
+    """Re-judge every settled segment starting in [a, b) with the note `extra`, in as many calls
+    as the image budget needs (evaluate_chunk judges only as many segments as it can show; run
+    13410 put 73 segments in one call with 8 images). Stops at the first call that brings no
+    judgments back."""
+    ev = _get()
+    n, start = 0, a
+    for _ in range(40):
+        ev.last_answer = "parsed"
+        n += ev.evaluate_chunk(conn, start, b, extra=extra)
+        if ev.last_answer != "parsed" or ev.last_end >= b or ev.last_end <= start:
+            break
+        start = ev.last_end
     return n
 
 
@@ -881,15 +1577,25 @@ def derive_kind(conn, cfg: Config | None = None, segment_id: int = 0, note: str 
         return 0
     t0 = g["start"] - 300
     t1 = min((g["end"] or g["start"]) + 2400, time.time() - 60)  # after-context decides the kind
+    # The question they were answering, when the ruling came from one: the note alone was passed
+    # (11 of 51 calls had one), and "separate thread" without the question says little about why.
+    q = conn.execute("""SELECT * FROM review_questions WHERE segment_id=? AND status='answered'
+                        ORDER BY answered_at DESC LIMIT 1""", (segment_id,)).fetchone()
+    rv = conn.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+    asked = ""
+    if q is not None and rv is not None and q["answered_at"] is not None and abs(q["answered_at"] - rv["created"]) < 60:
+        asked = (f" The ruling was their answer to a review question. Context they were shown: “{_one(q['context'])}” "
+                 f"Question: “{_one(q['question'])}” Their answer: “{_one(q['answer'])}”"
+                 + (f" Their note on it: “{_one(q['note'])}”" if _one(q["note"]) and _one(q["note"]) != _one(note) else ""))
     extra = (f"The person has RULED that segment id={segment_id} began a SEPARATE thread from "
              f"what preceded it (their ruling is authoritative - do not relitigate it"
-             + (f"; their note: {note}" if note else "") + "). "
+             + (f"; their note: {note}" if note else "") + ")." + asked + " "
              f"Your job is the rest: with that segment as switch='shift', re-judge the "
              f"affected segments - whether each was focused or unfocused, whether the shift "
              f"was a self-distraction or the next task in a task block, and the downstream "
              f"switches (continuations of the new thread, returns to the old one).")
     try:
-        n = _get().evaluate_chunk(conn, t0, t1, extra=extra)
+        n = _rejudge_stretch(conn, t0, t1, extra)   # settled segments only; the first pass takes the rest
         log.info("kind derivation after thread ruling on segment %d: %d segments re-judged",
                  segment_id, n)
         return n
@@ -976,7 +1682,7 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
     if ev_row is not None and ev_row["run_id"]:
         run = conn.execute("SELECT * FROM eval_runs WHERE id=?", (ev_row["run_id"],)).fetchone()
     seg = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
-    who = f"segment id={segment_id} ({seg['app']} | {(seg['title'] or '')[:60]})" if seg else f"segment id={segment_id}"
+    who = f"segment id={segment_id} ({seg['app']} | {seg['title'] or ''})" if seg else f"segment id={segment_id}"
     ev = _get()
     if run is not None and run["system"] and run["response"]:
         system = [{"type": "text", "text": run["system"], "cache_control": {"type": "ephemeral"}}]
@@ -1108,19 +1814,46 @@ class DayAudit(BaseModel):
     flags: list[AuditFlag] = Field(description="ONLY segments whose judgment looks wrong. Empty list if the day looks right.")
 
 
-AUDIT_PROMPT = """Below is one full day of this person's activity, with the resolved judgments \
-(state, [content=...], switch labels) each segment received - some judged by cheap local models. \
-Re-check the day as a whole. List ONLY the segments whose content or switch judgment looks wrong, \
-with what you'd say instead. These get flagged for the person to review, so precision matters more \
-than recall - do not nitpick defensible calls. An empty list is the expected answer for a clean day.
+AUDIT_PROMPT = """This is a second look at judgments already made, not a first judgment. Below is one \
+piece of a day of this person's activity, in the same log format as an evaluation call (section 7 of \
+your instructions), with the judgment each segment holds: "judged: ..." and the note after "// note:". \
+Some were made by cheap local models (their note says "deferred to local models").
 
+The lines marked AUDIT are the ones to check; screenshots of each are attached where a file exists. \
+Lines marked (context ...) are there to read the AUDIT lines against, as are the PHONE lines and the \
+DAY SO FAR block; do not flag them. Lines marked RULED BY THE PERSON are settled and are never to be \
+flagged. Nothing in this log is marked EVALUATE and no hold-off applies.
+
+List ONLY the AUDIT segments whose content, switch or focused judgment looks wrong, with what you \
+would say instead. These get flagged for the person to review, so precision matters more than recall \
+- do not nitpick defensible calls. An empty list is the expected answer for a clean piece.
+
+{header}
+
+DAY SO FAR
+{day}
+
+{shots}
+
+Activity log ({a} to {b}):
 {log}"""
 
+AUDIT_CTX_S = 15 * 60      # log shown on each side of an audited piece
+AUDIT_PIECES_PER_PASS = 3  # pieces audited per classifier cycle; the rest of the day follows in later cycles
 
-def daily_audit(conn, cfg: Config | None = None) -> int:
-    """Once per day: one LLM sweep over yesterday's resolved judgments; suspected errors are
-    flagged (uncertain=1) for the user's review queue - labels are never silently changed."""
-    from . import stats, summaries
+
+def daily_audit(conn, cfg: Config | None = None, max_pieces: int = AUDIT_PIECES_PER_PASS) -> int:
+    """Once per day: an LLM sweep over yesterday's resolved judgments; suspected errors are
+    flagged (uncertain=1) for the user's review queue - labels are never silently changed.
+
+    The day is audited in pieces, each small enough that every audited segment's screenshots fit
+    one call (IMAGE_BUDGET), with the same log lines the evaluator reads. Until 2026-11-20 the
+    whole day went into one call with 8 screenshots (a median day has 407 segments and 1,153
+    capture moments: over 98% of segments unseen), no idle or phone lines, no signals, no Toggl
+    list, notes cut at 80 characters, and flags spent blind on segments the person had already
+    ruled on. Progress is kept in kv ("audit.progress.<day>") so a day spread over several
+    cycles, or interrupted, goes on where it stopped; audit_runs gets its row when the day is done."""
+    from . import shots as _shots, stats
     from .config import logical_date
     cfg = cfg or load_config()
     if not cfg.daily_audit:
@@ -1132,85 +1865,117 @@ def daily_audit(conn, cfg: Config | None = None) -> int:
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     t0, t1 = stats.day_bounds(day)
-    segs = [s for s in stats.labelled_segments(conn, t0, t1, phone=False)
-            if not s["idle"] and not s.get("neutral") and s["duration"] > 0]
-    evaluated = [s for s in segs if s.get("content")]
-    if not evaluated:
-        conn.execute("INSERT INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
-                     (key, 0, 0.0, time.time()))
-        return 0
-    ids = [s["id"] for s in segs]
-    rats = {}
-    if ids:
-        qsr = ",".join("?" * len(ids))
-        rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
-            f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qsr})", ids)
-            if r2["rationale"]}
-    lines = [f"id={s['id']} [content={s.get('content') or '?'}] " + summaries.seg_line(s)
-             + (f"  // {rats[s['id']][:80]}" if s["id"] in rats else "") for s in segs]
-    content: list = []
-    if ids:
-        from .classifiers.claude_vision import _b64
-        from . import shots as _shots
-        for sh in _shots.pick(conn, ids, 8):
-            b = _b64(sh["path"])
-            if b:
-                content.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')} (segment id={sh['segment_id']}){' - EXTERNAL display' if sh.get('display') else ''}:"})
-                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
-    content.append({"type": "text", "text": AUDIT_PROMPT.format(log="\n".join(lines))})
-    ev = _get()
-    resp = llm.parse(ev.client, site="audit", 
-        model=cfg.claude_model, max_tokens=4000,
-        system=ev._system_blocks(conn),
-        messages=[{"role": "user", "content": content}],
-        output_format=DayAudit,
-        output_config={"effort": cfg.claude_effort},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default")
-    cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
-            + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
-            + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
-    if resp.parsed_output is not None:
-        from . import efforts as _eff
-
-        def _acall(eff):
-            return llm.parse(ev.client, site="audit_shadow", 
-                model=cfg.claude_model, max_tokens=4000,
-                system=ev._system_blocks(conn),
-                messages=[{"role": "user", "content": content}],
-                output_format=DayAudit,
-                output_config={"effort": eff},
-                betas=["server-side-fallback-2026-07-01"], fallbacks="default")
-
-        def _acmp(a, b):
-            fa = {(f.segment_id, f.field) for f in a.flags}
-            fb = {(f.segment_id, f.field) for f in b.flags}
-            union = fa | fb
-            if not union:
-                return 1.0, "both flagged nothing"
-            same = len(fa & fb) / len(union)
-            return same, f"flags primary={sorted(fa)} vs {sorted(fb)}"
-
-        _eff.run_shadows(conn, cfg, ev.client, "daily_audit", key, cfg.claude_effort,
-                         resp, _acall, _acmp, prompt_text=AUDIT_PROMPT.format(log="(day log, see audit)")[:200])
+    try:
+        prog = json.loads(db.kv_get(conn, f"audit.progress.{key}") or "{}")
+    except (ValueError, TypeError):
+        prog = {}
+    prog = {"to": float(prog.get("to", t0)), "flags": int(prog.get("flags", 0)), "cost": float(prog.get("cost", 0.0)),
+            "pieces": int(prog.get("pieces", 0))}
+    segs = [s for s in stats.labelled_segments(conn, t0, t1, phone=False) if s["duration"] > 0]
+    ruled = {r[0] for r in conn.execute("SELECT segment_id FROM seg_reviews")}
+    # to audit: judged by the app, and not ruled on by the person (a flag there was thrown away afterwards)
+    todo = [s for s in segs if not s["idle"] and not s.get("neutral") and s.get("source") == "eval" and s["id"] not in ruled]
     n = 0
-    ids = {s["id"] for s in evaluated}
-    if resp.parsed_output is None and resp.stop_reason != "contact_eli" and _attempt(conn, f"audit.fail.{key}") < 3:
-        log.warning("daily audit %s: no answer (%s) - will try again", key, resp.stop_reason)
-        return 0   # not recorded as run, so the next pass retries (it used to count as done)
-    with db.tx(conn):
-        if resp.parsed_output is not None:
-            for f in resp.parsed_output.flags:
+    ev = None
+    for _ in range(max_pieces):
+        rest = [s for s in todo if s["clip_start"] >= prog["to"]]
+        if not rest:
+            break
+        mom = _shots.moments(conn, [s["id"] for s in rest[:400]])
+        piece, images = [], []
+        for s in rest:
+            ims = [im for m in _seg_moments(mom, s) for im in _moment_images(m, "AUDIT segment", s["app"])]
+            if piece and len(images) + len(ims) > IMAGE_BUDGET:
+                break
+            piece.append(s)
+            images += ims
+            if len(piece) >= 400:
+                break
+        nxt = rest[len(piece)]["clip_start"] if len(piece) < len(rest) else t1
+        a, b = piece[0]["clip_start"], piece[-1]["clip_end"]
+        lo, hi = max(t0, a - AUDIT_CTX_S), min(t1, b + AUDIT_CTX_S)
+        content, shot_meta = _image_content(images)
+        sent = {m["path"] for m in shot_meta}
+        ids = {s["id"] for s in piece}
+        no_img = {s["id"]: _shots.why_none(conn, s["id"]) for s in piece
+                  if not any(m["active"]["path"] in sent for m in mom.get(s["id"]) or [])}
+        day_text, entries = _day_block(conn, a, a, b, lo, hi, time.time(), mark="AUDIT")
+        notes = {i: [f"screenshot: none for this segment ({why}). That says nothing about what the segment was."] for i, why in no_img.items()}
+        rows = _log_lines(conn, [s for s in segs if s["clip_end"] > lo and s["clip_start"] < hi],
+                          {i: f"AUDIT id={i}: " for i in ids}, entries, notes=notes)
+        try:
+            from . import phone as _phone
+            picks = _phone.pickups(cfg, lo, hi)
+            pk_have = {r["seg_key"]: r for r in conn.execute("SELECT * FROM phone_evals WHERE start >= ? AND start < ?", (lo - 3600, hi + 3600))}
+            rows += _phone_lines(conn, picks, set(), pk_have)
+        except Exception:
+            log.exception("daily audit: phone lines unavailable")
+        shots_note = (f"Screenshots attached above: {len(shot_meta)}. "
+                      + ("AUDIT segments with NO screenshot: " + "; ".join(f"id={i} ({why})" for i, why in no_img.items())
+                         + ". A missing screenshot is missing evidence, not a sign of anything." if no_img else
+                         "Every AUDIT segment has at least one."))
+        text = AUDIT_PROMPT.format(header=_call_header(a, a, b, time.time(), what="audit"), day=day_text, shots=shots_note,
+                                   a=_t(lo), b=_t(hi), log="\n".join(x[2] for x in sorted(rows, key=lambda x: (x[0], x[1]))))
+        content.append({"type": "text", "text": text})
+        ev = ev or _get()
+        resp = llm.parse(ev.client, site="audit",
+            model=cfg.claude_model, max_tokens=MAX_TOKENS,
+            system=ev._system_blocks(conn),
+            messages=[{"role": "user", "content": content}],
+            output_format=DayAudit,
+            output_config={"effort": cfg.claude_effort},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default")
+        cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
+                + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
+                + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
+        prog["cost"] += cost
+        if resp.parsed_output is None and resp.stop_reason != "contact_eli" and _attempt(conn, f"audit.fail.{key}.{int(a)}") < 3:
+            log.warning("daily audit %s piece %s: no answer (%s) - will try again", key, _t(a), resp.stop_reason)
+            db.kv_set(conn, f"audit.progress.{key}", json.dumps(prog))   # the cost is kept; the piece is asked again next pass
+            return n
+        if resp.parsed_output is not None and prog["pieces"] == 0:
+            # Effort shadows for the first piece of the day only: one comparison a day, as before.
+            from . import efforts as _eff
+
+            def _acall(eff, content=content):
+                return llm.parse(ev.client, site="audit_shadow",
+                    model=cfg.claude_model, max_tokens=MAX_TOKENS,
+                    system=ev._system_blocks(conn),
+                    messages=[{"role": "user", "content": content}],
+                    output_format=DayAudit,
+                    output_config={"effort": eff},
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+
+            def _acmp(x, y):
+                fa = {(f.segment_id, f.field) for f in x.flags}
+                fb = {(f.segment_id, f.field) for f in y.flags}
+                union = fa | fb
+                if not union:
+                    return 1.0, "both flagged nothing"
+                same = len(fa & fb) / len(union)
+                return same, f"flags primary={sorted(fa)} vs {sorted(fb)}"
+
+            _eff.run_shadows(conn, cfg, ev.client, "daily_audit", key, cfg.claude_effort,
+                             resp, _acall, _acmp, prompt_text=text)
+        with db.tx(conn):
+            for f in (resp.parsed_output.flags if resp.parsed_output is not None else []):
                 if f.segment_id not in ids:
                     continue
-                if conn.execute("SELECT 1 FROM seg_reviews WHERE segment_id=?", (f.segment_id,)).fetchone():
-                    continue  # the user already ruled on this one
                 conn.execute("UPDATE seg_evals SET uncertain=1, rationale = COALESCE(rationale,'') || ? WHERE segment_id=?",
                              (f" | daily audit: {f.field} looks like '{f.suggested}' - {f.reason}", f.segment_id))
                 n += 1
-        conn.execute("INSERT INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
-                     (key, n, cost, time.time()))
-    log.info("daily audit %s: %d flag(s) ($%.3f)", key, n, cost)
+            prog.update(to=nxt, flags=prog["flags"] + sum(1 for f in (resp.parsed_output.flags if resp.parsed_output is not None else [])
+                                                         if f.segment_id in ids), pieces=prog["pieces"] + 1)
+            db.kv_set(conn, f"audit.progress.{key}", json.dumps(prog))
+        log.info("daily audit %s: piece %d, %s-%s, %d segment(s), %d image(s) ($%.3f)", key, prog["pieces"], _t(a), _t(b),
+                 len(piece), len(shot_meta), cost)
+    if not [s for s in todo if s["clip_start"] >= prog["to"]]:
+        with db.tx(conn):
+            conn.execute("INSERT OR REPLACE INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
+                         (key, prog["flags"], prog["cost"], time.time()))
+            conn.execute("DELETE FROM kv WHERE key=?", (f"audit.progress.{key}",))
+        log.info("daily audit %s: done, %d flag(s) in %d piece(s) ($%.3f)", key, prog["flags"], prog["pieces"], prog["cost"])
     return n
 
 
@@ -1365,6 +2130,16 @@ def queue_history_rejudge(conn) -> int:
     end = conn.execute("""SELECT MIN(g.start) FROM segments g JOIN seg_evals e ON e.segment_id = g.id
                           WHERE e.created >= ? AND g.start >= ?""",
                        (LOW_EFFORT_FIXED_AT, LOW_EFFORT_FIXED_AT - 2 * 3600)).fetchone()[0] or LOW_EFFORT_FIXED_AT
+    # Only days that have screenshot files. Before the oldest file every re-judgment would be
+    # made from window titles alone (10,876 of 33,656 older segments are a bare app name) and
+    # would replace 21,953 judgments, many made with the screenshots that existed then. The
+    # date comes from the files (2026-10-27 13:35 when this was written); within that first day,
+    # segments from before the first file keep their judgments (evaluate_chunk).
+    shots_from = _first_screenshot_ts()
+    if shots_from is None:
+        log.warning("history re-judgment not queued: no screenshot files found")
+        return 0
+    first = max(first, shots_from)
     n = 0
     with db.tx(conn):
         conn.execute("CREATE TABLE IF NOT EXISTS seg_evals_low_effort AS SELECT * FROM seg_evals WHERE created < ?",
@@ -1379,6 +2154,25 @@ def queue_history_rejudge(conn) -> int:
         db.kv_set(conn, "rejudge.history.queued", f"{n} days, {dt.datetime.now():%Y-%m-%d %H:%M}")
     log.info("history re-judgment queued: %d days", n)
     return n
+
+
+def _first_screenshot_ts() -> float | None:
+    """When the oldest capture file still on disk was taken (full size or archive), from the
+    file names, which begin with the capture time in milliseconds."""
+    from .config import ARCHIVE_DIR, SCREENSHOT_DIR
+    import os
+    best = None
+    for d in (SCREENSHOT_DIR, ARCHIVE_DIR):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for nm in names:
+            head = nm.split("_", 1)[0]
+            if head.isdigit() and len(head) >= 12 and nm.endswith(".jpg"):
+                ts = int(head) / 1000.0
+                best = ts if best is None or ts < best else best
+    return best
 
 
 def history_status(conn) -> dict:
@@ -1450,36 +2244,42 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                      "activity around it. No computer segment is up for judgment in this call.")
         elif history:
             extra = ("your earlier judgment of this window was made in a quick pass at low effort. Judge "
-                     "every segment again, carefully, from the log and the screenshots. The 'prior "
-                     "judgment' notes are from that quick pass: a hint at most, never a reason to keep a "
-                     "judgment the evidence does not support.")
+                     "every segment marked EVALUATE again, carefully, from the log and the screenshots. "
+                     "Everything marked 'earlier quick-pass judgment' and 'quick-pass note', on the lines to "
+                     "judge and on context lines alike, is from that quick pass: a hint at most, never a "
+                     "reason to keep a judgment the evidence does not support. Lines marked RULED BY THE "
+                     "PERSON are not from the quick pass and stand.")
         elif q["reason"] == WRONG_DISPLAY_REASON:
+            # (it used to say "The screenshots above are of the display that held the active
+            # window" also when none was attached: 30 runs on 2026-11-17)
             extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
                      "display: the person had two monitors and you were shown the one they were not "
-                     "working on. The screenshots above are of the display that held the active "
-                     "window. Re-judge every segment from them; where your earlier judgment "
-                     "(including the 'prior judgment' notes) rested on what the other screen showed, "
-                     "change it.")
+                     "working on. The screenshots attached to this call are labelled: 'active display' is "
+                     "the one that held the window each segment is about. Re-judge every segment marked "
+                     "EVALUATE from them; where your earlier judgment (including the notes after '// "
+                     "note:') rested on what the other screen showed, change it.")
         else:
             extra = (f"the {q['reason']} for this window AFTER your earlier judgment of it - the Toggl "
                      f"entries listed above are the corrected ones and are AUTHORITATIVE: if a screenshot "
                      f"shows a Toggl timer with a different name or still running, that is the uncorrected "
                      f"state and must be ignored. Re-judge every segment against the listed entries; where "
-                     f"your earlier judgment (including the 'prior judgment' notes) relied on the old "
-                     f"entries, change it.")
+                     f"your earlier judgment (including the notes after '// note:') relied on the old "
+                     f"entries, change it." + _toggl_change_note(conn, q["id"]))
         phone_q = q["reason"] == PHONE_REASON
         ev = _get()
         ev.last_answer = "parsed"   # (a chunk with nothing to send returns before the call)
         try:
             llm.only_subscription(history)   # a history call that cannot run on the subscription fails; it never goes to the API key
             try:
-                n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
+                n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q, history=history)
             finally:
                 llm.only_subscription(False)
+            if ev.last_answer == "parsed" and start < ev.last_end < c1:
+                c1 = ev.last_end   # the call judged only as many segments as it could show; go on from there
             if history:
                 # Outside the daily budget: 2,500 history calls must not stop today's judging
                 # (spend_today leaves these runs out). The pacing clock counts real calls only.
-                made = conn.execute("UPDATE eval_runs SET budget_exempt=1 WHERE created >= ? AND t0=? AND t1=?",
+                made = conn.execute("UPDATE eval_runs SET budget_exempt=1 WHERE created >= ? AND t0=? AND t1<=?",
                                     (call_at, start, c1)).rowcount
                 if made:
                     db.kv_set(conn, "rejudge.history.last", str(time.time()))
@@ -1528,6 +2328,28 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                  f", {ns} span summary(ies) dropped for rewrite" if finished else "")
         done += 1
     return done
+
+
+def _toggl_change_note(conn, queue_id: int) -> str:
+    """What changed in Toggl, for the note of a "Toggl entries corrected" re-judgment, as far as
+    it was recorded (toggl.queue_reevaluation keeps the entry before and after from 2026-11-20;
+    for stretches queued earlier nothing is known and nothing is said)."""
+    try:
+        rows = json.loads(db.kv_get(conn, f"reeval.detail.{queue_id}") or "[]")
+    except (ValueError, TypeError):
+        rows = []
+    def one(e):
+        if not e:
+            return None
+        return (f"{_t(e[0], '%m-%d %H:%M:%S')}-" + (_t(e[1]) if e[1] is not None else "running (no stop)")
+                + f" “{_one(e[2])}”" + (f" | project: {e[3]}" if e[3] else "") + (f" | tags: {e[4]}" if e[4] else ""))
+    out = []
+    for d in rows:
+        old, new = one(d.get("old")), one(d.get("new"))
+        out.append(f"added after your judgment: {new}" if old is None else
+                   f"deleted since: {old}" if new is None else f"was: {old}; is now: {new}")
+    return (" What changed, as the app recorded it (the entry as it was when you judged, then as it is now): "
+            + " / ".join(dict.fromkeys(out)) + ".") if out else ""
 
 
 def repair_outvoted(conn) -> int:

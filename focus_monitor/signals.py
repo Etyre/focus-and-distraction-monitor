@@ -489,7 +489,7 @@ def arrival(conn, segment_id, app: str, prev_app: str | None) -> dict | None:
             "keys": r["key_age"] is not None and r["key_age"] <= 4.0}
 
 
-def page_reached(conn, url: str, start: float, end: float) -> dict | None:
+def page_reached(conn, url: str, start: float, end: float, full: bool = False) -> dict | None:
     """How Chrome reached this segment's page: the visit to that address nearest the segment's
     start. None when there is none (a tab that was already open, or History not yet read)."""
     if not url or not url.startswith("http"):
@@ -505,7 +505,10 @@ def page_reached(conn, url: str, start: float, end: float) -> dict | None:
         # writes a visit to disk up to ~10 s late, hence the margin).
         lo, hi = (float(db.kv_get(conn, k) or 0) for k in ("signals.visits_from", "signals.visits_to"))
         return {"how": "already_open"} if lo and lo <= start - 15 and hi >= max(end, start + 5) + 20 else None
-    return {"how": r["how"], "from": _domain(r["from_url"])}
+    out = {"how": r["how"], "from": _domain(r["from_url"])}
+    if full:   # the whole address of the page it came from (the evaluator; other callers get the site)
+        out["from_url"] = r["from_url"] or ""
+    return out
 
 
 _PAGE_TEXT = {"typed": "typed the address", "bookmark": "opened from a bookmark", "search": "searched from the address bar",
@@ -517,9 +520,12 @@ _PAGE_TEXT = {"typed": "typed the address", "bookmark": "opened from a bookmark"
 _PAGE_SILENT = ("in_page", "subframe", "other")   # say nothing: these do not tell how the person got there
 
 
-def describe(conn, seg: dict, prev_app: str | None = None) -> list[str]:
+def describe(conn, seg: dict, prev_app: str | None = None, full: bool = False) -> list[str]:
     """Short notes about one computer segment, for the evaluator's log and the Captures card.
-    `seg` needs start/end (or clip_start/clip_end), app, url. Empty when nothing was recorded."""
+    `seg` needs start/end (or clip_start/clip_end), app, url. Empty when nothing was recorded.
+    `full` (the evaluator, since 2026-11-20) names the page a link came from by its whole
+    address, not its site, adds pointer moves to the input rates, and says when a segment is
+    shorter than the 10-second counters it is measured with."""
     t0 = seg.get("clip_start", seg.get("start"))
     t1 = seg.get("clip_end", seg.get("end")) or t0
     notes: list[str] = []
@@ -542,19 +548,25 @@ def describe(conn, seg: dict, prev_app: str | None = None) -> list[str]:
         if arr is not None and arr["banner_s"] is not None and arr["banner_s"] <= BANNER_BEFORE_S and arr.get("click") != "banner":
             notes.append(f"a notification banner appeared {arr['banner_s']:.0f} s before")
         # only Chrome's History is read; another browser's pages would all look "already open"
-        pg = page_reached(conn, seg.get("url") or "", t0, t1) if seg.get("app") == "Google Chrome" else None
+        pg = page_reached(conn, seg.get("url") or "", t0, t1, full) if seg.get("app") == "Google Chrome" else None
         if pg and pg["how"] not in _PAGE_SILENT:
             h = pg["how"]
+            src = (pg.get("from_url") if full else None) or pg.get("from")
             notes.append("page reached by: " + (
-                f"a link on {pg['from']}" if h == "link" and pg.get("from") else
-                f"a new tab opened from {pg['from']}" if h == "new_tab" and pg.get("from") else
+                f"a link on {src}" if h == "link" and src else
+                f"a new tab opened from {src}" if h == "new_tab" and src else
                 "a new tab opened from a page" if h == "new_tab" else
                 "a link" if h == "link" else _PAGE_TEXT.get(h, h)))
         act = activity(conn, t0, t1)
         if act:
             mins = max(act["secs"], 1.0) / 60.0
             notes.append(f"input: {act['keys'] / mins:.0f} keys/min, {act['clicks'] / mins:.0f} clicks/min, "
-                         f"{act['scrolls'] / mins:.0f} scroll events/min")
+                         f"{act['scrolls'] / mins:.0f} scroll events/min"
+                         + (f", {act['moves'] / mins:.0f} pointer-move events/min" if full else "")
+                         # Counts come in 10-second buckets split pro rata: a 6-second segment between
+                         # two typing segments read "148 keys/min" (segment 36705, 2026-11-20).
+                         + (" (measured in 10-second counts, so for a segment this short these are"
+                            " partly its neighbours' input)" if full and t1 - t0 < 2 * BUCKET_S else ""))
             for k, label in (("audio", "audio playing"), ("mic", "microphone on"), ("camera", "camera on")):
                 share = act[k] / max(act["secs"], 1.0)
                 if share >= 0.15:
@@ -562,3 +574,92 @@ def describe(conn, seg: dict, prev_app: str | None = None) -> list[str]:
     except Exception:
         log.exception("could not describe signals for segment %s", seg.get("id"))
     return notes
+
+
+# ---- more for the evaluator's log (2026-11-20) ----------------------------------------------------
+# One rate per segment hides when the typing happened: 605 segments over 5 minutes carried 101 of
+# 273 active hours in 30 days, each described by a single "N keys/min". And a Chrome segment is
+# recorded under the title it opened with: segment 36414 was 24 minutes on one food-delivery
+# title while History held 45 page loads on two social sites. These give the evaluator the
+# minute-by-minute counts, the recorded pauses, and every page load inside a segment.
+
+def _hm(ts: float, secs: bool = True) -> str:
+    from .config import local_dt
+    return local_dt(ts).strftime("%H:%M:%S" if secs else "%H:%M")
+
+
+def minute_strip(conn, t0: float, t1: float) -> str:
+    """Input and media for each clock minute of [t0, t1), as one line; '' when nothing was
+    sampled. Each entry: HH:MM keys/clicks/scroll events/pointer moves, then a (audio playing),
+    m (microphone on), c (camera on) when that was so for half the sampled time or more."""
+    rows = conn.execute("SELECT * FROM activity_samples WHERE ts > ? AND ts < ? ORDER BY ts", (t0 - BUCKET_S, t1)).fetchall()
+    if not rows:
+        return ""
+    mins: dict[float, dict] = {}
+    for r in rows:
+        share = max(0.0, min(t1, r["ts"] + BUCKET_S) - max(t0, r["ts"])) / BUCKET_S
+        if share <= 0:
+            continue
+        m = mins.setdefault(max(t0, r["ts"]) - (max(t0, r["ts"]) % 60), dict.fromkeys(("secs", "keys", "clicks", "scrolls", "moves", "audio", "mic", "camera"), 0.0))
+        for k in m:
+            m[k] += (r[k] or 0) * share
+    out = []
+    first = min(mins) if mins else t0
+    k = first
+    while k < t1:
+        m = mins.get(k)
+        if m is None or m["secs"] < 1:
+            out.append(f"{_hm(k, False)} not sampled")
+        else:
+            flags = "".join(f for f, key in (("a", "audio"), ("m", "mic"), ("c", "camera")) if m[key] >= 0.5 * m["secs"])
+            out.append(f"{_hm(k, False)} {m['keys']:.0f}/{m['clicks']:.0f}/{m['scrolls']:.0f}/{m['moves']:.0f}" + (" " + flags if flags else ""))
+        k += 60
+    return " | ".join(out)
+
+
+def pauses(conn, t0: float, t1: float) -> list[tuple[float, float]]:
+    """Recorded stretches of no keyboard or mouse input inside [t0, t1) (the `inactivity` table:
+    pauses of a minute or more that did not become an away segment), clipped to it."""
+    return [(max(r["start"], t0), min(r["end"], t1)) for r in conn.execute(
+        "SELECT start, end FROM inactivity WHERE start < ? AND end > ? ORDER BY start", (t1, t0))]
+
+
+def page_loads(conn, t0: float, t1: float) -> list[dict]:
+    """Every page Chrome loaded in [t0, t1], oldest first: {ts, how, url, title, from_url}.
+    Frames inside a page are left out. Empty when none, or when History was not read then."""
+    return [dict(r) for r in conn.execute(
+        "SELECT ts, how, url, title, from_url FROM page_visits WHERE ts >= ? AND ts <= ? AND COALESCE(how,'') != 'subframe' ORDER BY ts",
+        (t0, t1))]
+
+
+_HOW_TEXT = dict(_PAGE_TEXT, link="a link", new_tab="a new tab opened from a page", in_page="a move inside the site (or a reload)",
+                 link_unknown="a link, source not recorded")
+
+
+def page_load_lines(conn, t0: float, t1: float) -> list[str]:
+    """page_loads() as text lines: time, how, address, title, and the page it came from."""
+    out = []
+    for v in page_loads(conn, t0, t1):
+        title = " ".join((v["title"] or "").split())
+        out.append(f"{_hm(v['ts'])}  {_HOW_TEXT.get(v['how'] or '', v['how'] or 'unknown')}  {v['url']}"
+                   + (f"  “{title}”" if title else "") + (f"  from {v['from_url']}" if v["from_url"] else ""))
+    return out
+
+
+def input_around(conn, t0: float, t1: float, look_s: float = 900.0) -> str:
+    """Mac input during [t0, t1) and how long before / after it the nearest input was, as a note
+    for a PHONE line; '' when input was not being sampled then (before 2026-11-20). Whether the
+    Mac's keyboard was in use is the one direct sign of whether the phone was in hand."""
+    act = activity(conn, t0, t1)
+    if act is None:
+        return ""
+    used = lambda r: (r["keys"] or 0) + (r["clicks"] or 0) + (r["scrolls"] or 0) > 0
+    prev = next((r for r in conn.execute("SELECT * FROM activity_samples WHERE ts < ? AND ts >= ? ORDER BY ts DESC",
+                                         (t0 - BUCKET_S, t0 - look_s)) if used(r)), None)
+    nxt = next((r for r in conn.execute("SELECT * FROM activity_samples WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                                        (t1, t1 + look_s)) if used(r)), None)
+    n = act["keys"] + act["clicks"] + act["scrolls"]
+    during = (f"{act['keys']:.0f} keys, {act['clicks']:.0f} clicks, {act['scrolls']:.0f} scroll events" if n >= 1 else "none")
+    before = f"about {max(0.0, t0 - (prev['ts'] + BUCKET_S)):.0f} s before" if prev is not None else f"more than {look_s / 60:.0f} min before (or not sampled)"
+    after = f"about {max(0.0, nxt['ts'] - t1):.0f} s after" if nxt is not None else f"more than {look_s / 60:.0f} min after (or not sampled yet)"
+    return f"Mac input during this: {during}; last Mac input {before}, next {after} (10-second counts)"
