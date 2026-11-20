@@ -302,29 +302,81 @@ class ChunkEvaluator:
         self._examples_stamp = None
         self._system = None
 
+    # Precedents (the person's rulings on past segments) reach the model two ways. The newest
+    # RECENT_PRECEDENTS go in the system prompt: they carry his latest thinking, and the prompt
+    # stays cacheable. The ones that RESEMBLE the segments being judged go in each call's own
+    # message (_similar_precedents) - before 2026-11-19 only the latest 20 of ~300 were ever
+    # shown, picked by recency, so most of what he had taught was invisible on any given call.
+    RECENT_PRECEDENTS = 8
+    SIMILAR_PRECEDENTS = 20
+    _PREC_SQL = """SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task,
+                          r.note, r.hybrid, r.created, g.app, g.domain, g.title
+                   FROM seg_reviews r JOIN segments g ON g.id = r.segment_id ORDER BY r.created DESC"""
+
+    @staticmethod
+    def _precedent_line(r) -> str:
+        what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
+        verdict = " / ".join(v for v in (
+            r["content"], shown_switch(r["switch_label"]),
+            None if r["focused"] is None else ("focused" if r["focused"] else "unfocused"),
+            "self-distraction" if r["self_distraction"] else None,
+            "next task in the block" if r["next_task"] else None) if v)
+        if r["hybrid"]:
+            verdict += " + hybrid (inside a live discussion)"
+        elif r["hybrid"] == 0:
+            verdict += " (solo, not hybrid)"
+        note = f" ({r['note']})" if r["note"] else ""
+        return f"- {what} -> {verdict}{note}"
+
     def _examples(self, conn) -> str:
-        rows = conn.execute("""
-            SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task,
-                   r.note, r.hybrid, g.app, g.domain, g.title
-            FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
-            ORDER BY r.created DESC LIMIT 20""").fetchall()
+        rows = conn.execute(self._PREC_SQL + " LIMIT ?", (self.RECENT_PRECEDENTS,)).fetchall()
         if not rows:
             return ""
-        lines = ["The person has corrected past judgments - follow these precedents:"]
+        return "\n".join(["The person has corrected past judgments - follow these precedents (their most recent"
+                          " rulings; each call also lists the past rulings that resemble its own segments):"]
+                         + [self._precedent_line(r) for r in rows])
+
+    @staticmethod
+    def _title_words(t: str | None) -> set:
+        return {w for w in re.findall(r"[a-z0-9]{3,}", (t or "").lower())}
+
+    def _similar_precedents(self, conn, target: list[dict]) -> str:
+        """The person's past rulings on segments like the ones in `target`: same site (4), same
+        app where there is no site to compare (3), same app but another site (1), plus up to 3
+        for shared window-title words. A ruling needs 2 or more against some target segment;
+        the best SIMILAR_PRECEDENTS are listed, at most 5 per app+site so one busy site does
+        not crowd out the rest, newer first among equals. The newest few are in the system
+        prompt already and are left out here."""
+        rows = conn.execute(self._PREC_SQL).fetchall()[self.RECENT_PRECEDENTS:]
+        tids = {s["id"] for s in target}
+        tg = [(s.get("app") or "", s.get("domain") or "", self._title_words(s.get("title"))) for s in target]
+        scored = []
         for r in rows:
-            what = f"{r['app']} {r['domain'] or ''} | {(r['title'] or '')[:60]}"
-            verdict = " / ".join(v for v in (
-                r["content"], shown_switch(r["switch_label"]),
-                None if r["focused"] is None else ("focused" if r["focused"] else "unfocused"),
-                "self-distraction" if r["self_distraction"] else None,
-                "next task in the block" if r["next_task"] else None) if v)
-            if r["hybrid"]:
-                verdict += " + hybrid (inside a live discussion)"
-            elif r["hybrid"] == 0:
-                verdict += " (solo, not hybrid)"
-            note = f" ({r['note']})" if r["note"] else ""
-            lines.append(f"- {what} -> {verdict}{note}")
-        return "\n".join(lines)
+            if r["segment_id"] in tids:
+                continue
+            ra, rd, rw = r["app"] or "", r["domain"] or "", self._title_words(r["title"])
+            best = 0.0
+            for ta, td, tw in tg:
+                sc = 4.0 if rd and rd == td else (0.0 if ra != ta else 3.0 if not (rd and td) else 1.0)
+                if rw and tw:
+                    sc += 3.0 * len(rw & tw) / len(rw | tw)
+                best = max(best, sc)
+            if best >= 2.0:
+                scored.append((best, r))
+        scored.sort(key=lambda x: (-x[0], -x[1]["created"]))
+        out, per = [], {}
+        for _, r in scored:
+            k = (r["app"], r["domain"])
+            if per.get(k, 0) >= 5:
+                continue
+            per[k] = per.get(k, 0) + 1
+            out.append(r)
+            if len(out) >= self.SIMILAR_PRECEDENTS:
+                break
+        if not out:
+            return ""
+        return "\n".join(["The person's past rulings on segments that resemble ones in this stretch - follow these precedents:"]
+                         + [self._precedent_line(r) for r in out])
 
     def _system_blocks(self, conn) -> list[dict]:
         from .classifiers.claude_vision import _rules_doc, _rules_mtime
@@ -478,7 +530,9 @@ class ChunkEvaluator:
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         # Hold-off (Rules doc): only for first-time judgments of activity under an hour old.
         can_hold = extra is None and bool(target) and time.time() - min(s["clip_end"] for s in target) < HOLD_MAX_S
-        prompt_text = (f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
+        similar = self._similar_precedents(conn, target)
+        prompt_text = ((similar + "\n\n" if similar else "")
+                       + f"Toggl entries in this window:\n{tgtxt}\n\nActivity log:\n" + "\n".join(lines)
                        + (f"\n\nIMPORTANT - {extra}" if extra else "")
                        + ("\n\nJudge every segment marked EVALUATE (all of them, by id)." if target else
                           "\n\nNo segment is marked EVALUATE: leave `segments` empty.")

@@ -27,6 +27,10 @@ first commit 2026-08-29, in continuous development since.
   applies regardless.
 * **Learning**: reviews retrain the logistic model and the per-app/domain priors immediately, and
   the 40 most recent reviews (with your notes) are shown to Claude as examples.
+  The chunk evaluator sees your segment rulings as precedents two ways (`evaluator._examples`,
+  `_similar_precedents`): the 8 newest in its system prompt, and, in each call, up to 20 past
+  rulings that resemble the segments being judged (same site, same app, shared window-title
+  words; at most 5 per app+site). Until 2026-11-19 it saw only the latest 20 of ~300.
 * **Judgments** (redesigned 2026-11-19 to match the Rules doc). For every segment the evaluator
   gives: its content type; whether attention in it was **focused or unfocused**; and the switch
   into it, as `continuation`, `shift` (attention moved to something new) or `return`, with a
