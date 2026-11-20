@@ -35,7 +35,7 @@ def main() -> int:
     check("a click in the banner corner while a banner shows", signals.window_at(1600, 80, wins), ("Notification Center", 21))
     check("a click elsewhere while a banner shows is not a banner click", signals.window_at(300, 80, wins), ("Google Chrome", 0))
     check("a banner is showing", signals.banner_showing(wins), True)
-    check("desktop widgets alone are not a banner", signals.banner_showing(wins[2:]), False)
+    check("desktop widgets alone are not a banner", signals.banner_showing([w for w in wins if w["kCGWindowLayer"] != 21]), False)
 
     T, AB, FB = 1, 0x02000000, 0x01000000
     check("typed in the address bar", signals._how(T | AB, False, False), "typed")
