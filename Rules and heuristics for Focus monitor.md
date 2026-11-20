@@ -157,6 +157,10 @@ It's the app's job to review the data and make intelligent judgements about  whe
 * Phone time can count as part of a focus span if it's on track: a continuation of the thread I'm on (a call that is the task, looking something up for it). That holds even if the computer sits idle meanwhile.
 * Phone time never forms a focus span on its own. The only phone-only focus I can think of is meditation and cardio interval training, which should be tracked via toggl.
 * Time on my phone that is judged a shift is time away from the focus object, by the usual rule: less than 5 minutes is an interruption inside the focus span, 5 minutes or more ends it.
+* Evaluating phone segments is low priority compared to everything else. For the most part the phone is secondary.
+  * The main thing to evaluate on the phone is interruptions and self-distraction events.
+  * Because the app has so much less information about phone segments, its judgments of them are much lower confidence, and the app should flag that.
+  * Those low-confidence judgments should mostly not be passed to review questions, unless they're critical to something.
 * Phone data arrives late, often hours after the fact. A stretch with phone use in it is judged when its phone data lands, so a day's numbers can change after the fact.
 * The phone data only shows which app was on the screen and when. It does not show what I was doing in the app, and there are no screenshots. A plain glance at the lock screen leaves no record at all, so most of those are not counted. The only one that is recorded is swiping to the widgets on the lock screen, which I do about once a week.
 
