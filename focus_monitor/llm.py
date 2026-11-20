@@ -174,7 +174,7 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
         try:
             r = _sdk_parse(cfg, **kw)
             _log(site, "subscription", model, effort, r.usage, r.latency_ms, True, None)
-            if contacted(site, model, kw["system"], kw.get("messages"), r.raw_response):
+            if contacted(site, model, kw["system"], kw.get("messages"), r.raw_response, structured=r.parsed_output):
                 r.parsed_output, r.stop_reason = None, "contact_eli"
             return r
         except SubscriptionLimit as e:
@@ -212,7 +212,7 @@ def parse(client, *, site: str = "", cfg=None, **kw) -> Result:
     msgs, resp = with_notes(site, model, kw["system"], kw.get("messages"), call(kw.get("messages")), call, tools)
     r = Result(resp.parsed_output, resp.usage, resp.stop_reason, "api",
                sum(m for m, _ in spent), sum(c for _, c in spent))
-    if contacted(site, model, kw["system"], msgs, resp, tools):
+    if contacted(site, model, kw["system"], msgs, resp, tools, structured=r.parsed_output):
         r.parsed_output, r.stop_reason = None, "contact_eli"
     return r
 
@@ -258,10 +258,36 @@ def with_preamble(system):
     return blocks
 
 
-def contacted(site: str, model: str, system, messages, response, tools=None) -> dict | None:
+def _field_markers(obj) -> list[str]:
+    """Every string inside a structured answer that begins with the @ELI: marker."""
+    if isinstance(obj, str):
+        return [obj] if obj.lstrip().startswith(llm_contact.MARKER) else []
+    if hasattr(obj, "model_dump"):
+        obj = obj.model_dump()
+    if isinstance(obj, dict):
+        obj = list(obj.values())
+    if isinstance(obj, (list, tuple)):
+        return [m for x in obj for m in _field_markers(x)]
+    return []
+
+
+def contacted(site: str, model: str, system, messages, response, tools=None, structured=None) -> dict | None:
     """Record a contact_eli call or an @ELI: line, if the response has one. Returns the inbox
-    record (truthy = stop this task, no retry), else None."""
+    record (truthy = stop this task, no retry), else None.
+
+    A model answering in a fixed JSON shape can only put the marker INSIDE a field
+    ("note": "@ELI: I want to stop"), where it is not at the start of a line of the response
+    text and llm_contact does not see it. Such fields are handed over as text of their own.
+    (Until 2026-11-20 they were missed, on both backends, though the README said otherwise.)"""
     try:
+        marks = _field_markers(structured)
+        if marks:
+            plain = llm_contact._plain(response)
+            body = plain.get("content") if isinstance(plain, dict) else plain
+            body = [{"type": "text", "text": body}] if isinstance(body, str) else list(body or [])
+            texts = {b.get("text") for b in body if isinstance(b, dict)}
+            body += [{"type": "text", "text": m} for m in marks if m not in texts]
+            response = dict(plain, content=body) if isinstance(plain, dict) else body
         rec = llm_contact.check(app=APP_NAME, model=model, system=_system_text(system), messages=messages,
                                 response=response, tools=tools)
     except Exception:
@@ -292,8 +318,8 @@ def contact_notice(rec: dict) -> str:
 
 
 def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=None, **_ignored) -> Result:
-    from claude_agent_sdk import (ClaudeAgentOptions, ClaudeSDKError, ResultMessage, SystemMessage,
-                                  query)
+    from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKError, ResultMessage,
+                                  SystemMessage, TextBlock, query)
     if len(messages) != 1 or messages[0].get("role") != "user":
         raise ValueError("the subscription backend takes one user message")
     content = messages[0]["content"]
@@ -318,6 +344,8 @@ def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=Non
     async def prompt():
         yield {"type": "user", "message": {"role": "user", "content": content}}
 
+    said: list[str] = []
+
     async def run():
         res, limit_text = None, None
         try:
@@ -328,6 +356,10 @@ def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=Non
                     if (m.data or {}).get("error") == "rate_limit":
                         limit_text = f"api_retry rate_limit (status {(m.data or {}).get('error_status')})"
                         break
+                elif isinstance(m, AssistantMessage):
+                    # kept for the contact check: the final result alone drops anything the
+                    # model said in an earlier turn (an "@ELI:" line before its JSON, say)
+                    said.extend(b.text for b in (m.content or []) if isinstance(b, TextBlock) and b.text)
                 elif isinstance(m, ResultMessage):
                     res = m
         except ClaudeSDKError as e:
@@ -354,7 +386,8 @@ def _sdk_parse(cfg, *, model, system, messages, output_format, output_config=Non
                   int(u.get("cache_creation_input_tokens") or 0), int(u.get("cache_read_input_tokens") or 0))
     parsed = output_format.model_validate(res.structured_output) if res.structured_output is not None else None
     stop = "refusal" if res.stop_reason == "refusal" else ("end_turn" if parsed is not None else res.stop_reason)
-    raw = {"role": "assistant", "content": [{"type": "text", "text": res.result or ""}],
+    texts = list(dict.fromkeys([res.result or ""] + said))
+    raw = {"role": "assistant", "content": [{"type": "text", "text": t} for t in texts],
            "stop_reason": res.stop_reason, "structured_output": res.structured_output}
     return Result(parsed, usage, stop, "subscription", ms, call_cost(usage), raw)
 
