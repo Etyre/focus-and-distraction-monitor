@@ -485,6 +485,8 @@ def connect() -> sqlite3.Connection:
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
         conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")
+    if rcols and "budget_exempt" not in rcols:
+        conn.execute("ALTER TABLE eval_runs ADD COLUMN budget_exempt INTEGER NOT NULL DEFAULT 0")
     if rcols and "system" not in rcols:
         # The full evaluation transcript, so a review chat can talk to "the one who decided":
         # the exact system prompt, user prompt, screenshots sent, model, and the response.
@@ -652,7 +654,8 @@ def spend_today(conn) -> float:
                         (start,)).fetchone()
     trow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM thread_calls WHERE created >= ?",
                         (start,)).fetchone()
-    erow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM eval_runs WHERE created >= ?",
+    # (the history re-judgment is outside the budget: evaluator.run_reevaluations)
+    erow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM eval_runs WHERE created >= ? AND budget_exempt = 0",
                         (start,)).fetchone()
     qrow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM review_questions WHERE created >= ?",
                         (start,)).fetchone()

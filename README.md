@@ -459,6 +459,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   means the app cannot start again after its next restart.
 
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
+  * Everything judged before the 03:34 restart on 2026-11-20 was judged at low effort. The
+    history re-judgment is built but not started: `python -m focus_monitor rejudge-history --start`
+    queues one `reeval_queue` row per day (reason "judged at low effort"); the running app then
+    works through them newest first, after all other work, at most one call a minute
+    (`--every`), never on the API key (it waits while the subscription is at its limit), and
+    outside the daily budget (`eval_runs.budget_exempt`). `--pause` / `--resume` stop and continue
+    it; with no flag it prints progress. The judgments as they stood are copied to
+    `seg_evals_low_effort` first.
   * A focus span running past 4am was assembled as two pieces, one per day, and each had to
     qualify alone. `spans_and_events` now looks up to 8 hours past the edge of its window when
     activity crosses it (`_whole_spans`), and the piece of a qualifying span that lies inside the

@@ -1208,6 +1208,12 @@ def _invalidate_derived(conn, t0: float, t1: float, questions: bool, summaries: 
 
 
 WRONG_DISPLAY_REASON = "screenshots shown were of the wrong display"
+# The history re-judgment (Eli, 2026-11-20: "Yes all of it"). From 2026-08-31 until the restart
+# at 03:34 on 2026-11-20 the evaluator ran at "low" effort whatever config.toml said; everything
+# judged before that restart is judged again at the configured effort, newest day first.
+LOW_EFFORT_REASON = "judged at low effort"
+LOW_EFFORT_FIXED_AT = dt.datetime(2026, 11, 20, 3, 34, 17).timestamp()
+HISTORY_EVERY_S = 60.0           # at least this long between two history calls (kv rejudge.history.every_s overrides)
 PHONE_REASON = "phone data arrived"
 PHONE_LOOKBACK_S = 3 * 86400     # the phone pushes its log hours to a day late
 PHONE_MERGE_S = 300.0            # pickups this close together are re-judged in one call
@@ -1322,6 +1328,60 @@ def queue_wrong_display_rejudge(conn) -> int:
     return n
 
 
+def queue_history_rejudge(conn) -> int:
+    """Queue every logical day judged before LOW_EFFORT_FIXED_AT for re-judgment (reeval_queue,
+    one row per day), once. Started by hand (python -m focus_monitor rejudge-history --start):
+    Eli asked for another bug hunt before the history is judged again. The judgments as they stand are copied to seg_evals_low_effort
+    first: a re-judgment replaces the row, and the old answers are data worth keeping."""
+    from .config import day_bounds, logical_date
+    if db.kv_get(conn, "rejudge.history.queued") is not None:
+        return 0
+    first = conn.execute("SELECT MIN(g.start) FROM segments g JOIN seg_evals e ON e.segment_id = g.id").fetchone()[0]
+    if first is None:
+        return 0
+    # the first stretch judged after the fix marks where the low-effort judgments end
+    end = conn.execute("""SELECT MIN(g.start) FROM segments g JOIN seg_evals e ON e.segment_id = g.id
+                          WHERE e.created >= ? AND g.start >= ?""",
+                       (LOW_EFFORT_FIXED_AT, LOW_EFFORT_FIXED_AT - 2 * 3600)).fetchone()[0] or LOW_EFFORT_FIXED_AT
+    n = 0
+    with db.tx(conn):
+        conn.execute("CREATE TABLE IF NOT EXISTS seg_evals_low_effort AS SELECT * FROM seg_evals WHERE created < ?",
+                     (LOW_EFFORT_FIXED_AT,))
+        day = logical_date(first)
+        while day_bounds(day)[0] < end:
+            t0, t1 = day_bounds(day)
+            conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)",
+                         (t0, min(t1, end), LOW_EFFORT_REASON, time.time()))
+            n += 1
+            day += dt.timedelta(days=1)
+        db.kv_set(conn, "rejudge.history.queued", f"{n} days, {dt.datetime.now():%Y-%m-%d %H:%M}")
+    log.info("history re-judgment queued: %d days", n)
+    return n
+
+
+def history_status(conn) -> dict:
+    """Where the history re-judgment stands (python -m focus_monitor rejudge-history)."""
+    rows = conn.execute("SELECT * FROM reeval_queue WHERE reason=? ORDER BY t0", (LOW_EFFORT_REASON,)).fetchall()
+    left = [r for r in rows if r["done_at"] is None]
+    return {"days": len(rows), "days_left": len(left),
+            "working_on": dt.datetime.fromtimestamp(left[-1]["done_to"] or left[-1]["t0"]).strftime("%Y-%m-%d %H:%M") if left else None,
+            "paused": db.kv_get(conn, "rejudge.history.paused") == "1",
+            "calls": int(db.kv_get(conn, "rejudge.history.calls") or 0),
+            "last_call": db.kv_get(conn, "rejudge.history.last")}
+
+
+def _history_may_run(conn) -> bool:
+    """History work is paced and never spills onto the API key: it waits while it is paused,
+    while the subscription is at its limit, and for HISTORY_EVERY_S after the last call."""
+    if db.kv_get(conn, "rejudge.history.paused") == "1":
+        return False
+    cfg = load_config()
+    if cfg.llm_backend == "subscription" and not llm.subscription_available(cfg):
+        return False
+    every = float(db.kv_get(conn, "rejudge.history.every_s") or HISTORY_EVERY_S)
+    return time.time() - float(db.kv_get(conn, "rejudge.history.last") or 0) >= every
+
+
 def _attempt(conn, key: str) -> int:
     """Count one more failed attempt at something, and return the total so far."""
     n = int(db.kv_get(conn, key) or 0) + 1
@@ -1340,10 +1400,16 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
         return 0
     done = 0
     for _ in range(max_chunks):
-        # Newest first: recent days are the ones still under review.
-        q = conn.execute("SELECT * FROM reeval_queue WHERE done_at IS NULL ORDER BY t0 DESC LIMIT 1").fetchone()
+        # Newest first: recent days are the ones still under review. The history re-judgment
+        # comes after everything else, and only when it may run (_history_may_run).
+        q = conn.execute("SELECT * FROM reeval_queue WHERE done_at IS NULL ORDER BY (reason = ?), t0 DESC LIMIT 1",
+                         (LOW_EFFORT_REASON,)).fetchone()
         if not q:
             break
+        history = q["reason"] == LOW_EFFORT_REASON
+        if history and not _history_may_run(conn):
+            break
+        call_at = time.time()
         horizon = time.time() - LAZY_S
         start = max(q["t0"], q["done_to"] or q["t0"])
         end = min(q["t1"], horizon)
@@ -1356,6 +1422,11 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             extra = ("the phone log for this window arrived AFTER the computer activity was judged: the "
                      "PHONE lines are new. Judge each one marked EVALUATE PHONE, in the context of the "
                      "activity around it. No computer segment is up for judgment in this call.")
+        elif history:
+            extra = ("your earlier judgment of this window was made in a quick pass at low effort. Judge "
+                     "every segment again, carefully, from the log and the screenshots. The 'prior "
+                     "judgment' notes are from that quick pass: a hint at most, never a reason to keep a "
+                     "judgment the evidence does not support.")
         elif q["reason"] == WRONG_DISPLAY_REASON:
             extra = ("your earlier judgment of this window was made from screenshots of the WRONG "
                      "display: the person had two monitors and you were shown the one they were not "
@@ -1375,6 +1446,14 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
         ev.last_answer = "parsed"   # (a chunk with nothing to send returns before the call)
         try:
             n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q)
+            if history:
+                # Outside the daily budget: 2,500 history calls must not stop today's judging
+                # (spend_today leaves these runs out). The pacing clock counts real calls only.
+                made = conn.execute("UPDATE eval_runs SET budget_exempt=1 WHERE created >= ? AND t0=? AND t1=?",
+                                    (call_at, start, c1)).rowcount
+                if made:
+                    db.kv_set(conn, "rejudge.history.last", str(time.time()))
+                    db.kv_set(conn, "rejudge.history.calls", str(int(db.kv_get(conn, "rejudge.history.calls") or 0) + 1))
         except Exception:
             log.exception("re-evaluation failed (%s)", dt.datetime.fromtimestamp(start))
             if _attempt(conn, f"reeval.fail.{q['id']}") >= 3:   # a failed call is not a finished one: try again later, three times
