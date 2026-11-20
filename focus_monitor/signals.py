@@ -482,7 +482,7 @@ _PAGE_TEXT = {"typed": "typed the address", "bookmark": "opened from a bookmark"
               "back_forward": "went back / forward", "form": "submitted a form",
               "start": "opened with the window (start page or restored tab)",
               "external": "link opened from another app",
-              "already_open": "no new page load (a tab that was already open, or movement inside the page)",
+              "already_open": "no new page load (tab already open, or a move inside the page)",
               "link_unknown": "a link, source page not recorded"}
 _PAGE_SILENT = ("in_page", "subframe", "other")   # say nothing: these do not tell how the person got there
 
