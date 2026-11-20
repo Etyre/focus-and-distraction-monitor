@@ -140,6 +140,21 @@ or the README where it belongs.
 23. **Delete the switch chat and the thread resolver?**
     Both are dead code on the pre-redesign scheme (no caller, no stored use since August).
 
+26. **How much of the subscription should the app's judging use?**
+    Giving the evaluator everything made each call far larger: about 200,000 tokens (all 325
+    rulings, up to 60 screenshots) against a few thousand before, roughly $0.50 to $1.30 a call at
+    API prices instead of $0.02 to $0.13. One real call ran fine on the subscription (27 s). At 80
+    to 340 evaluator calls a day this draws much more of the weekly Opus allowance your own Claude
+    sessions share, and when the limit is hit the app falls back to the API key (real money) for
+    everything except the history re-judgment.
+    Choices: (a) keep it all; (b) keep the screenshots, show only the relevant rulings in full and
+    the rest as one line each; (c) a lower image budget.
+
+27. **The history re-judgment is much larger than when you said "all of it".**
+    About 24 days (from 10-27) at roughly 8 segments a call is on the order of 1,000 to 1,500
+    calls of that size. It runs only on the subscription, one call a minute at most, and can be
+    paused. Decide the pace, or whether to do the most recent days first and look at the result.
+
 ## Display
 
 24. **Show pauses on the Day view.**
