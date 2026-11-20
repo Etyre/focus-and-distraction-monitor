@@ -38,7 +38,8 @@ class QOption(BaseModel):
     segment_id: int = Field(description="The segment this option's edit applies to.")
     switch_label: str | None = Field(default=None, description="continuation | shift | return, when the option settles the thread relation. (shift = attention moved to something new, a separate thread.)")
     antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (shift) and content-only options.")
-    focused: bool | None = Field(default=None, description="Only when the DOUBT is whether the person's attention was focused in the segment: true for the option saying it was focused, false for the option saying it was unfocused. None for every other option.")
+    focused: bool | None = Field(default=None, description="Whether the person's attention was focused in the segment, when the option's reading says: true for a reading in which they were getting something specific done (an errand, a lookup, the task itself), false for a reading in which they were not (a drift, browsing with nothing in mind). None when the reading does not say.")
+    self_distraction: bool | None = Field(default=None, description="For a segment that is a shift or a return (or that this option makes one): true when the option's reading is that they drifted there without deciding to, false when its reading is that they went there on purpose. Set on every option of such a question; None only when the reading says nothing about why they went there.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
     hybrid: bool | None = Field(default=None, description="True when the option says the activity was being done INSIDE a live discussion with someone (e.g. 'reading the bill with Dave on a call while taking notes') - content stays the activity; False when the option asserts solo work; None when the option says nothing about it.")
 
@@ -92,8 +93,27 @@ trigger_segment_id - "was the Amazon stretch part of the checklist work, or its 
 question whose options mix them. "Drifting", "browsing without intent", "perusing", "getting \
 pulled in" is content='passive' and belongs to a content question; on a thread question such \
 wording is just flavour, and two thread options that differ only in words about intent or mood \
-are ONE option (the app merges them). Whether a separate thread then counts as a self-distraction \
-is derived from the content and what followed; it is never asked.
+are ONE option.
+ON PURPOSE OR A DRIFT (added 2026-11-20). On every shift, and on a return to a distraction, the \
+app keeps one more judgment: self-distraction - the person drifted there without deciding to - \
+and each one is counted as an event in their day. The current judgment line of a DOUBT says \
+"self-distraction" when the app has it as one. An answer changes that record only through the \
+option's own fields, so the fields must say everything the label says: before this rule, the \
+answer "I was after something specific: an errand" set content='task' and nothing else, and the \
+visit stayed counted as a self-distraction and as unfocused time. Therefore, when the segment in \
+doubt is a shift or a return (switch=shift or switch=return in its current judgment), or an \
+option would make it one:
+  - set self_distraction on EVERY option: true when its reading is that they drifted there \
+without deciding to ("a drift, opened it with nothing in mind", "browsing the deals with no \
+particular goal"), false when its reading is that they went there on purpose ("an errand", \
+"checking something specific", "a planned break", "part of the A task"). Leave it null only on \
+an option whose reading says nothing about why they went there (a bare "a separate thread").
+  - set focused on every option whose reading implies it: true for getting something specific \
+done, false for a drift.
+This is not a dimension of its own and never a third question: it travels with the reading. The \
+question "were you after something specific, or was it a drift?" is the content question, and \
+its options are (content='task', focused=true, self_distraction=false) against \
+(content='passive', focused=false, self_distraction=true).
 A thread question presupposes a thread: it only makes sense when there has been enough \
 sustained attention for there to be one. A few short segments of poking around (a minute here, \
 two minutes there, inside a bigger stretch of something else) are not a thread to be "the same \
@@ -117,7 +137,8 @@ into a label choice.
 
 Rules for options:
 - Natural language first ("a continuation of the essay work"), schema underneath: each option \
-sets switch_label (a thread relation) or a content label.
+sets switch_label (a thread relation) or a content label, plus self_distraction and focused \
+where ON PURPOSE OR A DRIFT asks for them.
 - A SAME-thread option (continuation/return) also names its antecedent_id: the id of the \
 segment in thread A that the person would be agreeing this continues (pick the nearest \
 A-thread segment visible in the log). This makes the answer an edge in the thread graph, \
@@ -416,7 +437,10 @@ def _resolved_edit(conn, o: dict) -> tuple:
         ante = None
     content = o["content"] if o["content"] is not None else (cur["content"] if cur else None)
     hybrid = o["hybrid"] if o["hybrid"] is not None else (bool(cur["hybrid"]) if cur and cur["hybrid"] is not None else None)
-    return (o["segment_id"], sw, ante, content, hybrid, o.get("focused"))
+    # self_distraction as written, not filled in: an option that sets it and one that leaves it
+    # alone are different rulings (2026-11-20), and it only lands on a shift or a return.
+    sd = o.get("self_distraction") if sw in ("interruption", "return") else None
+    return (o["segment_id"], sw, ante, content, hybrid, o.get("focused"), sd)
 
 
 def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
@@ -505,7 +529,7 @@ def score_questions(conn, limit: int | None = None, only_stale: bool = True) -> 
                     vals[k].append(m[k])
                 continue
             sid = o.get("segment_id") or r["segment_id"]
-            ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid", "focused")}}
+            ov = {sid: {k: o.get(k) for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid", "focused", "self_distraction")}}
             if not any(v is not None for v in ov[sid].values()):
                 continue
             m = stats.daily_metrics(conn, day, ov)
@@ -991,10 +1015,15 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                     # person then has to disown; the neutral one appended below replaces them.
                     continue
                 ante = o.antecedent_id if o.switch_label in ("continuation", "return") else None
+                # self_distraction: the person's ruling on why they went there (true = drifted
+                # without deciding to, false = on purpose). Until 2026-11-20 no option could carry
+                # it, so "I was after something specific: an errand" (q2942) left the evaluator's
+                # self-distraction standing. It means nothing on a continuation.
                 opts.append({"label": o.label, "segment_id": o.segment_id,
                              "switch_label": o.switch_label, "antecedent_id": ante,
                              "interruption_kind": None, "content": o.content,
-                             "hybrid": o.hybrid, "focused": o.focused})
+                             "hybrid": o.hybrid, "focused": o.focused,
+                             "self_distraction": None if o.switch_label == "continuation" else o.self_distraction})
             # Options must differ in the EDIT they make, not just in their wording. The model
             # likes to split one reading by what came after it ("a one-off question" vs "the
             # start of a run of lookups") - both write the same new thread on this segment, and

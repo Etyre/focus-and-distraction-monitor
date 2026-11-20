@@ -849,7 +849,15 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                       (o["phone_key"], e.get("switch_label"), e.get("content"), e.get("focused"), e.get("self_distraction"),
                        e.get("away"), (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"),
                        time.time()))
-        if o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None:
+        # self_distraction on an option (since 2026-11-20): true = I drifted there without deciding
+        # to, false = I went there on purpose. Before, an answer could keep or clear the
+        # evaluator's flag but never set it, so "I was after something specific: an errand"
+        # (q2942: content task, focused) left the visit counted as a self-distraction event.
+        # Options stored before that have no such field: None = leave it as it is. Like
+        # edits.write_seg_review, it is not kept on a continuation, where it means nothing.
+        o_sd = o.get("self_distraction") if o.get("switch_label") != "continuation" else None
+        if (o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None
+                or o_sd is not None):
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
             undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
             osw = o.get("switch_label")
@@ -857,12 +865,15 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                     if osw in ("continuation", "return")
                     else (None if osw else (prev["antecedent_id"] if prev else None)))
             _keep = lambda k: prev[k] if prev is not None and k in prev.keys() else None
+            kept_kind = prev["interruption_kind"] if prev else None
+            if o_sd is False and kept_kind == "self_distraction":
+                kept_kind = None   # an older ruling's kind must not contradict "on purpose"
             c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
                       " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (o["segment_id"],
                        o.get("content") or (prev["content"] if prev else None),
                        osw or (prev["switch_label"] if prev else None),
-                       o.get("interruption_kind") if osw == "interruption" else (None if osw else (prev["interruption_kind"] if prev else None)),
+                       o.get("interruption_kind") if osw == "interruption" else (None if osw else kept_kind),
                        ante,
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
                        (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None)),
@@ -870,7 +881,8 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                        prev["focus_exception"] if prev else None,  # a question answer never touches the ruling
                        # the person's focused/unfocused ruling: set by the option, else kept
                        (int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused")),
-                       (None if osw else _keep("self_distraction")), (None if osw else _keep("next_task"))))
+                       (int(bool(o_sd)) if o_sd is not None else (None if osw else _keep("self_distraction"))),
+                       (None if osw else _keep("next_task"))))
             # which row this answer wrote, so clearing the answer later can tell whether the
             # ruling is still that one or has been edited by hand since (see _undo_question_answer)
             undo["seg_written"] = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()[0]
@@ -1084,7 +1096,8 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
             opts.append({"label": j["label"], "segment_id": segment_id,
                          "switch_label": j.get("switch_label"), "antecedent_id": j.get("antecedent_id"),
                          "interruption_kind": None, "content": j.get("content"), "hybrid": j.get("hybrid"),
-                         "focused": j.get("focused"), "proposed_from": mid})
+                         "focused": j.get("focused"), "self_distraction": j.get("self_distraction"),
+                         "proposed_from": mid})
             idx = len(opts) - 1
             with db.tx(c):
                 c.execute("UPDATE review_questions SET options=? WHERE id=?", (_json.dumps(opts), q["id"]))

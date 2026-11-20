@@ -266,16 +266,99 @@ def day_start_hour() -> int:
     return _DAY_HOUR
 
 
+# ---- time zones --------------------------------------------------------------------------------
+# Days and clock times follow the zone the Mac was in WHEN the activity happened, not the zone it
+# is in now. Until 2026-11-20 everything used the process's current zone: after the Mac moved
+# from Pacific to Eastern time on 2026-11-08, every earlier day was cut at 1am as lived instead
+# of 4am (16 of 75 days off by 10+ focus minutes), and re-judgments showed old activity three
+# hours late. The history is a small file, one entry per change, appended by the collector
+# (note_timezone). Without the file (tests, a fresh install) the system zone applies throughout.
+TZ_PATH = DATA_DIR / "timezones.json"
+_TZ = (None, [])   # (file mtime, [(since, ZoneInfo)])
+
+
+def _tz_history() -> list:
+    global _TZ
+    try:
+        m = TZ_PATH.stat().st_mtime
+    except OSError:
+        return []
+    if _TZ[0] != m:
+        import json
+        from zoneinfo import ZoneInfo
+        try:
+            rows = sorted((float(r["since"]), ZoneInfo(r["tz"])) for r in json.loads(TZ_PATH.read_text()))
+        except Exception:   # an unreadable file must not take the app down: fall back to the system zone
+            rows = []
+        _TZ = (m, rows)
+    return _TZ[1]
+
+
+def zone_at(ts: float):
+    """The time zone the Mac was in at `ts` (a ZoneInfo), or None for the system zone."""
+    z = None
+    for since, zone in _tz_history():
+        if since > ts:
+            break
+        z = zone
+    return z
+
+
+def local_dt(ts: float) -> _dt.datetime:
+    """`ts` as the wall-clock time where the Mac was then. Use this, not datetime.fromtimestamp,
+    for any time shown to a model or used to decide which day something belongs to."""
+    z = zone_at(ts)
+    return _dt.datetime.fromtimestamp(ts, z).replace(tzinfo=None) if z is not None else _dt.datetime.fromtimestamp(ts)
+
+
+def system_zone_name() -> str | None:
+    try:
+        p = os.path.realpath("/etc/localtime")
+        return p.split("zoneinfo/", 1)[1] if "zoneinfo/" in p else None
+    except OSError:
+        return None
+
+
+def note_timezone(now: float | None = None) -> str | None:
+    """Record the system time zone if it differs from the last one recorded (called by the
+    collector every minute or so). Returns the new zone's name when it changed."""
+    import json
+    name = system_zone_name()
+    if not name:
+        return None
+    try:
+        rows = json.loads(TZ_PATH.read_text()) if TZ_PATH.exists() else []
+    except Exception:
+        return None     # never overwrite a file we could not read
+    if rows and sorted(rows, key=lambda r: r["since"])[-1]["tz"] == name:
+        return None
+    rows.append({"since": 0.0 if not rows else float(now if now is not None else _time.time()), "tz": name})
+    tmp = TZ_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(rows, key=lambda r: r["since"]), indent=1))
+    os.replace(tmp, TZ_PATH)
+    return name
+
+
 def logical_date(ts: float | None = None) -> _dt.date:
     """The logical day a timestamp belongs to, where days run from day_start_hour to the same hour
-    next day. 1am on May 12 (with a 4am start) belongs to May 11."""
+    next day. 1am on May 12 (with a 4am start) belongs to May 11. In the zone of the time."""
     ts = _time.time() if ts is None else ts
-    return (_dt.datetime.fromtimestamp(ts) - _dt.timedelta(hours=day_start_hour())).date()
+    return (local_dt(ts) - _dt.timedelta(hours=day_start_hour())).date()
+
+
+def _day_start(day: _dt.date) -> float:
+    t = _dt.datetime.combine(day, _dt.time(hour=day_start_hour()))
+    guess = t.timestamp()                      # in the system zone
+    for _ in range(2):                         # settle on the zone in force at that moment
+        z = zone_at(guess)
+        if z is None:
+            return t.timestamp()
+        guess = t.replace(tzinfo=z).timestamp()
+    return guess
 
 
 def day_bounds(day: _dt.date) -> tuple[float, float]:
-    """[day_start_hour on `day`, day_start_hour on the next day). Not start + 24 h: on the two
-    clock-change days that left an hour in no day (autumn) or in two (spring)."""
-    t = _dt.time(hour=day_start_hour())
-    return (_dt.datetime.combine(day, t).timestamp(),
-            _dt.datetime.combine(day + _dt.timedelta(days=1), t).timestamp())
+    """[day_start_hour on `day`, day_start_hour on the next day), each in the zone the Mac was in
+    then. Not start + 24 h: a clock-change day is 23 or 25 hours, and a day the Mac changed zone
+    is as long as it was lived (2026-11-08, Pacific to Eastern: 21 hours)."""
+    return _day_start(day), _day_start(day + _dt.timedelta(days=1))

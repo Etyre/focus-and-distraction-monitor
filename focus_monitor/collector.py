@@ -99,6 +99,27 @@ class WindowState:
         return host[4:] if host.startswith("www.") else host
 
 
+# A tab title's leading unread counter or status mark: "(1) Notifications / X", "(20+) Home",
+# "● Draft", "🔴 Live". See same_window.
+_TITLE_COUNTER = re.compile(r"^(?:\s*(?:\(\d{1,4}\+?\)|[●•◦○◉⚫⚪🔴🟠🟡🟢🔵🟣🔔🔕]\ufe0f?))+\s*")
+
+
+def _title_key(title: str) -> str:
+    return _TITLE_COUNTER.sub("", title) or title   # a title that is nothing but a counter stays as it is
+
+
+def same_window(a: WindowState | None, b: WindowState | None) -> bool:
+    """Whether two readings are the same window for the purpose of segments and switches: the
+    same app, address and title, with a leading unread counter or status mark left out of the
+    title. Sites count notifications in the tab title, so "(1) Notifications / X" turning into
+    "Notifications / X" started a new segment and a switch with nobody touching anything (294
+    such pairs by 2026-11-20, on x.com and tinder.com). The stored title is still the one seen
+    when the segment started."""
+    if a is None or b is None:
+        return a is b
+    return a.app == b.app and a.url == b.url and _title_key(a.title) == _title_key(b.title)
+
+
 def _window_list_title(app: str) -> str:
     """Title of the app's frontmost normal window, from the window list (needs only Screen
     Recording, which the app already holds for screenshots). The list is front to back."""
@@ -280,6 +301,12 @@ class Collector:
         self.short_idle_start: float | None = None  # start of a current pause in input, if any
         self.current_start: float = 0.0
         self.first_id: int | None = None   # the first segment this process opened (see _absorb_restart)
+        # While the screen is locked: when input stopped before the lock (None when not locked).
+        # Input on the lock screen itself (a key that wakes the display) does not move it.
+        self.lock_idle_start: float | None = None
+        # The first locked tick of a process that started locked and has opened no segment yet:
+        # where its first segment begins if the person comes back before the away threshold.
+        self.started_locked_at: float | None = None
         self.signals = None   # extra signals beside the captures (signals.py); started in run()
         self._recover()
 
@@ -335,7 +362,7 @@ class Collector:
             # Only real window switches need classification: not idle transitions, not neutral windows
             # (presence checks etc.), and a switch out of a neutral window is attributed to the last
             # real segment before it - so the neutral window is transparent.
-            same_as_before = (self.last_real_state is not None and state == self.last_real_state)
+            same_as_before = (self.last_real_state is not None and same_window(state, self.last_real_state))
             if (not idle and not neutral and self.last_real_id is not None and not self.current_idle
                     and not same_as_before):
                 self.conn.execute(
@@ -350,28 +377,48 @@ class Collector:
         self.current_id, self.current_state, self.current_idle = new_id, state, idle
         self.current_start = at
         self.candidate = None
+        self.started_locked_at = None
         log.info("segment %s: %s | %s | %s%s", new_id, "IDLE" if idle else state.app,
                  state.title[:60] if state else "", state.domain if state else "", " [neutral]" if neutral else "")
 
     def _go_away(self, at: float):
         self._switch_to(None, at, True)
 
-    def _absorb_restart(self, start: float) -> bool:
+    def _absorb_restart(self, start: float) -> list[int] | None:
         """The app was restarted while the person was already away: the segment it opened on
         starting lies wholly inside the absence (which began at `start`, before that segment).
         Without this the away time was clamped to begin at the restart, and the minutes between
         the last input and the restart stayed credited to the segment before (2 minutes on
         2026-11-19 21:01; a `restart --when-idle` does this every time the person stays away).
-        Only handles the plain case - the one segment opened since this process started; anything
-        else keeps the old clamp. That segment is kept as a zero-length row at the absence's
-        start (nothing is deleted); its captures move to the away segment with the rest."""
-        if start >= self.current_start or self.current_id is None or self.current_idle or self.first_id != self.current_id:
-            return False
+        Only handles the plain cases - the one segment opened since this process started, or no
+        segment yet (a start with the screen locked opens none; 2026-11-20); anything else keeps
+        the old clamp and returns None. That segment is kept as a zero-length row at the absence's
+        start (nothing is deleted); its captures move to the away segment with the rest.
+
+        Returns the ids of the EARLIER segments it changed, for the caller to pass to
+        db.move_late_shots once the away segment exists: pulling a segment's end back left the
+        captures taken after it on that segment (segment 36636 on 2026-11-20: 18 s long, holding
+        4 captures from after its end). Two kinds: the segment that was open when input stopped
+        (its end is pulled back to `start`), and any that began after input stopped and ended
+        before the restart - a window that came forward by itself, or an away segment the old
+        process had already opened. Those would stay as activity inside the away time, so they
+        too become zero-length rows at `start`, like the restart segment."""
+        if self.current_idle:
+            return None
+        if self.current_id is not None and (start >= self.current_start or self.first_id != self.current_id):
+            return None
+        below = self.current_id if self.current_id is not None else 2 ** 62
         with db.tx(self.conn):
-            self.conn.execute("UPDATE segments SET end=? WHERE end>? AND start<=? AND id<?", (start, start, start, self.current_id))
-            self.conn.execute("UPDATE segments SET start=?, end=? WHERE id=?", (start, start, self.current_id))
+            cut = [r[0] for r in self.conn.execute(
+                "SELECT id FROM segments WHERE end>? AND start<=? AND id<?", (start, start, below))]
+            inside = [r[0] for r in self.conn.execute(
+                "SELECT id FROM segments WHERE start>? AND id<?", (start, below))]
+            self.conn.execute("UPDATE segments SET end=? WHERE end>? AND start<=? AND id<?", (start, start, start, below))
+            self.conn.execute("UPDATE segments SET start=?, end=? WHERE start>? AND id<?", (start, start, start, below))
+            if self.current_id is not None:
+                self.conn.execute("UPDATE segments SET start=?, end=? WHERE id=?", (start, start, self.current_id))
         self.current_start = start
-        return True
+        return cut + inside
 
     def tick(self):
         now = time.time()
@@ -379,6 +426,17 @@ class Collector:
         self.last_tick = now
         try:
             HEARTBEAT_PATH.touch()  # liveness signal for the launcher's watchdog
+            if time.time() - getattr(self, "_tz_checked", 0.0) > 60:
+                # Days and the times shown to models follow the zone the Mac was in at the
+                # time (config.local_dt); a change of zone is recorded here, once a minute.
+                self._tz_checked = time.time()
+                try:
+                    from .config import note_timezone
+                    z = note_timezone()
+                    if z:
+                        log.info("time zone is now %s", z)
+                except Exception:
+                    log.exception("could not record the time zone")
         except OSError:
             pass
         if self.current_id is not None and gap < self.cfg.idle_seconds:
@@ -391,35 +449,78 @@ class Collector:
             self.signals.sample(now)   # input counts, audio/mic/camera, clicks, banners, page visits; never raises
         if self.paused:
             if not self.current_idle:  # record the pause as away time so spans break cleanly
+                log.info("away: tracking is paused")
                 self._switch_to(None, now, True)
+            self.lock_idle_start = None
             return
         idle_for = idle_seconds()
         locked = screen_locked()
         # Time with no activity, accounting for a suspended process during sleep.
         inactive_for = max(idle_for, gap)
-        if inactive_for >= self.cfg.idle_seconds or locked:
+        # A locked screen is not "away" by itself (until 2026-11-20 it was, at once and from the
+        # moment of the lock). On battery the display sleeps 2 minutes after the last input and
+        # the session then reports itself locked, so every 2-to-10-minute pause became an away
+        # segment and ended the focus span: 122 of the 190 away segments opened by the lock
+        # branch in the logged period lasted under 10 minutes (median 322 s). Locked time is
+        # time without input: it counts from the last input BEFORE the lock, and becomes away
+        # only at idle_seconds, backdated like any other absence. Shorter, it is a short break.
+        if locked:
+            if self.lock_idle_start is None:
+                self.lock_idle_start = now - inactive_for
+                if self.current_id is None:
+                    self.started_locked_at = now
+            inactive_for = max(inactive_for, now - self.lock_idle_start)
+        elif self.lock_idle_start is not None:
+            # First tick after the unlock. If the process slept through the lock (no locked tick
+            # reached the threshold), the absence is still measured from before the lock.
+            if not self.current_idle and now - idle_for - self.lock_idle_start >= self.cfg.idle_seconds:
+                inactive_for = max(inactive_for, now - self.lock_idle_start)
+            self.lock_idle_start = None
+        if inactive_for >= self.cfg.idle_seconds:
             if not self.current_idle:
                 # Away: the span ends when the inactivity began, not when we noticed it.
-                start = now if (locked and inactive_for < self.cfg.idle_seconds) else now - inactive_for
-                self._go_away(max(start, self.current_start) if not self._absorb_restart(start) else start)
+                start = now - inactive_for
+                log.info("away: %.0fs since last input, screen %s", inactive_for, "locked" if locked else "not locked")
+                absorbed = self._absorb_restart(start)
+                self._go_away(start if absorbed is not None else max(start, self.current_start))
+                for sid in absorbed or ():
+                    db.move_late_shots(self.conn, sid, start, self.current_id)
             self.short_idle_start = None
+            return
+        if locked:
+            # Nothing to look at and nothing to capture while locked. The pause is carried as a
+            # pending short break from when input stopped; the open segment continues.
+            if not self.current_idle and self.short_idle_start is None:
+                self.short_idle_start = self.lock_idle_start
             return
         # Track short pauses in keyboard/mouse input (logged, but they don't break spans).
         if idle_for >= self.cfg.short_inactivity_seconds:
             if self.short_idle_start is None:
                 self.short_idle_start = now - idle_for
         elif self.short_idle_start is not None:
-            self.conn.execute("INSERT INTO inactivity(start, end) VALUES (?,?)",
-                              (self.short_idle_start, now - idle_for))
-            log.info("short break: %.0fs", now - idle_for - self.short_idle_start)
+            # A pause that began with a lock can be shorter than a short break (locked for 20 s):
+            # that one is not recorded.
+            if now - idle_for - self.short_idle_start >= self.cfg.short_inactivity_seconds:
+                self.conn.execute("INSERT INTO inactivity(start, end) VALUES (?,?)",
+                                  (self.short_idle_start, now - idle_for))
+                log.info("short break: %.0fs", now - idle_for - self.short_idle_start)
             self.short_idle_start = None
         state = current_window(self.cfg.title_apps)
         if state is None or state.app in self.cfg.ignore_apps:
             return
         if self.current_idle or self.current_state is None:
-            self._switch_to(state, now, False)
+            # A process that started with the screen locked (a `restart --when-idle` fires after
+            # 120 s without input, just when the display sleeps on battery) opened nothing while
+            # locked. Back before the away threshold, its first segment starts where the process
+            # began watching, so the pause sits inside a segment like any other short break
+            # instead of leaving a hole in the record. The capture is still dated now.
+            at = self.started_locked_at if (self.started_locked_at is not None and not self.current_idle) else now
+            self._switch_to(state, at, False)
+            if at != now:
+                self.conn.execute("UPDATE segment_shots SET ts=? WHERE segment_id=?", (now, self.current_id))
+                self.last_shot_time = now
             return
-        if state == self.current_state:
+        if same_window(state, self.current_state):
             self.candidate = None
             if now - self.last_shot_time >= self.cfg.refresh_screenshot_seconds:
                 shots = take_screenshots(self.cfg, "last")
@@ -433,7 +534,7 @@ class Collector:
                 self.last_shot_time = now
             return
         # Different window: debounce
-        if self.candidate is None or self.candidate[0] != state:
+        if self.candidate is None or not same_window(self.candidate[0], state):
             self.candidate = (state, now)
         elif now - self.candidate[1] >= self.cfg.min_segment_seconds:
             self._switch_to(state, self.candidate[1], False)
