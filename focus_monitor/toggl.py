@@ -116,6 +116,12 @@ class TogglSync:
         except Exception as e:
             log.warning("toggl sync failed: %s", e)
             return None
+        if not self.projects_at:
+            # The project list has never been fetched (it failed just now while the entries call
+            # worked): writing every entry with an empty project would read as a correction to
+            # each one, and queue days of re-evaluation - twice, as the names came back.
+            log.warning("toggl: entries fetched but no project list yet - not storing this round")
+            return None
         changed = 0
         touched: list[tuple[float, float]] = []   # time ranges whose intent statement changed
         with self.conn:
@@ -127,15 +133,17 @@ class TogglSync:
                          self.conn.execute("SELECT id, synced FROM toggl_entries WHERE stop IS NULL")}
             seen = set()
             for e in entries:
-                row = (_ts(e["start"]), _ts(e.get("stop")), e.get("description") or "",
-                       self.projects.get(e.get("project_id") or 0, ""), ", ".join(e.get("tags") or []))
-                seen.add(e["id"])
                 old = before.get(e["id"])
+                pid = e.get("project_id") or 0
+                # a project newer than the cached list (refreshed every 6 h): keep the name on record
+                project = self.projects.get(pid, old[3] if (old and pid) else "") if pid else ""
+                row = (_ts(e["start"]), _ts(e.get("stop")), e.get("description") or "", project, ", ".join(e.get("tags") or []))
+                seen.add(e["id"])
                 if old != row:
                     changed += 1
                     if old is None:
-                        if row[1] is not None and row[0] < time.time() - 1800:
-                            touched.append((row[0], row[1]))   # an entry added after the fact
+                        if row[0] < time.time() - 1800:   # an entry added after the fact, stopped or still running
+                            touched.append((row[0], row[1] if row[1] is not None else time.time()))
                     else:
                         touched += _edit_ranges(old, row, synced_at.get(e["id"]))
                 self.conn.execute(

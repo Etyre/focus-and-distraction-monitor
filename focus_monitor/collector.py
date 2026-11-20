@@ -271,12 +271,15 @@ class Collector:
         self.current_idle = False
         self.candidate: tuple[WindowState, float] | None = None
         self.last_shot_time = 0.0
-        self.paused = False
+        # Kept across restarts: a queued restart or a crash relaunch must not quietly resume
+        # recording (and taking captures) after the person paused it. (Until 2026-11-20 it did.)
+        self.paused = db.kv_get(self.conn, "collector.paused") == "1"
         self.last_tick = 0.0
         self.last_real_id: int | None = None  # last non-idle, non-neutral segment
         self.last_real_state: WindowState | None = None
         self.short_idle_start: float | None = None  # start of a current pause in input, if any
         self.current_start: float = 0.0
+        self.first_id: int | None = None   # the first segment this process opened (see _absorb_restart)
         self.signals = None   # extra signals beside the captures (signals.py); started in run()
         self._recover()
 
@@ -289,8 +292,17 @@ class Collector:
         if self.current_id is not None:
             self.conn.execute("UPDATE segments SET end=? WHERE id=?", (at, self.current_id))
 
-    def _open_segment(self, state: WindowState | None, at: float, idle: bool, neutral: bool = False) -> int:
-        shots = [] if (idle or neutral) else take_screenshots(self.cfg, "first")
+    def set_paused(self, paused: bool):
+        """Called from the menu (another thread), so it writes through a connection of its own."""
+        self.paused = paused
+        c = db.connect()
+        try:
+            db.kv_set(c, "collector.paused", "1" if paused else "0")
+        finally:
+            c.close()
+        log.info("monitoring %s", "paused" if paused else "resumed")
+
+    def _open_segment(self, state: WindowState | None, at: float, idle: bool, neutral: bool, shots: list) -> int:
         di = active_display_index(state.app) if (state and shots) else 0
         shot = (shots[di] if di < len(shots) else shots[0]) if shots else None
         cur = self.conn.execute(
@@ -310,9 +322,16 @@ class Collector:
 
     def _switch_to(self, state: WindowState | None, at: float, idle: bool):
         neutral = bool(state) and not idle and self.cfg.is_neutral(state.app, state.title, state.url)
+        # Captured BEFORE the transaction: screencapture and the JPEG encoding take a few hundred
+        # ms, and holding the write lock that long made other threads' writes fail at once with
+        # "database is locked" (question scoring, 2026-11-18).
+        shots = [] if (idle or neutral) else take_screenshots(self.cfg, "first")
+        prev_id = self.current_id
         with db.tx(self.conn):
             self._close_current(at)
-            new_id = self._open_segment(state, at, idle, neutral)
+            new_id = self._open_segment(state, at, idle, neutral, shots)
+            if idle and prev_id is not None:
+                db.move_late_shots(self.conn, prev_id, at, new_id)
             # Only real window switches need classification: not idle transitions, not neutral windows
             # (presence checks etc.), and a switch out of a neutral window is attributed to the last
             # real segment before it - so the neutral window is transparent.
@@ -326,11 +345,33 @@ class Collector:
             self.last_real_id, self.last_real_state = None, None
         elif not neutral:
             self.last_real_id, self.last_real_state = new_id, state
+        if self.first_id is None:
+            self.first_id = new_id
         self.current_id, self.current_state, self.current_idle = new_id, state, idle
         self.current_start = at
         self.candidate = None
         log.info("segment %s: %s | %s | %s%s", new_id, "IDLE" if idle else state.app,
                  state.title[:60] if state else "", state.domain if state else "", " [neutral]" if neutral else "")
+
+    def _go_away(self, at: float):
+        self._switch_to(None, at, True)
+
+    def _absorb_restart(self, start: float) -> bool:
+        """The app was restarted while the person was already away: the segment it opened on
+        starting lies wholly inside the absence (which began at `start`, before that segment).
+        Without this the away time was clamped to begin at the restart, and the minutes between
+        the last input and the restart stayed credited to the segment before (2 minutes on
+        2026-11-19 21:01; a `restart --when-idle` does this every time the person stays away).
+        Only handles the plain case - the one segment opened since this process started; anything
+        else keeps the old clamp. That segment is kept as a zero-length row at the absence's
+        start (nothing is deleted); its captures move to the away segment with the rest."""
+        if start >= self.current_start or self.current_id is None or self.current_idle or self.first_id != self.current_id:
+            return False
+        with db.tx(self.conn):
+            self.conn.execute("UPDATE segments SET end=? WHERE end>? AND start<=? AND id<?", (start, start, start, self.current_id))
+            self.conn.execute("UPDATE segments SET start=?, end=? WHERE id=?", (start, start, self.current_id))
+        self.current_start = start
+        return True
 
     def tick(self):
         now = time.time()
@@ -360,7 +401,7 @@ class Collector:
             if not self.current_idle:
                 # Away: the span ends when the inactivity began, not when we noticed it.
                 start = now if (locked and inactive_for < self.cfg.idle_seconds) else now - inactive_for
-                self._switch_to(None, max(start, self.current_start), True)
+                self._go_away(max(start, self.current_start) if not self._absorb_restart(start) else start)
             self.short_idle_start = None
             return
         # Track short pauses in keyboard/mouse input (logged, but they don't break spans).

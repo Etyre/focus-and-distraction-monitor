@@ -1275,7 +1275,8 @@ class RestartBody(BaseModel):
 
 def _source_files() -> list[Path]:
     here = Path(__file__).parent
-    return sorted(here.glob("*.py")) + sorted(here.glob("*.html")) + [CONFIG_PATH]
+    # rglob: classifiers/ is a subpackage, and an edit there used to read as "up to date"
+    return sorted(here.rglob("*.py")) + sorted(here.glob("*.html")) + [CONFIG_PATH]
 
 
 @app.post("/api/restart")

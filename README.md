@@ -14,8 +14,8 @@ first commit 2026-08-29, in continuous development since.
 * **Collector** polls every 2 s. A new (app, title, URL) that persists ≥ 3 s becomes a new
   *segment* and a *switch*; a screenshot is taken then and refreshed every 60 s. Keyboard/mouse
   activity is read from macOS's `HIDIdleTime` (time since last input - nothing is keylogged). No input
-  for ≥ 8 min, or a locked screen, becomes an *away* segment starting when the inactivity began (this
-  ends a focus span); pauses of 1-8 min are logged as *short breaks* and shown hatched on the timeline
+  for ≥ 10 min (`idle_seconds`), or a locked screen, becomes an *away* segment starting when the inactivity began (this
+  ends a focus span); pauses of 1-10 min are logged as *short breaks* and shown hatched on the timeline
   but don't break spans.
 * **Classifier** waits 2 min after a switch (so it can see what you did next), then asks the
   models. Each yields probabilities for the four labels; the ensemble weights them by

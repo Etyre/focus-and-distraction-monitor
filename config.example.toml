@@ -5,7 +5,7 @@ poll_interval = 2.0            # seconds between active-window polls
 min_segment_seconds = 3.0      # flickers shorter than this are merged away
 idle_seconds = 600             # no keyboard/mouse input for 10 min = away; the span ends when the inactivity began
                                # (also catches system sleep: a wall-clock gap between polls counts as inactivity)
-short_inactivity_seconds = 60  # pauses between 1 and 8 min are logged as short breaks (bathroom etc.), spans survive
+short_inactivity_seconds = 60  # pauses between 1 min and idle_seconds are logged as short breaks (bathroom etc.), spans survive
 refresh_screenshot_seconds = 30  # denser evidence for the evaluator
 screenshot_max_width = 1280
 screenshot_quality = 60

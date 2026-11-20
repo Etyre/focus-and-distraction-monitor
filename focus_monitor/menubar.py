@@ -149,7 +149,7 @@ class FocusMenuBar(rumps.App):
         self.events_item = rumps.MenuItem("")
         self.queue_item = rumps.MenuItem("")
         self.spend_item = rumps.MenuItem("")
-        self.pause_item = rumps.MenuItem("Pause monitoring", callback=self.toggle_pause)
+        self.pause_item = rumps.MenuItem("Resume monitoring" if self.collector.paused else "Pause monitoring", callback=self.toggle_pause)
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=lambda _: self.dashboard.show("day")),
             rumps.MenuItem("Review Uncertain Switches", callback=lambda _: self.dashboard.show("review")),
@@ -274,7 +274,7 @@ class FocusMenuBar(rumps.App):
             rumps.alert("API key saved", "Claude classification is on.")
 
     def toggle_pause(self, _):
-        self.collector.paused = not self.collector.paused
+        self.collector.set_paused(not self.collector.paused)
         self.pause_item.title = "Resume monitoring" if self.collector.paused else "Pause monitoring"
         self.refresh(None)
 

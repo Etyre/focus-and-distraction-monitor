@@ -282,6 +282,24 @@ CREATE TABLE IF NOT EXISTS kv (               -- small persistent app state (e.g
 """
 
 
+def move_late_shots(conn, segment_id: int, end: float, to_id: int) -> int:
+    """Captures keep being taken while input is idle; when the away threshold is reached the
+    segment's end is backdated to when input stopped, and the captures taken after that belong
+    to the away time, not to the segment (2,972 such rows by 2026-11-20: a 2-minute segment
+    before an absence could be shown mostly captures from the 10 minutes after it ended). They
+    are moved to the away segment, never deleted."""
+    n = conn.execute("UPDATE segment_shots SET segment_id=? WHERE segment_id=? AND ts > ?", (to_id, segment_id, end + 5)).rowcount
+    if n:
+        old = conn.execute("SELECT last_screenshot FROM segments WHERE id=?", (segment_id,)).fetchone()
+        tag = (old["last_screenshot"] or "").rsplit("_d", 1)[-1][:1]   # the display the active window was on
+        rows = conn.execute("SELECT path, display FROM segment_shots WHERE segment_id=? AND ts=(SELECT MAX(ts) FROM segment_shots"
+                            " WHERE segment_id=?) ORDER BY display", (segment_id, segment_id)).fetchall()
+        if rows:
+            keep = next((r["path"] for r in rows if str(r["display"]) == tag), rows[0]["path"])
+            conn.execute("UPDATE segments SET last_screenshot=? WHERE id=?", (keep, segment_id))
+    return n
+
+
 def kv_get(conn, key: str) -> str | None:
     r = conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
     return r[0] if r else None
@@ -457,6 +475,17 @@ def connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE eval_runs ADD COLUMN shots TEXT")
         conn.execute("ALTER TABLE eval_runs ADD COLUMN response TEXT")
         conn.execute("ALTER TABLE eval_runs ADD COLUMN model TEXT")
+    if kv_get(conn, "migrated.late_shots") is None:
+        # One-off (2026-11-20): captures recorded after their segment's backdated end move to
+        # the away segment that follows it (see move_late_shots).
+        late = conn.execute("""SELECT DISTINCT g.id, g.end,
+                                      (SELECT i.id FROM segments i WHERE i.idle=1 AND i.start >= g.end - 1 ORDER BY i.start LIMIT 1) AS idle_id
+                               FROM segment_shots s JOIN segments g ON g.id = s.segment_id
+                               WHERE g.idle=0 AND g.end IS NOT NULL AND s.ts > g.end + 5""").fetchall()
+        conn.execute("BEGIN")
+        moved = sum(move_late_shots(conn, r["id"], r["end"], r["idle_id"]) for r in late if r["idle_id"] is not None)
+        kv_set(conn, "migrated.late_shots", str(moved))
+        conn.execute("COMMIT")
     return conn
 
 
