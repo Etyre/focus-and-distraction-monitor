@@ -673,5 +673,16 @@ def spend_today(conn) -> float:
     arow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM audit_runs WHERE created >= ?", (start,)).fetchone()
     crow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM chat_messages WHERE created >= ?", (start,)).fetchone()
     drow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM rule_draft_runs WHERE created >= ?", (start,)).fetchone()
-    return (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
-            + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]) + float(drow[0]))
+    total = (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
+             + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]) + float(drow[0]))
+    # The budget is a guard on money actually billed. Calls served by the claude.ai subscription
+    # are recorded at API-equivalent prices but cost nothing extra, and since 2026-11-20 one
+    # evaluator call (all rulings, up to 60 screenshots) is about $0.50 to $1.30 at those prices:
+    # counted here, a normal day would pass the hard limit by the afternoon and all judging
+    # would stop. So what the subscription served is taken off.
+    try:
+        sub = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE ts >= ? AND backend = 'subscription'",
+                           (start,)).fetchone()[0]
+    except sqlite3.OperationalError:   # (a database from before llm_calls existed)
+        sub = 0.0
+    return max(total - float(sub), 0.0)

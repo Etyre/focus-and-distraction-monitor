@@ -14,9 +14,12 @@ first commit 2026-08-29, in continuous development since.
 * **Collector** polls every 2 s. A new (app, title, URL) that persists ≥ 3 s becomes a new
   *segment* and a *switch*; a screenshot is taken then and refreshed every 60 s. Keyboard/mouse
   activity is read from macOS's `HIDIdleTime` (time since last input - nothing is keylogged). No input
-  for ≥ 10 min (`idle_seconds`), or a locked screen, becomes an *away* segment starting when the inactivity began (this
+  for ≥ 10 min (`idle_seconds`) becomes an *away* segment starting when the inactivity began (this
   ends a focus span); pauses of 1-10 min are logged as *short breaks* and shown hatched on the timeline
-  but don't break spans.
+  but don't break spans. A locked screen is time without input like any other: it becomes away
+  only when the total reaches 10 minutes (until 2026-11-20 a lock was away at once, and on battery
+  the display sleeps 2 minutes after the last input). Days run 4am to 4am in the time zone the
+  Mac was in at the time (`timezones.json` in the data folder, kept by the collector).
 * **Classifier** waits 2 min after a switch (so it can see what you did next), then asks the
   models. Each yields probabilities for the four labels; the ensemble weights them by
   `exp(-2 × log-loss)` on your last 200 reviews. Switches are flagged *uncertain* when the top
@@ -28,9 +31,10 @@ first commit 2026-08-29, in continuous development since.
 * **Learning**: reviews retrain the logistic model and the per-app/domain priors immediately, and
   the 40 most recent reviews (with your notes) are shown to Claude as examples.
   The chunk evaluator sees your segment rulings as precedents two ways (`evaluator._examples`,
-  `_similar_precedents`): the 8 newest in its system prompt, and, in each call, up to 20 past
-  rulings that resemble the segments being judged (same site, same app, shared window-title
-  words; at most 5 per app+site). Until 2026-11-19 it saw only the latest 20 of ~300.
+  `_similar_precedents`): since 2026-11-20 ALL of them are in its cached system prompt, each
+  with its context (`_rulings_block`), and each call adds a short list pointing at the ones
+  that resemble the segments being judged (a real site or title match). Until 2026-11-19 it
+  saw only the latest 20 of ~300.
 * **Judgments** (redesigned 2026-11-19 to match the Rules doc). For every segment the evaluator
   gives: its content type; whether attention in it was **focused or unfocused**; and the switch
   into it, as `continuation`, `shift` (attention moved to something new) or `return`, with a
@@ -458,6 +462,47 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Audit, 2026-11-20 (seven reviewers; numbers, raw record, what the models are shown).** The
+  open questions it raised are in `OPEN-DECISIONS.md`.
+  * *Short pauses.* A raw idle segment under `idle_seconds`, and time the evaluator or the person
+    labelled content "idle", is a pause (`pause=True` in `stats._labelled_segments`): it takes the
+    state of what came before, stays inside a running span, never opens one, resets the opening
+    10 minutes, and is not unfocused time. Contiguous pause time reaching `idle_seconds` is time
+    away. 807 of 1,541 idle segments were under 10 minutes and each ended a span; 17 spans held
+    5+ minutes of idle-labelled "focus".
+  * *Time zones.* `config.local_dt`, `logical_date` and `day_bounds` use the zone in force at the
+    time. Never use `datetime.fromtimestamp` for a day boundary or a time a model reads. The Mac
+    went from Pacific to Eastern at 2026-11-08 22:47 Eastern (where the log's offset changes).
+  * *Old unjudged tails.* `spans_and_events` stops at the last judged segment only when the
+    unjudged tail is recent (`FRONTIER_RECENT_S`, 4 h). It used to do so on past days too and
+    dropped the rest of the day from spans and unfocused minutes (32 of 87 days).
+  * *Reading gate.* Content "creative" in a reading span counts as working with the material.
+  * *Toggl.* Coverage is seconds of overlap (`_toggl_cover`), not "an entry was running at the
+    segment's start"; with overlapping entries the latest-started wins, as in `toggl.entry_at`.
+    The old end of a running entry is the end of the newest judged segment, so a night of failed
+    syncs no longer leaves judgments standing under an entry that had stopped.
+  * *Rulings from before the `focused` field.* A person's kind or focus-exception ruling is turned
+    into focused / self-distraction in `stats.verdict()` when the evaluator's row has `focused`,
+    so a re-judgment cannot take the state away from them.
+  * *The evaluator's evidence.* Up to `IMAGE_BUDGET` (60) screenshots a call, every segment to
+    judge first; a stretch with more segments than fit is judged over several calls
+    (`last_end`). Until now every call had 8 images and 29% of targets were judged with no
+    screenshot though one existed. Both displays are sent. A re-judgment never replaces a
+    judgment whose screenshots are gone: files exist only from 2026-10-27, and the history
+    re-judgment queues only days from the first file on.
+  * *Evaluator lines.* `summaries.seg_line(s, full=True)`: full title, URL and note, seconds,
+    page loads, input by minute. A line with no judgment shows no state word, old `<switch>` tag
+    or `[activity]`: those were the per-switch classifier's guesses and read as judgments. A
+    ruled line says RULED BY THE PERSON with the note. Context is 45 minutes before, up to the
+    time of the call after, plus a DAY SO FAR block.
+  * *Budget.* `db.spend_today` leaves out what the subscription served: one evaluator call is now
+    $0.50 to $1.30 at API prices, and counted in full it would stop all judging by the afternoon.
+  * *Collector.* Tab-title counters ("(1) Notifications / X") no longer start a segment
+    (`same_window`). A restart while away moves the captures of every segment it cuts back.
+  * *Review answers.* An option can carry `self_distraction` (on purpose / a drift) and answering
+    writes it. Options written before 2026-11-20 do not have it.
+  * *The daily audit* runs in pieces over several cycles (`kv` `audit.progress.<day>`), every
+    audited segment with its screenshots.
 * **Bug hunt, 2026-11-20.** Things that looked right and were not:
   * Second pass the same day (a review of that day's own fixes). Re-evaluations: a failed call
     waits five minutes (`kv` `reeval.retry_after`) and is retried for as long as the error lasts;
