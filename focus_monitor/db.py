@@ -688,16 +688,17 @@ def spend_today(conn) -> float:
     arow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM audit_runs WHERE created >= ?", (start,)).fetchone()
     crow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM chat_messages WHERE created >= ?", (start,)).fetchone()
     drow = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM rule_draft_runs WHERE created >= ?", (start,)).fetchone()
-    total = (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
-             + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]) + float(drow[0]))
-    # The budget is a guard on money actually billed. Calls served by the claude.ai subscription
-    # are recorded at API-equivalent prices but cost nothing extra, and since 2026-11-20 one
-    # evaluator call (all rulings, up to 60 screenshots) is about $0.50 to $1.30 at those prices:
-    # counted here, a normal day would pass the hard limit by the afternoon and all judging
-    # would stop. So what the subscription served is taken off.
+    # The budget is a guard on money actually billed: the structured calls the API key served
+    # (llm_calls, backend 'api') plus the chats, which call the API directly (chat_messages).
+    # Calls served by the claude.ai subscription cost nothing extra and one evaluator call is
+    # $0.50 to $1.30 at API prices since 2026-11-20. The first version of this (same day) took
+    # the subscription's calls off a total built from other tables: many of those calls were never
+    # in that total, so real spend was under-counted ($9.18 billed read as $6.39) and the
+    # history re-judgment would have driven it to zero.
     try:
-        sub = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE ts >= ? AND backend = 'subscription'",
+        api = conn.execute("SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE ts >= ? AND backend = 'api'",
                            (start,)).fetchone()[0]
-    except sqlite3.OperationalError:   # (a database from before llm_calls existed)
-        sub = 0.0
-    return max(total - float(sub), 0.0)
+    except sqlite3.OperationalError:   # a database from before llm_calls existed: the old sum
+        return (float(row[0]) + float(srow[0]) + float(trow[0]) + float(erow[0]) + float(qrow[0])
+                + float(frow[0]) + float(prow[0]) + float(arow[0]) + float(crow[0]) + float(drow[0]))
+    return float(api) + float(crow[0])

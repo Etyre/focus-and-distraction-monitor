@@ -146,9 +146,14 @@ def seg_line(s, full: bool = False, ruling=None, quick_pass: bool = False) -> st
     end = s.get("end_eff") or s.get("clip_end") or start
     one = lambda v: " ".join(str(v or "").split())
     bits = [local_dt(start).strftime("%H:%M:%S"), dur_text(end - start)]
-    if s.get("idle") or s.get("state") == "idle":
+    if s.get("idle"):
         bits.append("AWAY (no keyboard or mouse input, or the screen locked)")
     else:
+        # A window labelled "idle" for ten minutes or more has state idle too (stats), but it is a
+        # real window with a title and input counts: printed as AWAY it lost all of that, and as a
+        # segment to judge its line confirmed its own label (segment 28260, 2026-11-21).
+        if s.get("state") == "idle":
+            bits.append("[counted as time away: labelled idle for ten minutes or more]")
         bits.append(one(s.get("app")))
         if s.get("domain"):
             bits.append("site: " + s["domain"])
@@ -183,11 +188,11 @@ def seg_line(s, full: bool = False, ruling=None, quick_pass: bool = False) -> st
                     + (f"; their note: “{note}”" if note else ""))
     if not s.get("idle"):
         if s.get("toggl_desc") or s.get("toggl_id"):
-            bits.append("(toggl running at its start: “" + one(s.get("toggl_desc")) + "”"
+            bits.append("(toggl entry covering most of it: “" + one(s.get("toggl_desc")) + "”"
                         + (f" | project: {s['toggl_project']}" if s.get("toggl_project") else "")
                         + (f" | tags: {s['toggl_tags']}" if s.get("toggl_tags") else "") + ")")
         else:
-            bits.append("(no toggl entry running at its start)")
+            bits.append("(no toggl entry during it)")
         ia = s.get("inact_s") or 0.0
         if ia >= 1:
             bits.append(f"(no input for {dur_text(ia)} of it, in pauses of a minute or more)")

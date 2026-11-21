@@ -208,6 +208,13 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
     # correction propagating, the daily audit) and is a new doubt. Counting them left dots with
     # no question behind them (segment 34836, 2026-11-16: declined as a thread doubt at 17:40,
     # then flagged by propagation, and never asked about).
+    # A block the person settled without a ruling ("can't tell", "none of these") and that a later
+    # re-judgment flagged again: asking again cannot help, and the join below would leave its dot
+    # with no question behind it (segment 34748, 2026-11-21). The flag is dropped.
+    conn.execute("""UPDATE seg_evals SET uncertain = 0 WHERE uncertain = 1
+                    AND segment_id IN (SELECT segment_id FROM review_questions WHERE status IN ('unsure', 'none') AND phone_key IS NULL)
+                    AND segment_id NOT IN (SELECT segment_id FROM review_questions WHERE status = 'open')
+                    AND segment_id NOT IN (SELECT segment_id FROM seg_reviews)""")
     rows = conn.execute("""
         SELECT e.segment_id, e.uncertain, e.rationale, g.start
         FROM seg_evals e JOIN segments g ON g.id = e.segment_id
@@ -684,7 +691,7 @@ PHONE_CONTENT_OPTIONS = (
     ("Messaging: reading or replying to someone", {"content": "correspondence"}),
     ("A specific errand or task (ordering, booking, logging, a setting)", {"content": "task", "focused": 1}),
     ("Reading or looking up something specific", {"content": "reading", "focused": 1}),
-    ("The phone was just open; I was not looking at it", {"content": "transition"}),
+    ("The phone was just open; I was not looking at it", {"switch_label": "continuation", "content": "transition", "away": 0, "self_distraction": 0}),
 )
 
 

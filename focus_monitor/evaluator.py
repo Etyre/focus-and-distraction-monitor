@@ -345,9 +345,9 @@ in the time zone the person was in that day; how long it lasted in all (seconds 
 minutes), also when it began before or ran on after the stretch shown; the app; "site:", \
 "title:" and "url:" in full where the Mac recorded them (most apps other than browsers have no \
 title). An "AWAY" line is a stretch of ten minutes or more with no input, or the screen locked. \
-"(toggl running at its start: ...)" names the Toggl entry running when the segment began, or \
-says there was none; an entry started or stopped inside a segment shows only in the day's Toggl \
-list, which has times to the second.
+"(toggl entry covering most of it: ...)" names the Toggl entry that ran for the largest part of \
+the segment, or says none ran during it; exactly when an entry started or stopped shows in the \
+day's Toggl list, which has times to the second.
    - A line with NO "judged:" part has not been judged by anyone yet; nothing on it is a verdict.
    - "judged: <content> <focused|unfocused> <switch: continuation|shift|return> ..." is the \
 judgment the app holds for that segment, normally your own from an earlier call. "<continues \
@@ -643,7 +643,7 @@ def _log_lines(conn, segs: list[dict], marks: dict, entries: dict, history: bool
     for s in segs:
         if s["duration"] <= 0:
             continue
-        idle = bool(s["idle"]) or s.get("state") == "idle"
+        idle = bool(s["idle"])   # (not state == "idle": that also covers a real window labelled idle)
         e, rv = evrow.get(s["id"]), rulings.get(s["id"])
         te = entries.get(s.get("toggl_id"))
         s2 = dict(s, toggl_project=(te["project"] if te else ""))
@@ -1450,7 +1450,11 @@ class ChunkEvaluator:
                         n_phone += 1
                 # A target the model omitted must not stall the queue forever: store an
                 # explicit default the user can audit and correct.
-                judged = {j.segment_id for j in resp.parsed_output.segments}
+                # ...and so must one whose answer was thrown out for a label outside the list: it used
+                # to count as judged, nothing was stored, and the same call went out every cycle.
+                judged = {r[0] for r in conn.execute(
+                    f"SELECT segment_id FROM seg_evals WHERE run_id=? AND segment_id IN ({','.join('?' * len(target))})",
+                    [run_id] + [s["id"] for s in target])} if target else set()
                 if held_from is not None:
                     first_held = min((s for s in target if s["clip_start"] >= held_from), key=lambda s: s["clip_start"])
                     conn.execute("INSERT OR REPLACE INTO eval_holds(segment_id, until, created) VALUES (?,?,?)",
@@ -2004,6 +2008,8 @@ def daily_audit(conn, cfg: Config | None = None, max_pieces: int = AUDIT_PIECES_
         return 0
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
+    if time.time() < float(db.kv_get(conn, f"audit.retry_after.{key}") or 0):
+        return 0   # a piece failed or came back empty: ten minutes before the next try
     t0, t1 = stats.day_bounds(day)
     try:
         prog = json.loads(db.kv_get(conn, f"audit.progress.{key}") or "{}")
@@ -2058,21 +2064,38 @@ def daily_audit(conn, cfg: Config | None = None, max_pieces: int = AUDIT_PIECES_
                                    a=_t(lo), b=_t(hi), log="\n".join(x[2] for x in sorted(rows, key=lambda x: (x[0], x[1]))))
         content.append({"type": "text", "text": text})
         ev = ev or _get()
-        resp = llm.parse(ev.client, site="audit",
-            model=cfg.claude_model, max_tokens=MAX_TOKENS,
-            system=ev._system_blocks(conn),
-            messages=[{"role": "user", "content": content}],
-            output_format=DayAudit,
-            output_config={"effort": cfg.claude_effort},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default")
+        try:
+            resp = llm.parse(ev.client, site="audit",
+                model=cfg.claude_model, max_tokens=MAX_TOKENS,
+                system=ev._system_blocks(conn),
+                messages=[{"role": "user", "content": content}],
+                output_format=DayAudit,
+                output_config={"effort": cfg.claude_effort},
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default")
+        except Exception:
+            # (an error here used to escape: the same call again 15 s later, with no count, and
+            # the coherence pass skipped for that cycle)
+            log.exception("daily audit %s piece %s: the call failed - next try in ten minutes", key, _t(a))
+            db.kv_set(conn, f"audit.retry_after.{key}", str(time.time() + 600))
+            return n
         cost = ((resp.usage.input_tokens or 0) * PRICE_INPUT + (resp.usage.output_tokens or 0) * PRICE_OUTPUT
                 + (getattr(resp.usage, "cache_creation_input_tokens", 0) or 0) * PRICE_CACHE_WRITE
                 + (getattr(resp.usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ)
         prog["cost"] += cost
-        if resp.parsed_output is None and resp.stop_reason != "contact_eli" and _attempt(conn, f"audit.fail.{key}.{int(a)}") < 3:
-            log.warning("daily audit %s piece %s: no answer (%s) - will try again", key, _t(a), resp.stop_reason)
-            db.kv_set(conn, f"audit.progress.{key}", json.dumps(prog))   # the cost is kept; the piece is asked again next pass
+        if resp.stop_reason == "contact_eli":
+            # The model asked for Eli: that stops the task, and the task is this day's audit. (The
+            # piecewise loop used to carry on with the next pieces: 24 more calls in a simulation.)
+            with db.tx(conn):
+                conn.execute("INSERT OR REPLACE INTO audit_runs(day, n_flags, cost_usd, created) VALUES (?,?,?,?)",
+                             (key, prog["flags"], prog["cost"], time.time()))
+                conn.execute("DELETE FROM kv WHERE key=?", (f"audit.progress.{key}",))
+            log.warning("daily audit %s: the model contacted Eli at piece %s; the audit of this day stops there", key, _t(a))
+            return n
+        if resp.parsed_output is None and _attempt(conn, f"audit.fail.{key}.{int(a)}") < 3:
+            log.warning("daily audit %s piece %s: no answer (%s) - next try in ten minutes", key, _t(a), resp.stop_reason)
+            db.kv_set(conn, f"audit.progress.{key}", json.dumps(prog))   # the cost is kept; the piece is asked again
+            db.kv_set(conn, f"audit.retry_after.{key}", str(time.time() + 600))
             return n
         if resp.parsed_output is not None and prog["pieces"] == 0:
             # Effort shadows for the first piece of the day only: one comparison a day, as before.
@@ -2138,7 +2161,7 @@ WRONG_DISPLAY_REASON = "screenshots shown were of the wrong display"
 # at 03:34 on 2026-11-20 the evaluator ran at "low" effort whatever config.toml said; everything
 # judged before that restart is judged again at the configured effort, newest day first.
 LOW_EFFORT_REASON = "judged at low effort"
-LOW_EFFORT_FIXED_AT = dt.datetime(2026, 11, 20, 3, 34, 17).timestamp()
+LOW_EFFORT_FIXED_AT = 1795163657.0   # 2026-11-20 03:34:17 Eastern, as an epoch: not a clock time in whatever zone the Mac is in
 REEVAL_BACKOFF_S = 300.0         # after a re-evaluation call fails or comes back empty
 HISTORY_EVERY_S = 60.0           # at least this long between two history calls (kv rejudge.history.every_s overrides)
 PHONE_REASON = "phone data arrived"
@@ -2445,6 +2468,8 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                 break
             skipped = True
             n = 0
+            if start < getattr(ev, "last_end", 0) < c1:
+                c1 = ev.last_end   # pass over only the segments that were sent, not the whole 20 minutes
             db.kv_set(conn, f"reeval.skipped.{q['id']}", str(int(db.kv_get(conn, f"reeval.skipped.{q['id']}") or 0) + 1))
         # (a phone re-judgment leaves the segments' judgments, and so their questions, as they were)
         nq = 0
