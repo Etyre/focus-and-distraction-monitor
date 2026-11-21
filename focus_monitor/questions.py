@@ -56,13 +56,14 @@ class QuestionBatch(BaseModel):
 
 
 SYSTEM = """You write review questions for a personal attention monitor. The system has judged \
-every segment of the person's day (content + whether the switch into it shifted their object of \
-attention), but some judgments are in doubt. For each DOUBT presented, you write ONE question \
+every segment of the person's day (its content; whether their attention in it was focused or \
+unfocused; and the switch into it - a continuation, a shift of their object of attention, or a \
+return - with, on a shift, whether it was a self-distraction), but some judgments are in doubt. For each DOUBT presented, you write ONE question \
 the person can answer in seconds, with 2-4 natural-language options.
 
 DESCRIBE THE ACTIVITY, NOT THE WINDOWS. The context must say what the person was DOING - the
-undertaking - inferred from titles, content labels, and the per-segment rationales (after //
-in the log): "you were editing your personal site - coding in VS Code, running it in Terminal, \
+undertaking - inferred from the screenshots, titles, content labels, and the per-segment notes \
+(after "// note:" in the log): "you were editing your personal site - coding in VS Code, running it in Terminal, \
 checking the rendered pages" rather than "going back and forth between Code, Terminal, and \
 elityre.com". Use epistemic markers ("apparently", "likely") when inferring. Window names are \
 evidence, not the description.
@@ -160,6 +161,18 @@ particular, do not frame a pass-through as "part of the <thread A> conversation"
 cycled past on the way back is not part of any thread's content, and an option that says it \
 is becomes a false precedent.
 
+WHAT YOU ARE SHOWN FOR EACH DOUBT: screenshots of the segment in doubt (several when it was \
+long) and one of each segment it might continue; why it is in doubt, in full - for a doubt \
+raised by one of the person's own rulings on another segment, that ruling; for a doubt about a \
+span, the span; the app's current judgment with its whole note; the probabilities its models \
+gave each label, and the evaluator's ranked candidates for what the segment continues, each with \
+its log line (name one of THESE in an option's antecedent_id when it is the thread you mean); \
+and the activity log from 20 minutes before the segment to 20 minutes after its end, where a \
+line the person has already ruled on says RULED BY THE PERSON with their note - a ruling next to \
+the doubt often answers it, and then the DOUBT is to be omitted.
+
+{legend}
+
 Their own rules and definitions (authoritative):
 {rules}
 
@@ -208,13 +221,15 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
         rat = r["rationale"] or ""
         src = ("audit" if "daily audit" in rat
                else "propagation" if "your correction" in rat else "self_uncertain")
+        # The whole note (it was the last 200 characters, cut mid-word: segment 36561's reason
+        # began "r correction of segment 36555 apply here?"). Marks after " | " say what raised the flag.
         out.append({"segment_id": r["segment_id"], "source": src,
-                    "reason": (r["rationale"] or "")[-200:], "ts": r["start"]})
+                    "reason": " ".join((r["rationale"] or "").split()), "ts": r["start"]})
     # coherence flags -> a boundary question anchored at the CHANGEPOINT: the first segment
     # of the longest stretch whose content differs from the span's opening content (asking at
     # the span's head produces questions about the wrong end).
     for r in conn.execute("""
-        SELECT s.start, s.end, s.issue FROM span_summaries s
+        SELECT s.start, s.end, s.issue, s.title, s.summary FROM span_summaries s
         WHERE s.coherent = 0 AND s.refined = 1 AND s.start >= ?""", (t0,)).fetchall():
         segs = conn.execute("""SELECT g.id, g.start, e.content,
                                       rv.segment_id AS reviewed, q.id AS questioned
@@ -246,10 +261,16 @@ def _triggers(conn, lookback_s: float = 3 * 86400) -> list[dict]:
             anchor = segs[0]
         if anchor is None or anchor["reviewed"] is not None or anchor["questioned"] is not None:
             continue
-        hint = dt.datetime.fromtimestamp(anchor["start"]).strftime("%H:%M")
+        from .config import local_dt
+        hm = lambda ts: local_dt(ts).strftime("%H:%M")     # the zone the Mac was in then
+        hint = hm(anchor["start"])
+        # with the span itself: its bounds, title and summary say which stretch was read as one
+        # object and what the reviewer took it for (only `issue` was passed on before)
         out.append({"segment_id": anchor["id"], "source": "coherence",
                     "reason": (f"span summary contradicts the one-object definition: {r['issue']} "
-                               f"(likely split point: segment id={anchor['id']} at {hint})"),
+                               f"(likely split point: segment id={anchor['id']} at {hint}). The span: {hm(r['start'])}-{hm(r['end'])}, "
+                               f"{(r['end'] - r['start']) / 60:.0f} min" + (f", titled “{r['title']}”" if r["title"] else "")
+                               + f"; its summary: “{' '.join((r['summary'] or '').split())}”"),
                     "ts": r["start"]})
     # Every switch the legacy ensemble flags for review (stakes x uncertainty) gets an
     # LLM-framed question too - never a raw label prompt.
@@ -803,7 +824,7 @@ happening, so they can answer from memory.
 Write 2-3 plain sentences in the second person ("You ..."), with clock times: what they were \
 doing in the stretch before, what they did in the marked segment, and what came next if it helps. \
 Describe the ACTIVITY, not the windows: the undertaking, inferred from titles, the screenshot and \
-the notes after // in the log ("you were editing your personal site"), not a list of apps. Use \
+the notes after "// note:" in the log ("you were editing your personal site"), not a list of apps. Use \
 "apparently" or "likely" where you are inferring.
 
 Do NOT say or hint at the app's verdict: no "focused", "unfocused", "distracted", "drifting", \
@@ -815,6 +836,12 @@ class SpotContext(BaseModel):
     context: str = Field(description="2-3 sentences, second person, with clock times; no verdict words.")
 
 
+SPOT_IMAGES = 8          # screenshots of the spot-checked segment
+DOUBT_IMAGES = 60        # screenshots in one question-writer call (evaluator.IMAGE_BUDGET), shared by its doubts
+OTHER_LISTS = 40         # "could not answer" / "none of the above" questions shown, newest first (12 before)
+MAX_TOKENS = 16000       # up to 12 questions with options, and thinking counts against it (4,000 before)
+
+
 def _spot_summary(conn, cfg: Config, g) -> tuple[str | None, float]:
     """One small model call: what was happening around a spot-checked segment, written the way the
     other review questions set up theirs (Eli, 2026-11-19). Returns (summary or None, cost)."""
@@ -822,25 +849,23 @@ def _spot_summary(conn, cfg: Config, g) -> tuple[str | None, float]:
     from .classifiers.claude_vision import _b64
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return None, 0.0
-    blocks: list = []
-    sh = next(iter(_shots.pick(conn, [g["id"]], 1)), None)
-    b = _b64(sh["path"]) if sh else None
-    if b:
-        blocks.append({"type": "text", "text": "Screenshot from the marked segment:"})
-        blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
-    segs = [x for x in stats.labelled_segments(conn, g["start"] - 1200, g["end"] + 600) if x["duration"] > 0]
-    ids = [x["id"] for x in segs]
-    rats = {r["segment_id"]: r["rationale"] for r in conn.execute(
-        f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({','.join('?' * len(ids))})", ids)
-        if r["rationale"]} if ids else {}
-    lines = [("  >>> " if x["id"] == g["id"] else "      ") + summaries.seg_line(x)
-             + (f"  // {rats[x['id']][:90]}" if x["id"] in rats else "") for x in segs]
-    blocks.append({"type": "text", "text": "Activity log (>>> marks the segment the question is about):\n" + "\n".join(lines)})
+    # 2026-11-20: every chosen capture moment of the segment (it was the first frame only, of a
+    # segment that can run for minutes), the evaluator's full log lines (notes were cut at 90
+    # characters), from 20 minutes before to 10 after its END.
+    from . import prompt_parts as pp
+    mom = _shots.moments(conn, [g["id"]])
+    blocks, meta = pp.image_blocks(pp.fit(pp.seg_images(mom, g, "the marked segment,", both=False), SPOT_IMAGES))
+    lines, _ = pp.log_lines(conn, cfg, g["start"] - 1200, g["end"] + 600, marks={g["id"]: f">>> (the marked segment, id={g['id']}) "},
+                            default_mark="    (id={id}) ", dated=True)
+    blocks.append({"type": "text", "text": (f"Screenshots above: {len(meta)}, all of the marked segment.\n" if meta else
+                                            f"No screenshot of the marked segment ({_shots.why_none(conn, g['id'])}).\n")
+                   + "Activity log (>>> marks the segment the question is about; the tags after \"judged:\" and the notes "
+                   "are the app's own, and its verdict on the marked segment is what you must not give away):\n" + "\n".join(lines)})
     try:
-        resp = llm.parse(_client(), site="spot_check", model=cfg.claude_model, max_tokens=600,
-                         system=[{"type": "text", "text": SPOT_SYSTEM}],
+        resp = llm.parse(_client(), site="spot_check", model=cfg.claude_model, max_tokens=4000,   # thinking counts against it (600 before)
+                         system=[{"type": "text", "text": SPOT_SYSTEM + "\n\n" + pp.LOG_LEGEND}],
                          messages=[{"role": "user", "content": blocks}],
-                         output_format=SpotContext, output_config={"effort": "low"},
+                         output_format=SpotContext, output_config={"effort": cfg.claude_effort},   # "low" was written in
                          betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     except Exception:
         log.exception("spot-check summary failed (segment %d)", g["id"])
@@ -854,7 +879,8 @@ def _spot_question(g, axis: str, summary: str | None = None) -> tuple[str, str, 
     """The wording of one spot check. It asks about ONE axis of the judgment (Eli, 2026-11-19:
     a question is only ever about one axis), and 'Yes' rules on that axis alone. The context is
     the model-written summary of what was happening; without one, a bare where-and-when line."""
-    hhmm = dt.datetime.fromtimestamp(g["start"]).strftime("%H:%M")
+    from .config import local_dt
+    hhmm = local_dt(g["start"]).strftime("%H:%M")     # the zone the Mac was in then
     secs = g["end"] - g["start"]
     length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
     where = g["app"] + (f" · {g['domain']}" if g["domain"] else "") + (f" ({g['title'][:60]})" if g["title"] else "")
@@ -959,6 +985,75 @@ def spot_checks(conn, cfg: Config | None = None) -> int:
     return 1
 
 
+def _doubt_parts(conn, cfg: Config, trigs: list[dict]) -> list[tuple[list, str]]:
+    """Per doubt: (image blocks, text). What the question writer is shown, since 2026-11-20
+    (Eli: every model call gets all the information that could be relevant). Before, a doubt
+    was one screenshot (the first frame; 359 of 559 doubted segments had more capture moments,
+    up to 50, and the segment the question compares it with had none), the last 200 characters
+    of the reason, and 20 minutes each side of the segment's START in the short line form with
+    notes cut at 90 characters, no thread pointers and nothing marking the person's own rulings
+    (33 of 559 windows held one). The evaluator's alternatives (seg_evals.probs, stored for 550
+    of 559) were not shown: a thread_link doubt said "top attachment only N% confident" and
+    did not name the candidates."""
+    from . import chat_tools as ct, evaluator as ev, prompt_parts as pp, shots as _shots
+    from .summaries import verdict_text
+    per = max(4, DOUBT_IMAGES // max(len(trigs), 1))
+    out = []
+    for i, t in enumerate(trigs):
+        sid = t["segment_id"]
+        g = conn.execute("SELECT * FROM segments WHERE id=?", (sid,)).fetchone()
+        end = g["end"] or g["start"]
+        e = conn.execute("SELECT * FROM seg_evals WHERE segment_id=?", (sid,)).fetchone()
+        # the segments it is compared with: the evaluator's candidates for what it continues, and the segment before it
+        try:
+            ap = (json.loads(e["probs"]) if e is not None and e["probs"] else {}).get("antecedent") or {}
+        except ValueError:
+            ap = {}
+        others = [int(k) for k, _ in sorted(ap.items(), key=lambda x: -x[1]) if str(k).isdigit()][:2]
+        if e is not None and e["antecedent_id"] and e["antecedent_id"] not in others:
+            others.insert(0, e["antecedent_id"])
+        prev = pp._prev_id(conn, sid)
+        if prev and prev not in others:
+            others.append(prev)
+        others = [o for o in others if o != sid][:3]
+        orows = [r for r in (conn.execute("SELECT * FROM segments WHERE id=?", (o,)).fetchone() for o in others) if r is not None and not r["idle"]]
+        mom = _shots.moments(conn, [sid] + [r["id"] for r in orows])
+        cmp_imgs = [im for r in orows for im in pp.seg_images(mom, r, f"DOUBT {i + 1}: a segment it may continue,", max_moments=1, both=False)]
+        own = pp.seg_images(mom, g, f"DOUBT {i + 1}: THE SEGMENT IN DOUBT,")
+        if len(own) > per - len(cmp_imgs):
+            own = pp.fit(pp.seg_images(mom, g, f"DOUBT {i + 1}: THE SEGMENT IN DOUBT,", both=False), max(1, per - len(cmp_imgs)))
+        blocks, meta = pp.image_blocks(own + cmp_imgs)
+        lines, _ = pp.log_lines(conn, cfg, g["start"] - 1200, end + 1200,     # the after-window from its END: 4 doubted segments ran past start + 20 min
+                                marks={sid: f">>> id={sid} (THE SEGMENT IN DOUBT) "}, default_mark="    id={id} ", dated=True)
+        cur = ("current judgment: " + pp.judged_text(pp.judged_before(conn, sid, time.time()))) if e is not None else "(no judgment)"
+        why = [f"source: {t['source']}; {t['reason']}"]
+        if t["source"] == "propagation":
+            # the ruling that raised it: what the person ruled on which segment, and the judge's note
+            # (from the record of carried-over corrections, and from the mark in the note: flags
+            # raised before that record existed, 2026-11-20, are only in the note)
+            import re
+            notes = {p["from_segment_id"]: p["note"] for p in conn.execute(
+                "SELECT * FROM seg_propagated WHERE segment_id=? AND verdict='uncertain' ORDER BY created", (sid,))}
+            for src in re.findall(r"does your correction of segment (\d+) apply here\?", t["reason"]):
+                notes.setdefault(int(src), None)
+            for src, pnote in notes.items():
+                rv = conn.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (src,)).fetchone()
+                why.append(f"The doubt was raised by the person's ruling on segment id={src}: the app's propagation judge "
+                           "thought it might apply here too" + (f" (“{pp.one(pnote)}”)" if pnote else "") + ". That ruling: "
+                           + ((verdict_text(rv) or "(no field set)") + (f"; their note: “{pp.one(rv['note'])}”" if pp.one(rv["note"]) else "")
+                              if rv is not None else "since withdrawn")
+                           + "\n  the ruled segment: " + (pp.seg_line(conn, cfg, src) or "(no longer on record)"))
+        probs = ct.probs_text(conn, cfg, sid, indent="  ")
+        n_own = sum(1 for m in meta if "THE SEGMENT IN DOUBT" in m["label"])
+        out.append((blocks, f"DOUBT {i + 1} - segment id={sid} ({pp.t(g['start'], '%a %Y-%m-%d %H:%M:%S')}, {ev._durtext(end - g['start'])})\n"
+                    + "Why it is in doubt: " + "\n".join(why) + "\n" + cur + "\n"
+                    + (f"Screenshots above for this doubt: {n_own} of the segment itself"
+                       + ("" if n_own else f" ({_shots.why_none(conn, sid)})") + f", {len(meta) - n_own} of segments it may continue.\n")
+                    + ("What the app's models gave each label, and what the segment might continue:\n" + probs + "\n" if probs else "")
+                    + "Surrounding activity (>>> marks the segment in doubt; 20 minutes before it to 20 minutes after its end):\n" + "\n".join(lines)))
+    return out
+
+
 def generate_pending(conn, cfg: Config | None = None) -> int:
     """One LLM call turning up to MAX_TRIGGERS_PER_CALL doubts into questions."""
     from . import stats, summaries
@@ -970,43 +1065,16 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
     trigs = _triggers(conn)[:MAX_TRIGGERS_PER_CALL]
     if not trigs:
         return 0
-    from .classifiers.claude_vision import _b64
     content_blocks: list = []
     parts = []
-    for i, t in enumerate(trigs):
-        from . import shots as _shots
-        sh = next(iter(_shots.pick(conn, [t["segment_id"]], 1)), None)
-        if sh:
-            b = _b64(sh["path"])
-            if b:
-                content_blocks.append({"type": "text", "text": f"Screenshot of DOUBT {i + 1}'s segment (id={t['segment_id']}){' - EXTERNAL display' if sh['display'] else ''}:"})
-                content_blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
-        seg_ctx = stats.labelled_segments(conn, t["ts"] - 1200, t["ts"] + 1200)
-        ctx_ids = [s["id"] for s in seg_ctx]
-        rats = {}
-        if ctx_ids:
-            qs = ",".join("?" * len(ctx_ids))
-            rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
-                f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", ctx_ids)
-                if r2["rationale"]}
-        lines = [("  >>> " if s["id"] == t["segment_id"] else "      ")
-                 + f"id={s['id']} " + summaries.seg_line(s)
-                 + (f"  // {rats[s['id']][:90]}" if s["id"] in rats else "")
-                 for s in seg_ctx if s["duration"] > 0]
-        ev = conn.execute("SELECT content, switch_label, focused, self_distraction, next_task, rationale FROM seg_evals WHERE segment_id=?",
-                          (t["segment_id"],)).fetchone()
-        cur = (f"current judgment: content={ev['content']}, switch={shown_switch(ev['switch_label'])}"
-               + ("" if ev["focused"] is None else (", focused" if ev["focused"] else ", unfocused"))
-               + (", self-distraction" if ev["self_distraction"] else "")
-               + (", next task in the block" if ev["next_task"] else "")
-               + f" - {ev['rationale']}") if ev else "(no judgment)"
-        parts.append(f"DOUBT {i + 1} - segment id={t['segment_id']} (source: {t['source']}; {t['reason']})\n"
-                     f"{cur}\nSurrounding activity (>>> marks the segment in doubt):\n" + "\n".join(lines))
+    for blk, part in _doubt_parts(conn, cfg, trigs):
+        content_blocks += blk
+        parts.append(part)
     unsure = conn.execute("""SELECT q.question, q.note, g.app, g.domain, g.title, COALESCE(g.end, g.start) - g.start AS secs
                              FROM review_questions q JOIN segments g ON g.id = q.segment_id
-                             WHERE q.status = 'unsure' ORDER BY q.answered_at DESC LIMIT 12""").fetchall()
+                             WHERE q.status = 'unsure' ORDER BY q.answered_at DESC LIMIT ?""", (OTHER_LISTS,)).fetchall()
     if unsure:
-        ulines = [f"- [{u['app']} {u['domain'] or ''} | {(u['title'] or '')[:50]}, {u['secs']:.0f}s] {u['question']}"
+        ulines = [f"- [{u['app']} {u['domain'] or ''} | {u['title'] or ''}, {u['secs']:.0f}s] {u['question']}"
                   + (f"  (their note: {u['note']})" if u["note"] else "") for u in unsure]
         content_blocks.append({"type": "text", "text":
             "The person could NOT answer these recent questions - they looked and genuinely could not tell. "
@@ -1015,7 +1083,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
             + "\n".join(ulines)})
     missed = conn.execute("""SELECT q.question, q.options, q.note, g.app, g.domain, g.title
                              FROM review_questions q JOIN segments g ON g.id = q.segment_id
-                             WHERE q.status = 'none' ORDER BY q.answered_at DESC LIMIT 12""").fetchall()
+                             WHERE q.status = 'none' ORDER BY q.answered_at DESC LIMIT ?""", (OTHER_LISTS,)).fetchall()
     if missed:
         mlines = []
         for u in missed:
@@ -1024,7 +1092,7 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                                    if o.get("label") != PASSTHROUGH_LABEL)
             except ValueError:
                 labels = ""
-            mlines.append(f"- [{u['app']} {u['domain'] or ''} | {(u['title'] or '')[:50]}] {u['question']}"
+            mlines.append(f"- [{u['app']} {u['domain'] or ''} | {u['title'] or ''}] {u['question']}"
                           f"  (offered: {labels})" + (f"  (what it really was, in their words: {u['note']})" if u["note"] else ""))
         content_blocks.append({"type": "text", "text":
             "For these recent questions the person answered NONE OF THE ABOVE - the options did not "
@@ -1049,13 +1117,16 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
         content_blocks.append({"type": "text", "text": prec + "\n\nWhen one of these past rulings already answers a DOUBT "
                                "(the same kind of situation, ruled on before), omit that DOUBT: do not ask the person "
                                "something they have already told the app."})
-    system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)")
+    from . import prompt_parts as _pp
+    system = SYSTEM.format(rules=_rules_doc(), about_me=cfg.about_me.strip() or "(none)", legend=_pp.LOG_LEGEND)
     resp = llm.parse(_client(), site="questions", 
-        model=cfg.claude_model, max_tokens=4000,
+        model=cfg.claude_model, max_tokens=MAX_TOKENS,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": content_blocks}],
         output_format=QuestionBatch,
-        output_config={"effort": "low"},
+        # The configured effort ("low" was written in, as it was for the evaluator until
+        # 2026-11-20): a declined doubt clears the needs-review flag for good.
+        output_config={"effort": cfg.claude_effort},
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default")
     if resp.parsed_output is None:
