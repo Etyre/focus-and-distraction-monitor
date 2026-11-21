@@ -69,12 +69,15 @@ def judge(conn, cfg: Config, client, role: str, primary_effort: str, primary_jso
     """shadows: [(trial_id, effort, response_json)]. Writes judge verdicts onto the trial rows."""
     if not shadows:
         return
-    parts = [f"ROLE: {role}", f"PRIMARY OUTPUT (effort={primary_effort}):\n{primary_json[:6000]}"]
+    # The outputs whole. Each was cut at 6,000 characters until 2026-11-20: 996 of 1,043 stored
+    # feedback-propagation outputs are longer (up to 14,881), so for that role the judge
+    # compared the first part of two verdict lists and called the rest equivalent unseen.
+    parts = [f"ROLE: {role}", f"PRIMARY OUTPUT (effort={primary_effort}):\n{primary_json}"]
     for _tid, eff, rj in shadows:
-        parts.append(f"OUTPUT at effort={eff}:\n{rj[:6000]}")
+        parts.append(f"OUTPUT at effort={eff}:\n{rj}")
     try:
         resp = llm.parse(client, site="effort_judge", 
-            model=cfg.claude_model, max_tokens=1000,
+            model=cfg.claude_model, max_tokens=4000,   # thinking counts against it (1,000 before)
             system=[{"type": "text", "text": JUDGE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n\n".join(parts)}],
             output_format=EffortJudgement,

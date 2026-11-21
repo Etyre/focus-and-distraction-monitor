@@ -201,64 +201,148 @@ def _span_log(sp) -> str:
     return "\n".join(lines)
 
 
-PROMPT = """Below is the activity log of one hypothesized focus span ({t0}-{t1}, {mins:.0f} min).
+PROMPT = """Below is the activity log of one hypothesized focus span ({t0}-{t1}, {mins:.0f} min), with
+about ten minutes of what came before and after it. Lines marked "(in the span ...)" are the span;
+lines marked "(OUTSIDE the span ...)" are context only: do not describe them as part of it, but
+use them to see whether the span's start and end are in the right place.
 Write a 1-2 sentence factual summary of what the person was actually DOING - the undertaking,
 not the window inventory: "editing the date page of your personal site (VS Code + Terminal +
 checking the rendered pages)" rather than "cycling between Code, Terminal, and Chrome". Infer
-the activity from titles, content labels, and patterns, with epistemic markers ("apparently",
-"likely") when inferring. Name the concrete sites, apps, or documents as evidence; be honest
-about drift, channel-surfing, or mixed activity; note whether a Toggl entry was running.
+the activity from titles, content labels, the notes after "// note:", the screenshots and patterns,
+with epistemic markers ("apparently", "likely") when inferring. Name the concrete sites, apps, or
+documents as evidence; be honest about drift, channel-surfing, or mixed activity; note whether a
+Toggl entry was running.
 
 Then CHECK your own description against the definition: a focus span holds ONE object of
 attention throughout (window-switching within one piece of work is fine; interruptions under
 5 minutes are contained). If what you just described is not plausibly one object of attention,
 say so (coherent=false) and name the contradiction - this triggers review of the span's
-boundaries.
+boundaries. A segment marked RULED BY THE PERSON is settled: what they ruled is what happened.
+
+WHAT THE APP WORKED OUT ABOUT THIS SPAN (from the judgments on the lines below; facts about the
+app's bookkeeping, not evidence of what the person was doing):
+{facts}
+
+{shots}
 
 {log}"""
 
+SUMMARY_IMAGES = 60      # images per call, as the evaluator's budget (evaluator.IMAGE_BUDGET)
+CONTEXT_S = 10 * 60      # log shown before and after the span, marked as outside it
+MAX_TOKENS = 4000        # 500 before: thinking counts against it, and a cut-off answer is no summary
+
+
+def span_facts(sp) -> list[str]:
+    """What the app computed about a span (stats.spans_and_events), in sentences: its kind or
+    why it was disqualified, how it ended, the diversions it contains, an opening that was cut
+    off, time judged unfocused, the person's verdict. First entry: its bounds."""
+    from .config import local_dt
+    t = lambda ts: local_dt(ts).strftime("%H:%M:%S")
+    out = [f"{t(sp['start'])} to {t(sp['end'])}, {dur_text(sp['duration'])} long, {sp.get('focus_min', 0):.0f} min of it counted as focus."]
+    if sp.get("disq_reason"):
+        out.append(f"The app does NOT count it as a focus span: {sp['disq_reason']}.")
+    elif sp.get("subtype"):
+        out.append(f"The app counts it as a focus span of kind '{sp['subtype']}'"
+                   + (", carried on inside a live discussion for most of it (hybrid)" if sp.get("hybrid") else "")
+                   + (", fully absorbed (no diversion)" if sp.get("fully_absorbed") else "") + ".")
+    if sp.get("confirmed") is not None and sp.get("review_chat_mid") is not None or sp.get("confirmed"):
+        out.append("The person has reviewed this span themselves" + (" (through a chat)" if sp.get("review_chat_mid") else "") + ".")
+    if sp.get("ended_by"):
+        out.append(f"How it ended: {sp['ended_by']}.")
+    det = sp.get("detours") or []
+    if det:
+        out.append(f"Contained diversions (time off the span's thread, under 5 minutes each, counted inside it): {len(det)}, "
+                   f"{sp.get('detour_min', 0):.1f} min in all:")
+        for r in det:
+            where = ", ".join(dict.fromkeys((g.get("app") or "?") + (f" {g['domain']}" if g.get("domain") else "") for g in r["segments"]))
+            out.append(f"  {t(r['start'])} for {dur_text(r['duration'])}: {where} (segment ids "
+                       + ", ".join(dict.fromkeys(str(g["id"]) for g in r["segments"])) + ")")
+    else:
+        out.append("Contained diversions: none.")
+    if sp.get("trimmed_start_min"):
+        out.append(f"Its opening was cut off: the {sp['trimmed_start_min']:.1f} min before {t(sp['start'])} were on the same thread "
+                   "but broken up, and a span has to start with 10 continuous focused minutes.")
+    if sp.get("unfocused_min"):
+        out.append(f"Time on the span's own thread judged UNFOCUSED (it counts as focus unless the person says otherwise): "
+                   f"{sp['unfocused_min']:.1f} min, longest stretch {sp.get('unfocused_max_min', 0):.1f} min"
+                   + ("; the person is being asked whether it really was unfocused" if sp.get("unfocused_ask") else "") + ".")
+    return out
+
+
+def span_images(conn, inside: list[dict], budget: int = SUMMARY_IMAGES) -> tuple[list, str]:
+    """Screenshots of a span for a model, and the sentence that says what is attached. One of
+    each distinct app/site (its longest segment), then one of every segment over a minute,
+    longest first; what is left of the budget goes to further moments of the longest segments.
+    Each is labelled with its segment id, time and app. The coherence check is a judgment about
+    content, and Agent Coding, Terminal and Roam titles carry little of it. `inside` are the
+    span's segments (stats.labelled_segments rows, one per real segment)."""
+    from . import prompt_parts as pp, shots as _shots
+    live = [g for g in inside if not g["idle"]]
+    mom = _shots.moments(conn, [g["id"] for g in live])
+    by_len = sorted((g for g in live if mom.get(g["id"])), key=lambda g: -g["duration"])
+    ctx_first: dict = {}
+    for g in by_len:
+        ctx_first.setdefault((g["app"], g["domain"]), g)
+    first = list(ctx_first.values())
+    order = first + [g for g in by_len if g["duration"] >= 60 and not any(g is f for f in first)]
+    images = [im for g in order[:budget] for im in pp.seg_images(mom, g, "span segment", max_moments=1, both=False)]
+    used = {im["path"] for im in images}
+    for g in by_len:     # more moments of the long segments while there is room
+        for im in pp.seg_images(mom, g, "span segment", both=False):
+            if len(images) < budget and im["path"] not in used:
+                images.append(im)
+                used.add(im["path"])
+    content, meta = pp.image_blocks(images[:budget])
+    shown_ids = {m_["label"].split("id=")[1].split(" ")[0] for m_ in meta}
+    none = [g for g in live if g["duration"] >= 60 and str(g["id"]) not in shown_ids]
+    note = (f"Screenshots attached above: {len(meta)}, of {len(shown_ids)} of the span's {len(live)} segments, each labelled "
+            "with its segment id, the time it was taken and the app."
+            + (" Segments of a minute or more with no screenshot: "
+               + "; ".join(f"id={g['id']} ({_shots.why_none(conn, g['id']) if not mom.get(g['id']) else 'the image allowance was used up'})"
+                           for g in none) + ". A missing screenshot says nothing about the activity." if none else ""))
+    return content, note
+
 
 def generate(conn, cfg: Config, sp) -> bool:
-    """Write and store a summary for one finished span. The summarizer gets the evaluator's
-    per-segment rationales and a few sampled screenshots, not just window titles - Terminal
-    windows and untitled docs carry no activity information in their titles."""
+    """Write and store a summary for one finished span, and check that it is one object of
+    attention (a "no" has the evaluator re-judge the span, then asks the person).
+
+    What the call is shown, since 2026-11-20 (Eli: every model call gets all the information
+    that could be relevant). Before, it had four screenshots labelled with a time only (181 of
+    191 spans had more than four capture moments, median 42, and 91 spans more than four
+    distinct app/site contexts), the span's lines in the short form with no ids, nothing from
+    outside the span - where a wrong boundary would show - and none of what the app computed
+    (54 of 191 were disqualified spans, and the call was not told). Now: the evaluator's line
+    for every segment (ids, whole titles and notes, thread pointers, the person's rulings with
+    their notes, signals), ten minutes before and after marked as outside, the span's computed
+    facts, and a screenshot of every distinct app/site and of every segment over a minute,
+    within SUMMARY_IMAGES, each labelled with its segment id and app."""
     client = _get_client()
     if client is None:
         return False
+    from . import prompt_parts as pp
     from .config import local_dt   # the zone the Mac was in then, as in seg_line
     t0s = local_dt(sp["start"]).strftime("%H:%M")
     t1s = local_dt(sp["end"]).strftime("%H:%M")
-    segs = [s for r_ in sp["runs"] for s in r_["segments"]]
-    ids = [s["id"] for s in segs]
-    rats = {}
-    if ids:
-        qs = ",".join("?" * len(ids))
-        rats = {r2["segment_id"]: r2["rationale"] for r2 in conn.execute(
-            f"SELECT segment_id, rationale FROM seg_evals WHERE segment_id IN ({qs})", ids)
-            if r2["rationale"]}
-    lines = [seg_line(s) + (f"  // {rats[s['id']]}" if s["id"] in rats else "") for s in segs]   # whole: 73% of notes were cut mid-word at 80-90 characters
-    if len(lines) > 150:
-        lines = lines[:75] + [f"  ... {len(lines) - 150} segments elided ..."] + lines[-75:]
-    content: list = []
-    if ids:
-        from .classifiers.claude_vision import _b64
-        from . import shots as _shots
-        for sh in _shots.pick(conn, ids, 4):
-            b = _b64(sh["path"])
-            if b:
-                where = " - EXTERNAL display" if sh.get("display") else ""
-                content.append({"type": "text", "text": f"Screenshot at {local_dt(sh['ts']).strftime('%H:%M')}{where}:"})
-                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
-    content.append({"type": "text", "text": PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60,
-                                                          log="\n".join(lines))})
+    away = {g["id"] for r_ in sp["runs"] if r_["cat"] == "detour" for g in r_["segments"]}
+    lo, hi = sp["start"] - CONTEXT_S, sp["end"] + CONTEXT_S
+    _, rows = pp.log_lines(conn, cfg, lo, hi, phone=False)
+    inside = [g for g in rows if g["clip_end"] > sp["start"] and g["clip_start"] < sp["end"]]
+    marks = {g["id"]: (f"(in the span, a contained diversion, id={g['id']}) " if g["id"] in away else f"(in the span, id={g['id']}) ")
+             for g in inside}
+    lines, _ = pp.log_lines(conn, cfg, lo, hi, marks=marks, dated=True, default_mark="(OUTSIDE the span, context id={id}) ")
+    content, shots_note = span_images(conn, inside)
+    text = PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60, facts="\n".join(span_facts(sp)), shots=shots_note,
+                         log="Activity log:\n" + "\n".join(lines))
+    content.append({"type": "text", "text": text})
     from .classifiers.claude_vision import _rules_doc
     system = [{"type": "text", "text": ("You summarize hypothesized focus spans for a personal "
-              "attention monitor, and check them against the person's own rules.\n\n"
-              "Their rules and definitions (authoritative):\n" + _rules_doc()
+              "attention monitor, and check them against the person's own rules.\n\n" + pp.LOG_LEGEND
+              + "\n\nTheir rules and definitions (authoritative):\n" + _rules_doc()
               + "\n\nAbout this person (their own words):\n" + (cfg.about_me.strip() or "(none)")),
               "cache_control": {"type": "ephemeral"}}]
     resp = llm.parse(client, site="summary", 
-        model=cfg.claude_model, max_tokens=500, output_config={"effort": "medium"},
+        model=cfg.claude_model, max_tokens=MAX_TOKENS, output_config={"effort": "medium"},
         system=system,
         messages=[{"role": "user", "content": content}],
         output_format=SpanSummaryJudgement)
@@ -268,7 +352,7 @@ def generate(conn, cfg: Config, sp) -> bool:
 
     def _scall(eff):
         return llm.parse(client, site="summary_shadow", 
-            model=cfg.claude_model, max_tokens=500, output_config={"effort": eff},
+            model=cfg.claude_model, max_tokens=MAX_TOKENS, output_config={"effort": eff},
             system=system, messages=[{"role": "user", "content": content}],
             output_format=SpanSummaryJudgement)
 
@@ -278,7 +362,7 @@ def generate(conn, cfg: Config, sp) -> bool:
 
     _eff.run_shadows(conn, cfg, client, "span_summarizer", f"span:{t0s}-{t1s}",
                      "medium", resp, _scall, _scmp,
-                     prompt_text=PROMPT.format(t0=t0s, t1=t1s, mins=sp["duration"] / 60, log="(span log)")[:300])
+                     prompt_text=f"span summary and coherence check, {t0s}-{t1s} ({sp['duration'] / 60:.0f} min); the prompt is not stored")
     j: SpanSummaryJudgement = resp.parsed_output
     text = j.summary.strip()
     if not text:

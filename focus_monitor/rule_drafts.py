@@ -23,7 +23,7 @@ log = logging.getLogger("rule_drafts")
 
 MIN_NEW = 8             # new rulings needed before another run
 MIN_GAP_S = 6 * 3600.0
-MAX_REVIEWS = 150       # the newest rulings shown to the model
+MAX_TOKENS = 8000       # three drafts, and thinking counts against it (3,000 before)
 MAX_OPEN = 5            # no new drafts while this many wait for an answer
 
 SYSTEM = """You help one person keep the written rules of their focus-tracking app up to date. \
@@ -44,6 +44,16 @@ reword or contradict anything the document already says.
 - At most 3 drafts. An empty list is the right answer when nothing qualifies - a weak rule \
 costs more than no rule.
 - Do not repeat a draft from the "already drafted" list, whatever its status.
+
+How the rulings are listed: one ENTRY per act of ruling. An entry that covers several segments \
+(one edit or one chat reply applied to a run of blocks, with one note) is ONE occasion, however \
+many segments it lists. Each segment shows what it was, what the person ruled (every field they \
+set, and what they say it continues), and what the app had judged before they ruled, with the \
+app's reasoning; "differs on" names the fields they changed. Where the ruling was an answer to a \
+review question, the question, the context they were shown and the options they did NOT choose \
+are given; where it came out of a chat, what they wrote there. Times are in the zone they were \
+in that day. In segment_ids give the segment ids of the rulings a draft rests on, from at least \
+three different entries.
 
 Their rules document:
 {rules}"""
@@ -73,6 +83,7 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     """Draft rules if a run is due. Returns how many drafts were stored."""
     from .classifiers.claude_vision import _rules_doc
     from .questions import _client
+    from .config import local_dt
     cfg = cfg or load_config()
     new, last = _new_since_last(conn)
     if not force and (new < MIN_NEW or time.time() - last < MIN_GAP_S):
@@ -81,32 +92,19 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
         return 0
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
-    rows = conn.execute("""
-        SELECT r.segment_id, r.content, r.switch_label, r.focused, r.self_distraction, r.next_task, r.hybrid,
-               r.note, r.created, g.app, g.domain, g.title, g.start,
-               e.content AS ec, e.switch_label AS esw, e.focused AS ef, e.created AS e_at
-        FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
-        LEFT JOIN seg_evals e ON e.segment_id = r.segment_id
-        ORDER BY r.created DESC LIMIT ?""", (MAX_REVIEWS,)).fetchall()
+    # Every ruling, not the newest 150 (2026-11-20). The 150 lines held about 64 occasions: 96
+    # of them repeated another line's note (one chat reply or bulk edit writes one note on many
+    # segments, the largest group 32), while the rule asks for "three rulings made on different
+    # occasions" and neither the ruling's date nor its group was printed; 176 of 326 rulings,
+    # 105 of them with a note in the person's own words, were never shown. Thread pointers (30
+    # of the 150) and the focus exception (82) were not printed; the app's side was missing for
+    # 18 because the segment had been judged again since; and 44 notes said only "(answered
+    # review question: <label>)" with the question itself not given.
+    rows = conn.execute("""SELECT r.*, g.app, g.domain, g.title, g.url, g.start AS g_start, g.end AS g_end
+                           FROM seg_reviews r JOIN segments g ON g.id = r.segment_id ORDER BY r.created""").fetchall()
     if len(rows) < 3 and conn.execute("SELECT COUNT(*) FROM phone_reviews").fetchone()[0] < 3:
         return 0
-
-    verdict = _verdict
-    lines = []
-    for r in reversed(rows):
-        mine = verdict(r["content"], r["switch_label"], r["focused"],
-                       ("self-distraction" if r["self_distraction"] else None,
-                        "next task in the block" if r["next_task"] else None,
-                        "hybrid (inside a live discussion)" if r["hybrid"] else None))
-        # the app's judgment as it stood when they ruled, where that is still on record
-        app = ""
-        if r["e_at"] is not None and r["e_at"] < r["created"]:
-            differs = ((r["content"] and r["content"] != r["ec"]) or (r["switch_label"] and r["switch_label"] != r["esw"])
-                       or (r["focused"] is not None and r["ef"] is not None and bool(r["focused"]) != bool(r["ef"])))
-            app = f" [the app had said: {verdict(r['ec'], r['esw'], r['ef'])}]" if differs else " [the app had said the same]"
-        when = dt.datetime.fromtimestamp(r["start"]).strftime("%b %d %H:%M")
-        lines.append(f"id={r['segment_id']} ({when}) {r['app']} {r['domain'] or ''} | {(r['title'] or '')[:70]}"
-                     f" -> {mine}{app}" + (f" - their note: {r['note'][:300]}" if r["note"] else ""))
+    lines = _ruling_entries(conn, cfg, rows)
     # Their rulings on phone app use (Eli, 2026-11-21: the phone questions are there to surface the
     # rules about which phone use is passive consumption and which is not).
     plines = []
@@ -123,13 +121,21 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
                           + (f" - their note: {r['note']}" if r["note"] and not r["note"].startswith("(") else ""))
     except Exception:
         pass
-    prior = conn.execute("SELECT rule, status FROM rule_drafts ORDER BY created DESC LIMIT 60").fetchall()
-    text = ("Their rulings, oldest first:\n" + "\n".join(lines)
+    spans = conn.execute("SELECT * FROM span_reviews ORDER BY created").fetchall()
+    slines = [f"- {local_dt(r['start']).strftime('%Y-%m-%d %H:%M')}-{local_dt(r['end']).strftime('%H:%M')}, ruled "
+              f"{local_dt(r['created']).strftime('%Y-%m-%d')}: "
+              + ("not a focus span" if r["verdict"] == "not_focus" else f"a focus span ({r['subtype'] or 'kind as the app had it'})")
+              + (f" - their note: “{' '.join(r['note'].split())}”" if r["note"] else "") for r in spans]
+    prior = conn.execute("SELECT * FROM rule_drafts ORDER BY created").fetchall()
+    text = (f"Their rulings: {len(rows)} segments ruled on, in {len(lines)} entries, oldest first:\n\n" + "\n\n".join(lines)
+            + ("\n\nTheir verdicts on whole spans the app had put together:\n" + "\n".join(slines) if slines else "")
             + ("\n\nTheir rulings on phone app use (only the app name and timing are known; a rule here "
                "says which use of which app is passive consumption and which is not):\n" + "\n".join(plines) if plines else "")
-            + ("\n\nAlready drafted (do not repeat):\n" + "\n".join(f"- [{p['status']}] {p['rule']}" for p in prior) if prior else ""))
+            + ("\n\nAlready drafted (do not repeat):\n" + "\n".join(
+                f"- [{p['status']}] {p['rule']}" + (f"  (why it was drafted: {p['why']}; it rested on segments {p['support']})" if p["why"] else "")
+                for p in prior) if prior else ""))
     resp = llm.parse(_client(), site="rule_drafts",
-                     model=cfg.claude_model, max_tokens=3000,
+                     model=cfg.claude_model, max_tokens=MAX_TOKENS,
                      system=[{"type": "text", "text": SYSTEM.format(rules=_rules_doc())}],
                      messages=[{"role": "user", "content": text}],
                      output_format=Drafts,
@@ -154,6 +160,65 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
                      (now, len(rows), n, cost))
     log.info("rule drafting: %d ruling(s) read, %d draft(s) stored ($%.3f)", len(rows), n, cost)
     return n
+
+
+def _ruling_entries(conn, cfg, rows) -> list[str]:
+    """The person's rulings as the drafting model reads them: one entry per act of ruling
+    (rulings sharing a chat reply, or the same second and note: evaluator._group_key), each
+    segment with every field ruled and the app's judgment from BEFORE the ruling
+    (prompt_parts.judged_before), then the review question answered and what the person wrote
+    in the chat it came out of."""
+    from . import prompt_parts as pp
+    from .evaluator import FOLLOWUP_ASK, ChunkEvaluator, _seg_brief
+    from .summaries import verdict_text
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(ChunkEvaluator._group_key(r), []).append(r)
+    out = []
+    for members in groups.values():
+        members = sorted(members, key=lambda r: r["g_start"])
+        first = members[0]
+        note = pp.one(first["note"])
+        head = (f"ENTRY: ruling on segment id={first['segment_id']}" if len(members) == 1 else
+                f"ENTRY: one ruling covering {len(members)} segments (ids {', '.join(str(r['segment_id']) for r in members)})")
+        lines = [f"{head}, made {pp.t(first['created'], '%a %Y-%m-%d %H:%M')}"
+                 + (" through a chat with the app's model" if first["chat_message_id"] else "") + ":"]
+        for r in members:
+            end = r["g_end"] if r["g_end"] is not None else r["g_start"]
+            lines.append(f"  - segment id={r['segment_id']}: {pp.t(r['g_start'], '%a %Y-%m-%d')} " + _seg_brief(
+                {"start": r["g_start"], "end": end, "idle": 0, "app": r["app"], "domain": r["domain"], "title": r["title"], "url": r["url"]}))
+            lines.append("      they ruled: " + (verdict_text(r) or "(no field set; a note only)"))
+            if r["antecedent_id"]:
+                g2 = conn.execute("SELECT * FROM segments WHERE id=?", (r["antecedent_id"],)).fetchone()
+                if g2 is not None:
+                    lines.append(f"      what they say it continues (id={g2['id']}): " + _seg_brief(g2))
+            j = pp.judged_before(conn, r["segment_id"], r["created"])
+            cmp_ = pp.compare(conn, r, j)
+            lines.append("      the app had judged: " + pp.judged_text(j))
+            if j is not None:
+                lines.append("      differs on: " + ("; ".join(cmp_["differ"]) or "nothing (they confirmed what the app had)")
+                             + (". Also ruled: " + "; ".join(cmp_["extra"]) if cmp_["extra"] else ""))
+        lines.append("  their note: " + (f"“{note}”" if note else "(none)"))
+        q = pp.ruling_question(conn, first)
+        if q is not None:
+            lines.append("  it was their answer to this review question:\n" + pp.question_text(*q, indent="    "))
+        # what they wrote in the chat the ruling came out of, and to the evaluator about these segments
+        said, seen = [], set()
+        if first["chat_message_id"]:
+            m = conn.execute("SELECT kind, ref, created FROM chat_messages WHERE id=?", (first["chat_message_id"],)).fetchone()
+            if m is not None:
+                said += conn.execute("SELECT id, text, created FROM chat_messages WHERE kind=? AND ref=? AND role='user' AND created <= ?"
+                                     " ORDER BY created", (m["kind"], m["ref"], m["created"])).fetchall()
+        for r in members:
+            said += conn.execute("SELECT id, text, created FROM chat_messages WHERE kind='evaluator' AND ref=? AND role='user' ORDER BY created",
+                                 (str(r["segment_id"]),)).fetchall()
+        for m in said:
+            if m["id"] in seen or m["text"].strip() == FOLLOWUP_ASK:
+                continue
+            seen.add(m["id"])
+            lines.append(f"  they wrote in the chat ({pp.t(m['created'], '%Y-%m-%d %H:%M')}): “{pp.one(m['text'])}”")
+        out.append("\n".join(lines))
+    return out
 
 
 def _verdict(c, sw, f, extra=()):
