@@ -168,6 +168,25 @@ or the README where it belongs.
 
 ## Decided
 
+- 2026-11-21: **sub-threads.** A sub-thread is an attentional thread that buds off from another
+  one: a new and distinct object of focus that is still in service of, or at least originated
+  from, the first (e.g. in the middle of a task, a blocking bug in the software the task depends
+  on, and attention moves to debugging it). If they are focus spans: the sub-thread is recorded as
+  a separate focus span if and only if it runs longer than 10 minutes; otherwise it is absorbed
+  into the parent span (possibly with a note in the spans table). Eli: "I currently think", so
+  treat it as provisional. NOT YET BUILT: needs the Rules doc (his file: propose the wording) and
+  the code (a "buds off from" relation on a shift, judged by the evaluator and askable in review
+  questions; stats absorbing or splitting by the 10-minute line). Points to settle when building:
+  - It overlaps the rule accepted on 2026-11-20 ("if a tool I'm using breaks ... the fixing is
+    part of that activity's thread, not a separate task"). That rule treats the fix as the same
+    thread; the sub-thread idea treats it as a new thread that is absorbed when short. Reconcile.
+  - Today a diversion of 5 minutes or more ends a span. A sub-thread of 5 to 10 minutes would be
+    absorbed instead: confirm that it overrides the 5-minute rule.
+  - When a sub-thread runs past 10 minutes: does the parent span end where it budded, and does
+    returning to the parent start a new span or continue the old one?
+  - Does an absorbed sub-thread's time count as the parent's focus time, or as a contained
+    diversion that does not break it?
+
 - 2026-11-20: **a task span and Toggl.** One task is one attentional thread. Committed,
   consistent focused engagement on a single thread can be a focus span without a Toggl entry.
   Joining several task threads into one span needs a signal that the switching is held in an
