@@ -1764,7 +1764,7 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         # (16,000 and the configured effort: at 1024 the model's thinking could use it all and leave
         # no answer, as the span chat did on 2026-11-20)
         resp = ev.client.messages.create(model=model, max_tokens=16000, system=system, messages=msgs,
-                                         tools=tools, output_config={"effort": ev.cfg.claude_effort})
+                                         tools=tools, output_config={"effort": cfg.claude_effort})
         costs.append(_cost(resp.usage))
         said.append("".join(b.text for b in resp.content if b.type == "text").strip())
         return resp

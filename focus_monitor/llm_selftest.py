@@ -78,7 +78,7 @@ def main() -> int:
     note = lambda: _tool("note_to_eli", "The rules document names a label that is not in the list.")
     stop = lambda i="tu_1": _tool("contact_eli", "I would rather not continue with this one.", i)
     names = lambda call: [t["name"] for t in call["tools"]]
-    cfg = types.SimpleNamespace(llm_backend="api", claude_model="fake-model")
+    cfg = types.SimpleNamespace(llm_backend="api", claude_model="fake-model", claude_effort="high")
     ask = [{"role": "user", "content": "judge this"}]
 
     # ---- structured calls (llm.parse, API backend): no tool loop, so with_notes answers the note
