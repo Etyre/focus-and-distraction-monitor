@@ -4,6 +4,7 @@ view (timeline hover) inside that span - together with the running Toggl entry -
 span judgment can be audited at a glance."""
 from __future__ import annotations
 
+import datetime as _dt
 import datetime as dt
 import logging
 import time
@@ -147,7 +148,7 @@ def seg_line(s, full: bool = False, ruling=None, quick_pass: bool = False) -> st
     one = lambda v: " ".join(str(v or "").split())
     bits = [local_dt(start).strftime("%H:%M:%S"), dur_text(end - start)]
     if s.get("idle"):
-        bits.append("AWAY (no keyboard or mouse input, or the screen locked)")
+        bits.append("AWAY (ten minutes or more with no keyboard or mouse input)")
     else:
         # A window labelled "idle" for ten minutes or more has state idle too (stats), but it is a
         # real window with a title and input counts: printed as AWAY it lost all of that, and as a
@@ -398,12 +399,22 @@ def ensure_summaries(conn, cfg: Config | None = None, max_new: int = 2) -> int:
     if db.spend_today(conn) >= cfg.daily_budget_usd * cfg.hard_budget_multiple:
         return 0
     now = time.time()
-    segs = stats.labelled_segments(conn, now - 7 * 86400, now)  # cover the span-review queue window
+    # The window starts on a day boundary and a span touching its first minutes is left alone.
+    # It used to start at "now minus 7 days" to the second: a span crossing that moving edge was
+    # cut a little shorter every cycle, no longer matched its stored summary, and was summarised
+    # again and again until it had slid out (14 summaries of one 11-14 span in 19 minutes on
+    # 2026-11-21, the last of an 8-second sliver; 12 of 13 spans of 11-12 lost theirs), and a
+    # cut span could fail the coherence check and have its stretch re-judged.
+    from .config import day_bounds, logical_date
+    w0 = day_bounds(logical_date(now) - _dt.timedelta(days=7))[0]
+    segs = stats.labelled_segments(conn, w0, now)  # cover the span-review queue window
     se = stats.spans_and_events(segs, conn=conn)
     done = 0
     for sp in se["focus_spans"] + se["disqualified"]:
         if done >= max_new:
             break
+        if sp["start"] <= w0 + 120:
+            continue
         if sp.get("ended_by") in ("ongoing", "awaiting evaluation"):
             continue
         if lookup(conn, sp["start"], sp["end"]) is not None:

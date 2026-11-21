@@ -128,6 +128,11 @@ def _get_client():
 
 def note_event(conn, segment_id: int) -> None:
     """Queue a user correction for propagation (called by the edit endpoints)."""
+    # One waiting event per segment: the propagation reads the ruling as it stands when it runs, so
+    # three saves of one ruling are one event, not three runs whose flags depended on which
+    # finished last (segment 36973, 2026-11-21: 4, then 7, then 9 candidates flagged).
+    if conn.execute("SELECT 1 FROM feedback_events WHERE segment_id=? AND processed=0", (segment_id,)).fetchone():
+        return
     conn.execute("INSERT INTO feedback_events(segment_id, created) VALUES (?,?)",
                  (segment_id, time.time()))
 
@@ -156,6 +161,16 @@ def _apply(conn, rec) -> bool:
         if conn.execute("SELECT 1 FROM review_questions WHERE segment_id=? AND status IN ('answered','unsure','none')",
                         (sid,)).fetchone():
             return False
+        # ...nor one where the question writer has already found nothing to ask since the block
+        # was last judged (37262 was flagged and declined six times in 47 minutes, 2026-11-21).
+        if conn.execute("""SELECT 1 FROM review_questions q JOIN seg_evals e ON e.segment_id = q.segment_id
+                           WHERE q.segment_id=? AND q.status='declined' AND q.source='propagation'
+                             AND q.created >= e.created""", (sid,)).fetchone():
+            return False
+        if had.count(" | does your correction of segment ") >= 3:
+            # the flag still goes up; the note stops growing (one was 8,526 characters, 30 marks)
+            conn.execute("UPDATE seg_evals SET uncertain=1 WHERE segment_id=?", (sid,))
+            return True
         mark = f" | does your correction of segment {src} apply here? {note}"
         conn.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
                      ("" if mark in had else mark, sid))
@@ -467,7 +482,14 @@ def process_pending(conn, cfg: Config | None = None, max_events: int = 1) -> int
         with db.tx(conn):
             # this ruling's earlier verdicts are replaced by the ones just given: a target it
             # no longer applies to must not get the old correction back at its next re-judgment
-            conn.execute("DELETE FROM seg_propagated WHERE from_segment_id=?", (seg["id"],))
+            # ...and only for the candidates these calls judged. Deleting every record of the ruling
+            # dropped the corrections on segments outside the list shown (55 segments of 11-16/17
+            # lost theirs when ruling 35063 was propagated again on 2026-11-20).
+            judged_ids = sorted({int(v.segment_id) for v in verdicts})
+            for i in range(0, len(judged_ids), 500):
+                part = judged_ids[i:i + 500]
+                conn.execute(f"DELETE FROM seg_propagated WHERE from_segment_id=? AND segment_id IN ({','.join('?' * len(part))})",
+                             [seg["id"]] + part)
             for v in verdicts:
                 verdict = v.verdict.strip().lower()
                 if verdict not in ("applies", "uncertain"):

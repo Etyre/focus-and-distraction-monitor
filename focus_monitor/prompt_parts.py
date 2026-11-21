@@ -41,7 +41,7 @@ segment's id; the time it began, to the second, in the time zone the person was 
 "--- weekday date ---" line gives the date wherever it changes); how long the segment lasted in \
 all (seconds under two minutes); the app; "site:", "title:" and "url:" in full where the Mac \
 recorded them (most apps other than browsers have no title). An "AWAY" line is ten minutes or \
-more with no input, or the screen locked. "(toggl entry covering most of it: ...)" names the \
+more with no keyboard or mouse input (a locked screen counts as no input). "(toggl entry covering most of it: ...)" names the \
 Toggl entry that ran for the largest part of the segment, or says none ran during it.
 - A line with NO "judged:" part has not been judged by anyone yet.
 - "judged: <content> <focused|unfocused> <switch: continuation|shift|return> ..." is the \

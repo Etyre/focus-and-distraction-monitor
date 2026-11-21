@@ -57,16 +57,31 @@ def _kick_kind_derivation(segment_id: int, note: str | None = None):
     """The person asserted 'separate thread' without a kind - the kind is the app's to derive
     (from what the thread became). Run the evaluator's derivation pass in the background."""
     def _run():
-        try:
-            from . import evaluator
-            c2 = db.connect()
+        _kind_timers.pop(segment_id, None)
+        with _kind_lock:   # one at a time: they share the evaluator object (its last_end / last_answer)
             try:
-                evaluator.derive_kind(c2, cfg, segment_id, note)
-            finally:
-                c2.close()
-        except Exception:
-            log.exception("kind derivation kick failed for segment %d", segment_id)
-    threading.Thread(target=_run, daemon=True, name="kind-derive").start()
+                from . import evaluator
+                c2 = db.connect()
+                try:
+                    evaluator.derive_kind(c2, cfg, segment_id, note)
+                finally:
+                    c2.close()
+            except Exception:
+                log.exception("kind derivation kick failed for segment %d", segment_id)
+    # A ruling saved in two or three clicks used to start a re-judgment per click, at once, on one
+    # shared evaluator object: three runs of the same stretch within 24 s, the later ones cut
+    # short by the first one's state (2026-11-21). The run starts 5 s after the LAST save.
+    old = _kind_timers.pop(segment_id, None)
+    if old is not None:
+        old.cancel()
+    t = threading.Timer(5.0, _run)
+    t.daemon = True
+    _kind_timers[segment_id] = t
+    t.start()
+
+
+_kind_timers: dict = {}
+_kind_lock = threading.Lock()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -858,7 +873,11 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
         if o.get("phone"):   # a ruling on a phone app segment: its own table, read by stats._phone_rows
             prev_p = c.execute("SELECT * FROM phone_reviews WHERE seg_key=?", (o["phone_key"],)).fetchone()
             undo.update(phone_key=o["phone_key"], phone_review=dict(prev_p) if prev_p else None)
-            e = o["phone"]
+            e = dict(o["phone"])
+            if prev_p is not None:   # what it was used for and whether it was time away are asked separately: keep the other
+                for k in ("switch_label", "content", "focused", "self_distraction", "away"):
+                    if e.get(k) is None:
+                        e[k] = prev_p[k]
             c.execute("INSERT OR REPLACE INTO phone_reviews(seg_key, switch_label, content, focused, self_distraction, away, note, created)"
                       " VALUES (?,?,?,?,?,?,?,?)",
                       (o["phone_key"], e.get("switch_label"), e.get("content"), e.get("focused"), e.get("self_distraction"),

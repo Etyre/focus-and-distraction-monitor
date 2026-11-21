@@ -510,6 +510,26 @@ def connect() -> sqlite3.Connection:
     for col in ("self_distraction", "next_task"):   # a propagated ruling can carry these since 2026-11-21
         if pcols and col not in pcols:
             conn.execute(f"ALTER TABLE seg_propagated ADD COLUMN {col} INTEGER")
+    if kv_get(conn, "migrated.seg_propagated2") is None and kv_get(conn, "migrated.seg_propagated") is not None:
+        # One-off (2026-11-21): the first reading of the marks (below) missed every second one of
+        # several stacked on a row: its pattern swallowed the space the next " | corrected via"
+        # starts with. 454 of 1,269 corrections went unrecorded. Read again, not consuming it.
+        import re as _re2
+        conn.execute("BEGIN IMMEDIATE")
+        k2 = 0
+        rv2 = {r["segment_id"]: r for r in conn.execute("SELECT * FROM seg_reviews")}
+        for r in conn.execute("SELECT * FROM seg_evals WHERE rationale LIKE '%corrected via your feedback on segment %'").fetchall():
+            for m in _re2.finditer(r" \| corrected via your feedback on segment (\d+): (.*?)(?= \| |$)", r["rationale"] or "", _re2.S):
+                rv = rv2.get(int(m.group(1)))
+                if rv is None:
+                    continue
+                keep = lambda f: r[f] if rv[f] is not None else None
+                k2 += conn.execute("INSERT OR IGNORE INTO seg_propagated(segment_id, from_segment_id, verdict, content, switch_label, focused, note, created)"
+                                   " VALUES (?,?,?,?,?,?,?,?)",
+                                   (r["segment_id"], int(m.group(1)), "applies", keep("content"), keep("switch_label"),
+                                    keep("focused"), m.group(2).strip(), r["created"])).rowcount
+        kv_set(conn, "migrated.seg_propagated2", f"{k2} more recorded")
+        conn.execute("COMMIT")
     if kv_get(conn, "migrated.settled_reflags") is None:
         # One-off (2026-11-21): blocks re-flagged by a propagation after the person had settled
         # their review question (see propagation._apply) lose that flag again.

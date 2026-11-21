@@ -110,6 +110,30 @@ class ChunkJudgement(BaseModel):
     hold_from: int | None = Field(default=None, description="Only when the prompt says holding is allowed. The id of the first EVALUATE segment you would rather judge LATER, because what the person does next would change your judgment of it. Judge every segment before it; leave it and every segment after it out of `segments`. null = judge everything now (the normal case).")
 
 
+def _thread_last_end(conn, ante_id: int, before: float, seg_ends: dict) -> float:
+    """When the thread that segment `ante_id` belongs to was last in front before `before`: the
+    latest end among the segments of the past two hours whose pointers lead to the same root."""
+    rows = conn.execute("""SELECT g.id, COALESCE(g.end, g.start) AS e, COALESCE(r.antecedent_id, v.antecedent_id) AS a
+                           FROM segments g LEFT JOIN seg_evals v ON v.segment_id = g.id
+                           LEFT JOIN seg_reviews r ON r.segment_id = g.id
+                           WHERE g.start >= ? AND g.start < ? AND g.idle = 0""", (before - 7200, before)).fetchall()
+    ante = {r["id"]: r["a"] for r in rows}
+
+    def root(i):
+        for _ in range(40):
+            nxt = ante.get(i)
+            if nxt is None or nxt == i:
+                return i
+            i = nxt
+        return i
+    want = root(ante_id)
+    last = seg_ends.get(ante_id, 0.0)
+    for r in rows:
+        if r["id"] != ante_id and root(r["id"]) == want:
+            last = max(last, min(r["e"], before))
+    return last
+
+
 def kind_of(switch: str | None, focused, self_distraction) -> str | None:
     """The older per-shift kind, derived from the fields the model now gives (see the module
     docstring). Stored alongside them so everything written for the old label keeps working."""
@@ -344,7 +368,8 @@ segment to judge, "(context id=N)" for one shown as context); the time it began,
 in the time zone the person was in that day; how long it lasted in all (seconds under two \
 minutes), also when it began before or ran on after the stretch shown; the app; "site:", \
 "title:" and "url:" in full where the Mac recorded them (most apps other than browsers have no \
-title). An "AWAY" line is a stretch of ten minutes or more with no input, or the screen locked. \
+title). An "AWAY" line is a stretch of ten minutes or more with no keyboard or mouse input (a locked \
+screen counts as no input). \
 "(toggl entry covering most of it: ...)" names the Toggl entry that ran for the largest part of \
 the segment, or says none ran during it; exactly when an entry started or stopped shows in the \
 day's Toggl list, which has times to the second.
@@ -1356,9 +1381,13 @@ class ChunkEvaluator:
                     # returns by 2026-11-20 had a different one on top by probability.
                     cands.sort(key=lambda x: -x[1])
                     if rsw == "return" and cands and cands[0][0] in seg_ends:
-                        if seg_starts[j.segment_id] - seg_ends[cands[0][0]] > RETURN_MAX_S:
+                        # Measured from the last time the THREAD was touched, not from the segment the
+                        # model happened to name: 37414 named a segment 10.0 minutes back though the
+                        # thread had been in front 3 minutes before, and became a shift (2026-11-21).
+                        # And going back to something by drifting is still a drift: the flag is kept.
+                        if seg_starts[j.segment_id] - _thread_last_end(conn, cands[0][0], seg_starts[j.segment_id], seg_ends) > RETURN_MAX_S:
                             rsw = "interruption"
-                            sd = nxt = False
+                            nxt = False
                             j.note = (j.note or "") + " [return after more than 10 minutes: stored as a shift]"
                     if rsw == "interruption":
                         cands = []  # a new thread has no antecedent
@@ -1475,7 +1504,7 @@ class ChunkEvaluator:
                 propagation.reapply(conn, [s["id"] for s in target])
                 conn.execute("UPDATE eval_runs SET n_segments=? WHERE id=?", (n + len(deferred), run_id))
         log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone segment(s) ($%.3f)",
-                 dt.datetime.fromtimestamp(t0).strftime("%H:%M"),
+                 dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, n_phone, cost)
         # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
         if resp.parsed_output is not None and extra is None:
