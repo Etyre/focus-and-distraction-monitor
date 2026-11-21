@@ -43,6 +43,11 @@ the reports of the three agents that fixed stats, the collector and the evaluato
 are listed there (for example `pause` is not yet exported to the Day view, and `seg_models`
 reads `toggl_id`, whose meaning changed).
 
+## Decided after the pause, not yet built
+
+- The single-task rule for task spans (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-20). Ask
+  which apps or pages are his todo list and his task feed before building the detection.
+
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator
