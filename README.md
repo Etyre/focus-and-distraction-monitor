@@ -462,6 +462,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Chats answered "(no reply)".** The span, switch, day and evaluator chats had `max_tokens` 1024
+  (8192 for the day chat) and effort "low" written in. The model's thinking counts against
+  `max_tokens`, so a question that made it think used it all and no text came back (span chat,
+  2026-11-20 23:21). They now use `chat.CHAT_MAX_TOKENS` (16,000) and the configured effort, and an
+  empty reply says why.
 * **Audit, 2026-11-20 (seven reviewers; numbers, raw record, what the models are shown).** The
   open questions it raised are in `OPEN-DECISIONS.md`.
   * *Short pauses.* A raw idle segment under `idle_seconds`, and time the evaluator or the person

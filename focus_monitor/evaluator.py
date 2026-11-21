@@ -1761,8 +1761,10 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
     costs, said = [], []   # one entry per request: a note_to_eli call is answered and the model asked again
 
     def call(msgs):
-        resp = ev.client.messages.create(model=model, max_tokens=1024, system=system, messages=msgs,
-                                         tools=tools, output_config={"effort": "low"})
+        # (16,000 and the configured effort: at 1024 the model's thinking could use it all and leave
+        # no answer, as the span chat did on 2026-11-20)
+        resp = ev.client.messages.create(model=model, max_tokens=16000, system=system, messages=msgs,
+                                         tools=tools, output_config={"effort": ev.cfg.claude_effort})
         costs.append(_cost(resp.usage))
         said.append("".join(b.text for b in resp.content if b.type == "text").strip())
         return resp

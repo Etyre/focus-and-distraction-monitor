@@ -155,6 +155,18 @@ or the README where it belongs.
     calls of that size. It runs only on the subscription, one call a minute at most, and can be
     paused. Decide the pace, or whether to do the most recent days first and look at the result.
 
+28. **Does a single task need a Toggl entry to be a focus span?** (Eli, 2026-11-20, in the span
+    chat about 20:29-22:00, the audio-player agent session: "this should actually count as a focus
+    span ... Committed, consistent focused engagement on a *single* task can still count as a
+    focus span, but if switching tasks rapidly there needs to be some signal that the switching
+    is held in an overall focused intention.")
+    Now: any task-content span without a Toggl entry is disqualified ("task activity without a
+    Toggl entry"). Proposed rule: one task thread needs no Toggl entry; joining several task
+    threads into one span needs a signal of an overall intention (a running Toggl entry; anything
+    else?). Open points the chat raised: how fine-grained a "task" is (each song, or building the
+    playlist?), whether Toggl is the only signal, and rewording the Rules doc line. Also: why that
+    span is "ended by task change" at 22:00, and a note at 20:54 that names the wrong block before.
+
 ## Display
 
 24. **Show pauses on the Day view.**

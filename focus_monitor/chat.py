@@ -90,7 +90,13 @@ def _api_messages(ctx_blocks, messages) -> list[dict]:
     return api_msgs
 
 
-def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024) -> str:
+# 1024 was the old default. The model's thinking counts against max_tokens, so a question that
+# made it think hard came back with no text at all: the span chat answered "(no reply)" on
+# 2026-11-20 23:21 (message 84, $0.16 spent). 16,000 leaves room for thinking and an answer.
+CHAT_MAX_TOKENS = 16000
+
+
+def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = CHAT_MAX_TOKENS) -> str:
     api_msgs = _api_messages(ctx_blocks, messages)
     if not api_msgs:
         return "", 0.0
@@ -105,7 +111,7 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024)
             system=system,
             messages=msgs,
             tools=tools,
-            output_config={"effort": "low"},
+            output_config={"effort": cfg.claude_effort},   # was "low" written in (2026-11-20 audit)
         )
         costs.append(_cost(resp.usage))
         said.append("".join(b.text for b in resp.content if b.type == "text").strip())
@@ -119,7 +125,13 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024)
     if resp.stop_reason == "refusal":
         return "(Claude declined to answer that.)", cost
     # what it wrote in a turn that also left a note is part of the reply, not replaced by the next turn
-    return ("\n\n".join(t for t in said if t) or "(no reply)"), cost
+    text = "\n\n".join(t for t in said if t)
+    if not text:
+        log.warning("chat call returned no text (stop_reason %s, output tokens %s)",
+                    resp.stop_reason, getattr(resp.usage, "output_tokens", None))
+        text = ("(Claude ran out of room before writing an answer. Please ask again.)"
+                if resp.stop_reason == "max_tokens" else f"(no reply: stop reason {resp.stop_reason})")
+    return text, cost
 
 
 def log_exchange(conn, kind: str, ref: str, messages: list[dict], reply: str, cost: float,
@@ -543,8 +555,8 @@ class DayChat:
             kept = ""   # text from turns whose only tool call was a note to Eli: still part of the reply
             for _ in range(8):
                 resp = self.client.messages.create(
-                    model=self.cfg.claude_model, max_tokens=8192, system=self.system, messages=api_msgs,
-                    tools=tools, output_config={"effort": "low"})
+                    model=self.cfg.claude_model, max_tokens=CHAT_MAX_TOKENS, system=self.system, messages=api_msgs,
+                    tools=tools, output_config={"effort": self.cfg.claude_effort})
                 cost += _cost(resp.usage)
                 rec = llm.contacted("day_chat", self.cfg.claude_model, self.system, api_msgs, resp, tools)
                 if rec:   # the model wants Eli: no tool runs, no further turns
