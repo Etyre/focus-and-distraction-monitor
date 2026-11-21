@@ -1619,6 +1619,11 @@ CHAT_TOOLS = [
          "focused": {"type": ["boolean", "null"], "description": "true = the person says their attention was focused in this segment; false = they say it was unfocused; null = no ruling on that."},
          "antecedent_id": {"type": ["integer", "null"], "description": "For continuation/return: the id of the segment this continues (from the log), else null."},
          "hybrid": {"type": ["boolean", "null"], "description": "true = the activity was done inside a live discussion; false = solo; null = no ruling."},
+         # 2026-11-20: "that was me drifting, count it as a self-distraction" could not be recorded
+         # from this chat, though self-distraction events are a headline number.
+         "self_distraction": {"type": ["boolean", "null"], "description": "For a segment that is (or that this makes) a shift, or a return to a distraction: true = the person says they sought out stimulation or drifted there without a clear intent; false = they say they went there on purpose; null = no ruling on that."},
+         "next_task": {"type": ["boolean", "null"], "description": "For a shift only: true = the person says this was the next task under the same task-processing intention; false = they say it was not; null = no ruling."},
+         "focus_exception": {"type": ["boolean", "null"], "description": "true ONLY when the person explicitly asked that this segment count as independent focus although its content (correspondence with no Toggl entry) normally cannot. Never set it on your own judgment; null = no ruling."},
          "note": {"type": "string", "description": "One sentence, in the person's words, stored as the precedent future judgments see: what was really going on and why it is labelled this way."}},
          "required": ["label", "note"]}},
     {"name": "propose_rule",
@@ -1655,12 +1660,17 @@ def followup_question(conn, cfg: Config, question_id: int) -> dict:
         return {}
     if o.get("phone"):       # nothing was seen of the phone: there is no judgment to ask about
         return {}
-    ev_row = conn.execute("SELECT content, switch_label, focused FROM seg_evals WHERE segment_id=?",
-                          (o.get("segment_id") or q["segment_id"],)).fetchone()
-    differs = o.get("sample_verdict") == "disagree" or (ev_row is not None and (
+    # The judgment as it stood BEFORE the answer. The answer can kick a re-judgment (derive_kind)
+    # that finishes first; the live row then already agrees with the answer, and no follow-up was
+    # asked although the person had corrected the app.
+    from . import prompt_parts as _pp
+    ev_row = _pp.judged_before(conn, o.get("segment_id") or q["segment_id"], q["answered_at"] or time.time())
+    sd = o.get("self_distraction")
+    differs = o.get("sample_verdict") == "disagree" or (ev_row is not None and bool(
         (o.get("content") and o["content"] != ev_row["content"])
         or (o.get("switch_label") and o["switch_label"] != ev_row["switch_label"])
-        or (o.get("focused") is not None and ev_row["focused"] is not None and bool(o["focused"]) != bool(ev_row["focused"]))))
+        or (o.get("focused") is not None and ev_row["focused"] is not None and bool(o["focused"]) != bool(ev_row["focused"]))
+        or (sd is not None and ev_row["self_distraction"] is not None and bool(sd) != bool(ev_row["self_distraction"]))))
     if not differs:
         return {}
     r = chat_reply(conn, cfg, q["segment_id"], [{"role": "user", "text": FOLLOWUP_ASK}], question_id)
@@ -1709,8 +1719,8 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         preds = conn.execute("SELECT model, p_content, p_switch, p_kind FROM seg_predictions WHERE segment_id=?",
                              (segment_id,)).fetchall()
         ptxt = "\n".join(f"  {p['model']}: content={p['p_content']} switch={p['p_switch']}" for p in preds) or "  (none stored)"
-        vtxt = (f"resolved: content={ev_row['content']}, switch={shown_switch(ev_row['switch_label'])}, "
-                f"kind={ev_row['interruption_kind']}, rationale: {ev_row['rationale']}") if ev_row else "(no evaluation recorded)"
+        from . import prompt_parts as _pp     # (this printed the pre-2026-11-19 `kind=` and left out focused / self-distraction)
+        vtxt = ("resolved: " + _pp.judged_text(_pp.judged_before(conn, segment_id, time.time()))) if ev_row else "(no evaluation recorded)"
         system = [{"type": "text", "text": ev._system_blocks(conn)[0]["text"], "cache_control": {"type": "ephemeral"}}]
         api_msgs = []
         preface = (f"[No verbatim transcript exists for the evaluation of {who} - it was judged "
@@ -1747,16 +1757,27 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
                             f"option you lean toward and how sure you are. Be brief.\n"
                             f"Context shown: {qrow['context']}\n"
                             f"Question: {qrow['question']}\nOptions:\n{opts}]\n\n")
+    from . import chat_tools as _ct
+    from .config import logical_date
+    day = logical_date(seg["start"]) if seg else logical_date()
+    extra = _chat_now(conn, cfg, seg, run) if seg else []
+    replays = _ct.replay(conn, cfg, _ct.stored_traces(conn, messages), day)
     for i, m in enumerate(messages):
         role = "assistant" if m.get("role") == "assistant" else "user"
         text = (m.get("text") or "").strip()
         if role == "user" and preface:
-            text = preface + text
+            # the first thing the person says carries what is new since the run: screenshots of
+            # the segment and its neighbours, and the state of the record now
+            api_msgs.append({"role": "user", "content": extra + [{"type": "text", "text": preface + text}]} if extra
+                            else {"role": "user", "content": preface + text})
             preface = ""
+            continue
+        if role == "assistant" and m.get("id") in replays:
+            api_msgs += replays[m["id"]]
         api_msgs.append({"role": role, "content": text})
     model = run["model"] if run is not None and run["model"] else cfg.claude_model
     system = llm.with_preamble(system)
-    tools = CHAT_TOOLS + llm.CONTACT_TOOLS
+    tools = CHAT_TOOLS + _ct.READ_TOOLS + llm.CONTACT_TOOLS
     from .classifiers.claude_vision import _cost
     costs, said = [], []   # one entry per request: a note_to_eli call is answered and the model asked again
 
@@ -1769,40 +1790,157 @@ def chat_reply(conn, cfg: Config, segment_id: int, messages: list[dict],
         said.append("".join(b.text for b in resp.content if b.type == "text").strip())
         return resp
 
+    def proposed(resp, proposal):
+        for b in resp.content:
+            if b.type != "tool_use":
+                continue
+            if b.name == "propose_judgment":
+                j = dict(b.input)
+                if j.get("content") not in CONTENTS:
+                    j["content"] = None
+                j["switch_label"] = stored_switch(j.get("switch_label"))
+                if j["switch_label"] not in SWITCHES:
+                    j["switch_label"] = None
+                if j["switch_label"] not in ("continuation", "return"):
+                    j["antecedent_id"] = None
+                if not (j.get("label") or "").strip():
+                    continue
+                yn = lambda k: None if j.get(k) is None else bool(j[k])
+                proposal["judgment"] = {"label": j["label"].strip(), "content": j["content"],
+                                        "switch_label": j["switch_label"], "antecedent_id": j.get("antecedent_id"),
+                                        "hybrid": j.get("hybrid"), "focused": j.get("focused"),
+                                        # the two shift judgments mean nothing on a continuation (edits.write_seg_review)
+                                        "self_distraction": None if j["switch_label"] == "continuation" else yn("self_distraction"),
+                                        "next_task": yn("next_task") if j["switch_label"] in (None, "interruption") else None,
+                                        "focus_exception": True if j.get("focus_exception") is True else None,
+                                        "note": (j.get("note") or "").strip()}
+            elif b.name == "propose_rule" and (b.input.get("rule") or "").strip():
+                proposal["rule"] = b.input["rule"].strip()
+
     # A proposal made in the same turn as a note is not taken from that turn: the model is told it
     # was not run and makes it again in the answer that follows, which is the one read below.
-    api_msgs, resp = llm.with_notes("evaluator_chat", model, system, api_msgs, call(api_msgs), call, tools)
-    rec = llm.contacted("evaluator_chat", model, system, api_msgs, resp, tools)
+    # Read tools (2026-11-20: get_screenshots and the others of chat_tools) are run and the model
+    # asked again, up to CHAT_ROUNDS times; a proposal made beside a lookup is kept.
+    proposal: dict = {}
+    trace: list[dict] = []
+    read_chars = 0
+    for _ in range(CHAT_ROUNDS):
+        api_msgs, resp = llm.with_notes("evaluator_chat", model, system, api_msgs, call(api_msgs), call, tools)
+        rec = llm.contacted("evaluator_chat", model, system, api_msgs, resp, tools)
+        if rec or resp.stop_reason == "refusal":
+            break
+        proposed(resp, proposal)
+        uses = [b for b in resp.content if b.type == "tool_use"]
+        if not any(u.name in _ct.READ_NAMES for u in uses):
+            break
+        results, calls = [], []
+        for u in uses:
+            if u.name in _ct.READ_NAMES:
+                out = (_ct.run(conn, cfg, u.name, dict(u.input), day) if read_chars <= _ct.TURN_TEXT_MAX else
+                       "not run: the lookups in this reply have already returned the most one reply may read.")
+                read_chars += _ct.size(out)
+            elif u.name == llm.NOTE_TOOL_NAME:
+                out = llm.NOTE_RESULT_TEXT
+            else:
+                out = "Noted: it will be shown to the person as a button when this reply ends. Nothing is changed until they click it."
+            results.append({"type": "tool_result", "tool_use_id": u.id, "content": out})
+            calls.append(_ct.trace_entry(u.id, u.name, dict(u.input), out))
+        trace.append({"said": said[-1] if said else "", "calls": calls})
+        api_msgs = api_msgs + [{"role": "assistant", "content": [b.model_dump(exclude_none=True) for b in resp.content]},
+                               {"role": "user", "content": results}]
     text = (llm.contact_notice(rec) if rec
             else "(Claude declined to answer that.)" if resp.stop_reason == "refusal"
             else "\n\n".join(t for t in said if t))
-    proposal: dict = {}
-    for b in ([] if rec else resp.content):
-        if b.type != "tool_use":
-            continue
-        if b.name == "propose_judgment":
-            j = dict(b.input)
-            if j.get("content") not in CONTENTS:
-                j["content"] = None
-            j["switch_label"] = stored_switch(j.get("switch_label"))
-            if j["switch_label"] not in SWITCHES:
-                j["switch_label"] = None
-            if j["switch_label"] not in ("continuation", "return"):
-                j["antecedent_id"] = None
-            if not (j.get("label") or "").strip():
-                continue
-            proposal["judgment"] = {"label": j["label"].strip(), "content": j["content"],
-                                    "switch_label": j["switch_label"], "antecedent_id": j.get("antecedent_id"),
-                                    "hybrid": j.get("hybrid"), "focused": j.get("focused"),
-                                    "note": (j.get("note") or "").strip()}
-        elif b.name == "propose_rule" and (b.input.get("rule") or "").strip():
-            proposal["rule"] = b.input["rule"].strip()
+    if rec:
+        proposal = {}
     if not text:
         text = "(proposal below)" if proposal else "(no reply)"
     from .chat import log_exchange
     mid = log_exchange(conn, "evaluator", str(segment_id), messages, text, sum(costs), model,
-                       question_id, proposal or None)
+                       question_id, ({**proposal, _ct.TRACE_KEY: trace} if trace else proposal) or None)
     return {"reply": text, "proposal": proposal or None, "message_id": mid}
+
+
+CHAT_ROUNDS = 8          # requests in one evaluator-chat reply when it looks things up
+CHAT_IMAGES = 30         # screenshots added after the replayed run: the segment under review and its neighbours
+
+
+def _chat_now(conn, cfg, seg, run) -> list[dict]:
+    """What a chat about a segment is given beyond the replayed evaluation run (2026-11-20).
+
+    The replay shows what the evaluator saw THEN. It often had no image of the segment itself
+    (12 of 27 chat turns: segment 33153, "What did I say to Atlas when I returned to it?" - "I
+    can't tell you - I don't have a screenshot of that Atlas segment"), and nothing newer than
+    the run: 16 of 27 turns were on segments re-judged since, and the person's rulings, the
+    corrections carried over from them and changes to the Rules doc were all invisible. So:
+    every chosen capture moment of the segment and the first and last of the segment before
+    and after it, and a "since you judged" text: the log of the stretch as it stands now
+    (current labels, rulings with notes, marks left by propagation), the rulings and
+    carried-over corrections made since the run, earlier chat about the segment, and the lines
+    of the Rules doc that were not in the run's instructions. Content blocks for the first
+    user message."""
+    from . import prompt_parts as pp, shots as _shots
+    from .classifiers.claude_vision import _rules_doc
+    from .summaries import verdict_text
+    sid = seg["id"]
+    end = seg["end"] or seg["start"]
+    since = run["created"] if run is not None else None
+    lo, hi = (min(run["t0"], seg["start"]) - 300, max(run["t1"], end) + 300) if run is not None else (seg["start"] - 1200, end + 1200)
+    lines, rows = pp.log_lines(conn, cfg, lo, hi, marks={sid: f">>> THE SEGMENT UNDER REVIEW id={sid}: "}, dated=True)
+    live = [g for g in rows if not g["idle"]]
+    k = next((i for i, g in enumerate(live) if g["id"] == sid), None)
+    near = [] if k is None else [g for g in (live[k - 1] if k > 0 else None, live[k + 1] if k + 1 < len(live) else None) if g]
+    mom = _shots.moments(conn, [sid] + [g["id"] for g in near])
+    own = pp.seg_images(mom, seg, "the segment under review,")
+    if len(own) > CHAT_IMAGES - 4:
+        own = pp.fit(pp.seg_images(mom, seg, "the segment under review,", both=False), CHAT_IMAGES - 4)
+    images = list(own)
+    for g in near:
+        ms = mom.get(g["id"]) or []
+        for m_ in ([ms[0]] if len(ms) == 1 else [ms[0], ms[-1]] if ms else []):
+            images += _moment_images(m_, "the segment just " + ("before" if g["clip_start"] < seg["start"] else "after") + " it,", g["app"] or "", both=False)
+    content, meta = pp.image_blocks(images[:CHAT_IMAGES])
+    ids = [g["id"] for g in rows]
+    qs = ",".join("?" * len(ids)) or "NULL"
+    parts = [f"[What follows was put together now, {_t(time.time(), '%Y-%m-%d %H:%M')}, and was NOT part of your evaluation above. "
+             f"Screenshots just attached: {len(meta)} - " + (f"{len(own)} of the segment under review (id={sid})" if own else
+             f"none of the segment under review ({_shots.why_none(conn, sid)})")
+             + f", the rest of the segment before and the segment after it. The get_screenshots tool shows any other segment or time.]"]
+    if since is not None:
+        rul = conn.execute(f"SELECT * FROM seg_reviews WHERE segment_id IN ({qs}) AND created > ? ORDER BY created", ids + [since]).fetchall()
+        parts.append(f"SINCE YOU JUDGED (your evaluation above was made {_t(since, '%a %Y-%m-%d %H:%M')}):")
+        parts.append("The person's rulings on segments of this stretch made since then: " + ("none." if not rul else "\n" + "\n".join(
+            f"  id={r['segment_id']}, ruled {_t(r['created'], '%Y-%m-%d %H:%M')}: {verdict_text(r) or '(no field set)'}"
+            + (f"; their note: “{_one(r['note'])}”" if _one(r["note"]) else "") for r in rul)))
+        cur = conn.execute("SELECT created, run_id FROM seg_evals WHERE segment_id=?", (sid,)).fetchone()
+        again = conn.execute("SELECT COUNT(*) FROM eval_runs WHERE t0 <= ? AND t1 >= ? AND created > ? AND response IS NOT NULL",
+                             (seg["start"], seg["start"], since)).fetchone()[0]
+        if again:
+            parts.append(f"{again} later evaluation run(s) have covered the segment under review since the one replayed above.")
+        doc = _rules_doc()
+        old = run["system"] or ""
+        added = [ln for ln in doc.splitlines() if ln.strip() and ln.strip() not in old]
+        parts.append("Their rules document has not changed since your instructions above were written." if not added else
+                     "Their rules document has changed since. Lines in it now that were not in your instructions above:\n"
+                     + "\n".join("  " + ln for ln in added))
+    prop = conn.execute(f"SELECT * FROM seg_propagated WHERE segment_id IN ({qs}) ORDER BY created", ids).fetchall()
+    if prop:
+        parts.append("Corrections carried over to segments of this stretch from the person's rulings on OTHER segments (the app's "
+                     "propagation judge decided the ruling applies; they are part of the labels below):\n" + "\n".join(
+                         f"  id={r['segment_id']} from their ruling on id={r['from_segment_id']} ({_t(r['created'], '%Y-%m-%d %H:%M')}): "
+                         + ("flagged for review: does that ruling apply here?" if r["verdict"] == "uncertain" else "applied: " + (verdict_text(r) or "(no field)"))
+                         + f" - “{_one(r['note'])}”" for r in prop))
+    parts.append("THE STRETCH AS THE RECORD STANDS NOW (the labels in force, whoever set them; \"RULED BY THE PERSON\" marks their "
+                 "own rulings, with their notes):\n" + "\n".join(lines))
+    parts.append(pp.LOG_LEGEND)
+    earlier = conn.execute("SELECT * FROM review_questions WHERE segment_id=? AND status IN ('answered', 'unsure', 'none') ORDER BY created", (sid,)).fetchall()
+    for q in earlier:
+        try:
+            opts = json.loads(q["options"] or "[]")
+        except ValueError:
+            opts = []
+        parts.append(f"A review question about this segment that the person has dealt with ({q['status']}):\n" + pp.question_text(q, opts, q["answer_index"]))
+    return content + [{"type": "text", "text": "\n\n".join(parts)}]
 
 
 class AuditFlag(BaseModel):

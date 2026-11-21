@@ -871,8 +871,13 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
         # Options stored before that have no such field: None = leave it as it is. Like
         # edits.write_seg_review, it is not kept on a continuation, where it means nothing.
         o_sd = o.get("self_distraction") if o.get("switch_label") != "continuation" else None
+        # next_task and focus_exception (2026-11-20) come only on an option made from a judgment the
+        # evaluator proposed in chat (or, for next_task, one the day chat wrote): "that was the next
+        # task" and "count this as focus anyway" could be said in the chat and not recorded.
+        o_nt = o.get("next_task") if o.get("switch_label") in (None, "interruption") else None
+        o_fx = True if o.get("focus_exception") is True and o.get("proposed_from") else None
         if (o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None
-                or o_sd is not None):
+                or o_sd is not None or o_nt is not None or o_fx):
             prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
             undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
             osw = o.get("switch_label")
@@ -893,11 +898,12 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                        (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
                        (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None)),
                        chat_message_id if chat_message_id is not None else o.get("proposed_from"),
-                       prev["focus_exception"] if prev else None,  # a question answer never touches the ruling
+                       1 if o_fx else (prev["focus_exception"] if prev else None),  # only a chat proposal the person applies sets it
                        # the person's focused/unfocused ruling: set by the option, else kept
                        (int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused")),
                        (int(bool(o_sd)) if o_sd is not None else (None if osw else _keep("self_distraction"))),
-                       (None if osw else _keep("next_task"))))
+                       (int(bool(o_nt)) if o_nt is not None and (osw or _keep("switch_label")) == "interruption"
+                        else (None if osw else _keep("next_task")))))
             # which row this answer wrote, so clearing the answer later can tell whether the
             # ruling is still that one or has been edited by hand since (see _undo_question_answer)
             undo["seg_written"] = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()[0]
@@ -1112,6 +1118,8 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
                          "switch_label": j.get("switch_label"), "antecedent_id": j.get("antecedent_id"),
                          "interruption_kind": None, "content": j.get("content"), "hybrid": j.get("hybrid"),
                          "focused": j.get("focused"), "self_distraction": j.get("self_distraction"),
+                         # next_task / focus_exception: only a judgment proposed in chat carries them
+                         "next_task": j.get("next_task"), "focus_exception": j.get("focus_exception"),
                          "proposed_from": mid})
             idx = len(opts) - 1
             with db.tx(c):
@@ -1124,7 +1132,8 @@ def api_chat_apply_judgment(mid: int, body: ApplyJudgmentReq):
     try:
         derive = edits.write_seg_review(c, segment_id, content=j.get("content"), switch_label=j.get("switch_label"),
                                         antecedent_id=j.get("antecedent_id"), hybrid=j.get("hybrid"),
-                                        focused=j.get("focused"),
+                                        focused=j.get("focused"), self_distraction=j.get("self_distraction"),
+                                        next_task=j.get("next_task"), focus_exception=j.get("focus_exception"),
                                         note=j.get("note") or j["label"], chat_message_id=mid)
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
