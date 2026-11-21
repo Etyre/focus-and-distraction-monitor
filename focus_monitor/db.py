@@ -506,6 +506,17 @@ def connect() -> sqlite3.Connection:
         moved = sum(move_late_shots(conn, r["id"], r["end"], r["idle_id"]) for r in late if r["idle_id"] is not None)
         kv_set(conn, "migrated.late_shots", str(moved))
         conn.execute("COMMIT")
+    if kv_get(conn, "migrated.settled_reflags") is None:
+        # One-off (2026-11-21): blocks re-flagged by a propagation after the person had settled
+        # their review question (see propagation._apply) lose that flag again.
+        conn.execute("BEGIN")
+        n = conn.execute("""UPDATE seg_evals SET uncertain=0 WHERE uncertain=1
+                            AND rationale LIKE '%does your correction of segment %apply here?%'
+                            AND segment_id IN (SELECT segment_id FROM review_questions
+                                               WHERE status IN ('answered','unsure','none'))
+                            AND segment_id NOT IN (SELECT segment_id FROM review_questions WHERE status='open')""").rowcount
+        kv_set(conn, "migrated.settled_reflags", str(n))
+        conn.execute("COMMIT")
     if kv_get(conn, "migrated.seg_propagated") is None:
         # One-off (2026-11-20): corrections propagated before seg_propagated existed are known
         # only by the mark they left in the rationale. Record the ones that are still there, as

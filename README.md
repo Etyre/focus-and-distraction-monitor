@@ -462,6 +462,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **A settled question is not re-flagged by propagation.** A block whose review question the
+  person has answered (or marked "can't tell" / "none of these") is not flagged again when a
+  ruling on another block is propagated as "uncertain": the dot came back on the timeline and
+  looked like the answer had not taken (segment 37204, 2026-11-21). A ruling that clearly applies
+  still relabels it. A one-off migration cleared the flags already raised that way.
 * **Phone questions about what an app was used for** (Eli, 2026-11-21: "surface the rules about
   what phone usage is passive consumption and which isn't"). `questions.phone_content_questions`
   asks, for each phone app with fewer than `PHONE_RULE_ANSWERS` (4) answers on record and no

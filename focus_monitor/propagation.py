@@ -101,6 +101,14 @@ def _apply(conn, rec) -> bool:
     sid, src, note = rec["segment_id"], rec["from_segment_id"], rec["note"]
     had = (conn.execute("SELECT rationale FROM seg_evals WHERE segment_id=?", (sid,)).fetchone() or [None])[0] or ""
     if rec["verdict"] == "uncertain":
+        # A block whose review question the person has already settled (an answer, "can't tell",
+        # "none of these") is not flagged again by a later ruling elsewhere. They had looked at it,
+        # and the needs-review dot coming back made it look as if the answer had not taken
+        # (Eli, 2026-11-21: segment 37204, answered "can't tell" at 04:42, flagged again at 04:47
+        # by a ruling on 37283). A ruling that clearly applies still relabels it ("applies" below).
+        if conn.execute("SELECT 1 FROM review_questions WHERE segment_id=? AND status IN ('answered','unsure','none')",
+                        (sid,)).fetchone():
+            return False
         mark = f" | does your correction of segment {src} apply here? {note}"
         conn.execute("UPDATE seg_evals SET uncertain=1, rationale=COALESCE(rationale,'') || ? WHERE segment_id=?",
                      ("" if mark in had else mark, sid))
