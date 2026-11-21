@@ -650,6 +650,14 @@ function pollPendingQuestion(q){
 function qContext(q){return q._ctx||(q._ctx=api('/api/questions/'+q.id+'/context')
   .catch(e=>({timeline:[],timeline_shots:[],phone:null,toggl_entries:[]})) // a card without its timeline beats no card
   .then(c=>{Object.assign(q,c);}));}
+// After an answer (or clearing one) the card's own timeline is redrawn from the server, so the
+// blocks the answer changed change colour on the card right away, not only on the Day tab (Eli,
+// 2026-11-21: "I should be able to see it change"). The re-judgment some answers start lands a
+// few seconds later, so the card is fetched once more after that.
+function qRefreshCard(q){if(!q)return;
+  const redraw=()=>{q._ctx=null;qContext(q).then(()=>{if(qQueue[qqi]===q&&reviewMode==='question')renderQuestion();});};
+  redraw();setTimeout(redraw,8000);
+  try{if(typeof loadDay==='function'&&!$('#view-day').classList.contains('hidden'))loadDay();}catch(e){}}
 // Manual editing is folded away by default (Eli, 2026-11-21: "the manual edit options for a span
 // or a switch should be collapsed and hidden, but still accessible ... Talking to a model is the
 // default interface"). Whether each kind of panel was left open is remembered per browser.
@@ -783,7 +791,7 @@ async function answerQuestion(id,idx){
   await api(`/api/questions/${id}/answer`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({option_index:idx,note:note})});draftClear($('#qNote'+id),false);
   // The question stays up, marked answered, so a misclick is one click to fix; ⌘→ / s moves on.
   const q=qQueue.find(x=>x.id===id);if(q){q.status='answered';q.answer_index=idx;q.note=note;}
-  renderQuestion();
+  renderQuestion();qRefreshCard(q);
   if(q)askFollowup(q);
 }
 // When an answer goes against the app's judgment, the evaluator may ask one follow-up question.
@@ -798,7 +806,7 @@ async function askFollowup(q){
 async function reopenQuestion(id){
   await api(`/api/questions/${id}/reopen`,{method:'POST'});
   const q=qQueue.find(x=>x.id===id);if(q){q.status='open';q.answer_index=null;q.note=null;}
-  renderQuestion();
+  renderQuestion();qRefreshCard(q);
 }
 async function reopenCardQuestion(id){
   await api(`/api/questions/${id}/reopen`,{method:'POST'});
@@ -854,6 +862,7 @@ function renderSpanCard(sp,oneOff){
     <div class="row" style="justify-content:space-between"><div><b>Span review</b> · ${sp.day} · ${fmtT(sp.start)}–${fmtT(sp.end)} · ${fmtMin(sp.duration/60)}</div><div>${nav}</div></div>
     ${prior}
     <div style="margin:8px 0">Current call: ${sp.hybrid&&!sp.disq_reason?'<span style="color:var(--f-meeting)"><b>hybrid</b> — carried on inside a live discussion (counts with meetings) · </span>':''}${sp.disq_reason?'<span style="color:var(--interrupted)">NOT focused work — '+esc(sp.disq_reason)+'</span>':`<b style="color:${subColor[sp.subtype]}">${subName[sp.subtype]||esc(sp.subtype)}</b>`} · ${fmtMin(sp.focus_min)} focused${sp.detours?` · ${sp.detours} interruption(s) (${fmtMin(sp.detour_min)})`:''} · ended by ${esc(sp.ended_by||'?')}</div>
+    ${sp.review?`<div class="small" style="margin:4px 0;color:var(--focus)">✓ your verdict: ${sp.review.verdict==='focus'?'focus span — '+esc(subName[sp.review.subtype]||sp.review.subtype||''):'not a focus span'} · <a href="#" onclick="spanUnreview();return false">undo</a> · ⌘→ for the next one</div>`:''}
     ${spanTL(sp)}
     <div class="muted small" style="margin:2px 0 6px">hover a block for its capture · ▯ green tick = focus start · ▾ = a shift of attention (red = self-distraction) · click a block to open it</div>
     ${sp.summary?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">📝 ${esc(sp.summary)}</div>`:'<div class="muted small" style="margin:6px 0">summary not generated yet</div>'}
@@ -959,10 +968,16 @@ async function spanReview(verdict,subtype){
   const sp=currentSpan;
   await api('/api/span/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:sp.start,end:sp.end,verdict:verdict,subtype:subtype,note:($('#spanNote')&&$('#spanNote').value)||null})});
   draftClear($('#spanNote'),false);
-  if(spanOneOff){loadQueue();return;}
-  sqi++;
-  if(sqi<spanQueue.length)renderSpanReview();else loadQueue();
+  // Stay on the card and redraw it from the server, so the verdict shows on its timeline and
+  // call line straight away (Eli, 2026-11-21). It used to jump to the next span at once, so the
+  // change was never seen. ⌘→ / "next" moves on, as on a question card.
+  try{const again=await api('/api/span/at?ts='+(sp.start+sp.end)/2);
+    if(!spanOneOff&&spanQueue[sqi]===sp)spanQueue[sqi]=again;renderSpanCard(again,spanOneOff);}
+  catch(e){if(spanOneOff){loadQueue();return;}sqi++;if(sqi<spanQueue.length)renderSpanReview();else loadQueue();}
 }
+async function spanUnreview(){const sp=currentSpan;if(!sp)return;
+  await api(`/api/span/review?start=${sp.start}&end=${sp.end}`,{method:'DELETE'});
+  try{const again=await api('/api/span/at?ts='+(sp.start+sp.end)/2);if(!spanOneOff&&spanQueue[sqi]===sp)spanQueue[sqi]=again;renderSpanCard(again,spanOneOff);}catch(e){loadQueue();}}
 let pendingSpan=null;
 function openSpanReview(ts){pendingSpan=ts; if((location.hash||'#day')==='#review')loadQueue(); else location.hash='review';}
 let pendingSwitch=null,pendingQSeg=null,pendingQSw=null,pendingAfter=null,detailTarget='#reviewCard';
