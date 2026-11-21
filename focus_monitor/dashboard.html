@@ -644,6 +644,12 @@ function pollPendingQuestion(q){
 function qContext(q){return q._ctx||(q._ctx=api('/api/questions/'+q.id+'/context')
   .catch(e=>({timeline:[],timeline_shots:[],phone:null,toggl_entries:[]})) // a card without its timeline beats no card
   .then(c=>{Object.assign(q,c);}));}
+// Manual editing is folded away by default (Eli, 2026-11-21: "the manual edit options for a span
+// or a switch should be collapsed and hidden, but still accessible ... Talking to a model is the
+// default interface"). Whether each kind of panel was left open is remembered per browser.
+function manualOpen(kind,summary){let open=false;try{open=localStorage.getItem('manualOpen.'+kind)==='1';}catch(e){}
+  return `<details class="manual" style="margin:10px 0"${open?' open':''} ontoggle="manualRemember('${kind}',this.open)"><summary class="small muted" style="cursor:pointer">${summary}</summary>`;}
+function manualRemember(kind,open){try{localStorage.setItem('manualOpen.'+kind,open?'1':'0');}catch(e){}}
 function renderQuestion(){
   const q=qQueue[qqi];if(!q)return loadQueue();
   current=null; // keyboard 1-4 must not hit the switch-review path while a question is up
@@ -677,7 +683,8 @@ function renderQuestion(){
       <b>Talk to the evaluator</b> <span class="muted small">— the one whose judgment is in question, with its original context; ask it something or tell it what was really going on</span>
       <div id="qchatlog" class="chatlog"></div>
       <div class="chatrow"><input id="qchatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
-    </div>`;
+    </div>
+    ${q.switch_id?manualOpen('question','✎ edit this block by hand')+`<div class="small" style="margin:6px 0">The block editor (content, switch, focused, self-distraction and the rest) is on the capture page: <button class="small" onclick="openSegment(${q.switch_id})">open it</button></div></details>`:''}`;
   qTLBind(q);
   scrubBind();
   if(SCRUB.moments.length)scrubTo(SCRUB.i);
@@ -853,17 +860,18 @@ function renderSpanCard(sp,oneOff){
       </div></div>`:''}
     <div class="small" style="margin:4px 0">⏱ Toggl: ${sp.toggl.length?esc(sp.toggl.join(' · ')):'<span class="muted">no entries during this span</span>'}</div>
     <div class="muted small" style="margin:4px 0">Apps: ${esc(sp.apps.join(', '))}</div>
-    <div style="margin-top:12px"><b>Was this a focus span?</b>
-      <div class="row" style="margin:6px 0;flex-wrap:wrap;gap:6px">
-        <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
-        ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
-      </div>
-      <textarea id="spanNote" spellcheck="true" rows="2" placeholder="optional note (what was really going on?)"></textarea></div>
+
     <div style="margin-top:12px;border-top:1px solid var(--grid);padding-top:10px">
       <b>Talk to Claude about this span</b> <span class="muted small">— it sees the whole day's activity log, all spans, all Toggl entries, and sampled screenshots</span>
       <div id="spanchatlog" class="chatlog"></div>
       <div class="chatrow"><input id="spanchatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Send</button></div>
-    </div>`;
+    </div>
+    ${manualOpen('span','✎ record a verdict by hand')}    <div style="margin-top:6px"><b>Was this a focus span?</b>
+      <div class="row" style="margin:6px 0;flex-wrap:wrap;gap:6px">
+        <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
+        ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
+      </div>
+      <textarea id="spanNote" spellcheck="true" rows="2" placeholder="optional note (what was really going on?)"></textarea></div></details>`;
   spanTLBind(sp);
   renderSpanChat();
   chatLoad('sp'+spanChatKey(),'span',spanChatKey(),renderSpanChat);
@@ -1104,13 +1112,14 @@ async function renderSwitch(id){
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?(evr.chat_message_id?` · <b>edited in a chat with Claude</b> <a href="#" onclick="event.preventDefault();openChatMsg(${evr.chat_message_id})">open conversation</a>`:' · <b>edited by you</b>'):''):'not yet evaluated — runs ~15 min behind'}${evr&&evr.note?` · <span title="${esc(evr.note)}">note: ${esc(evr.note.slice(0,80))}${evr.note.length>80?'…':''}</span>`:''}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
     ${(f.to_signals||[]).length?`<div class="muted small" style="margin:4px 0" title="What the Mac recorded beside the capture: how this app came forward, how the page was reached, input rates, audio / microphone / camera. The evaluator reads these too.">Signals: ${f.to_signals.map(esc).join(' · ')}</div>`:''}
+    ${manualOpen('capture','✎ edit the judgment by hand')}
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalShow.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalShow.switch_label,['continuation','interruption','return'],{interruption:'shift',return:'return'},'switch_label')}</div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalShow.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalShow.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalShow.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalShow.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The quality of attention in this block, separate from which thread it belongs to. Ruling a block unfocused makes it time away from a span, even on the span's own thread.">attention:</span> ${[[true,'focused'],[false,'unfocused']].map(([v,n])=>`<button class="small" style="${segEvalSel.focused===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('focused',${v})">${n}</button>`).join(' ')} <span class="muted">${ev&&ev.focused!=null?'evaluator: '+(ev.focused?'focused':'unfocused'):'evaluator: no focus judgment (judged before 19 Nov 2026)'}${segEvalSel.focused==null?'':' · your ruling: '+(segEvalSel.focused?'focused':'unfocused')}</span></div>
     ${segEvalShow.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
-    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
+    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div></details>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
@@ -1136,11 +1145,11 @@ async function renderSwitch(id){
     </div>
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(f.from?.app||'')}\n  TO   >>> ${esc(f.to.app)}\n${f.after.map(s=>'  then: '+esc(s.app)+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
     ${f.question?chatBlock:''}
-    ${togglLine}${spanLine}${evalBlock}${ens}<table style="margin:8px 0">${preds}</table>${rev}
+    ${togglLine}${spanLine}${evalBlock}${f.question?'':chatBlock}
+    ${manualOpen('capture-legacy','older per-switch models and labels')}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
-      <textarea id="note" spellcheck="true" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div>
-    ${f.question?'':chatBlock}`;
+      <textarea id="note" spellcheck="true" rows="2" placeholder="optional note (the models learn from these too)"></textarea></div></details>`;
   switchTLBind(f);
   scrubBind();
   if(SCRUB.moments.length)scrubTo(SCRUB.i);
