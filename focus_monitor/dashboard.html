@@ -481,9 +481,15 @@ async function decideRule(id,action){
 async function loadQueue(){
   loadRuleBadge();
   detailTarget='#reviewCard';
+  // Something specific was clicked (a review dot, a span, a block): clear the card left from last
+  // time at once. It used to stay on screen, looking like the answer to the click, for the
+  // seconds the queue took to load (Eli, 2026-11-21).
+  if(pendingQSeg!=null||pendingSwitch!=null||pendingSpan!=null)
+    $('#reviewCard').innerHTML='<div class="muted">Loading…</div>';
   if(!Object.keys(LABELS).length)LABELS=await api('/api/labels');
+  let queueRows=null;   // fetched once: a review-dot click used to fetch the whole queue twice
   if(pendingQSeg!=null&&pendingQSw){const seg=pendingQSeg,sw=pendingQSw;pendingQSw=null;
-    let has=false;try{has=(await api('/api/questions/queue')).some(q=>q.segment_id===seg);}catch(e){}
+    let has=false;try{queueRows=await api('/api/questions/queue');has=queueRows.some(q=>q.segment_id===seg);}catch(e){}
     if(!has){pendingQSeg=null;pendingSwitch=sw;}}
   if(pendingSwitch!=null){const id=pendingSwitch;pendingSwitch=null;enterOneOff();$('#queueCount').textContent='viewing selected switch — ⌘→ continues the review queue';renderSwitch(id).catch(e=>{$('#reviewCard').innerHTML='<div class="muted">That switch could not be loaded ('+esc(String(e.message||e).slice(0,120))+').</div>';});return;}
   if(pendingSpan!=null){const ts=pendingSpan;pendingSpan=null;
@@ -493,7 +499,7 @@ async function loadQueue(){
   // Chronological, oldest first. A flagged segment whose question is not written yet is left out
   // (Eli, 2026-11-19): it joins the list when the question is ready (mergeReadyQuestions). The one
   // exception is a segment opened on purpose from the Day tab, which shows its placeholder card.
-  qQueue=(await api('/api/questions/queue')).filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();qPastEnd=false;
+  qQueue=(queueRows||await api('/api/questions/queue')).filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();qPastEnd=false;
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
   else{ // otherwise always the first question of the day the Day tab is on (user ruling 2026-11-16); none that day: the next later one

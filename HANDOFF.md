@@ -52,6 +52,20 @@ reads `toggl_id`, whose meaning changed).
   check that the app's own call on it becomes a focus span under the new rule. Eli may also have
   recorded a verdict on it by then (span chat or the card): look in `span_reviews` first.
 
+## Offered to Eli on 2026-11-21, no answer yet
+
+- An accepted rule is always appended under "### Lessons from reviews". Proposal: the drafting
+  model names the section it belongs in, shown when accepting, and the line goes there.
+- The app writes the Rules doc and never commits it. Proposal: commit it whenever a rule is
+  accepted (and commit the dictation-fix rule accepted on 2026-11-20, now uncommitted).
+
+## Seen on 2026-11-21, not fixed
+
+- The dashboard's requests wait seconds while the evaluator works: `/api/questions/queue` took
+  0.2 s on a database copy and up to 5 s on the running app. The web server shares one Python
+  process with the evaluator, which now builds very large prompts (60 images, all rulings).
+  Likely fix: run the judging work in its own process.
+
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator
