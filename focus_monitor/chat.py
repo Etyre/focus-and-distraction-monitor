@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import anthropic
 
@@ -76,8 +77,10 @@ class ReviewChat:
         return text
 
 
-def _api_messages(ctx_blocks, messages) -> list[dict]:
-    """The thread as the API wants it: the context blocks ride along with the first question."""
+def _api_messages(ctx_blocks, messages, replays: dict | None = None) -> list[dict]:
+    """The thread as the API wants it: the context blocks ride along with the first question.
+    `replays` {message id: [api messages]} puts the tool calls and results of an earlier reply
+    back in front of its text (chat_tools.replay)."""
     api_msgs: list[dict] = []
     for i, m in enumerate(messages):
         role = "assistant" if m.get("role") == "assistant" else "user"
@@ -86,11 +89,19 @@ def _api_messages(ctx_blocks, messages) -> list[dict]:
             api_msgs.append({"role": "user",
                              "content": ctx_blocks + [{"type": "text", "text": "\n\nMy question: " + text}]})
         else:
+            if role == "assistant" and replays and m.get("id") in replays:
+                api_msgs += replays[m["id"]]
             api_msgs.append({"role": role, "content": text})
     return api_msgs
 
 
-def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024) -> str:
+def _effort(cfg) -> str:
+    """The configured effort. The chats had "low" written into the call (as the evaluator had
+    until 2026-11-20) while config.toml asked for "high"."""
+    return getattr(cfg, "claude_effort", None) or "medium"
+
+
+def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 8000) -> str:
     api_msgs = _api_messages(ctx_blocks, messages)
     if not api_msgs:
         return "", 0.0
@@ -105,7 +116,7 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = 1024)
             system=system,
             messages=msgs,
             tools=tools,
-            output_config={"effort": "low"},
+            output_config={"effort": _effort(cfg)},
         )
         costs.append(_cost(resp.usage))
         said.append("".join(b.text for b in resp.content if b.type == "text").strip())
@@ -173,8 +184,11 @@ def abort_exchange(conn, mid: int) -> None:
 
 def history(conn, kind: str, ref: str) -> list[dict]:
     import json as _json
-    return [{"id": r["id"], "role": r["role"], "text": r["text"], "created": r["created"],
-             "proposal": _json.loads(r["proposal"]) if r["proposal"] else None}
+    def shown(js):
+        # what a reply looked up with its read tools (chat_tools) is for the next turn's replay, not for the page
+        p = {k: v for k, v in _json.loads(js).items() if k != "tool_trace"} if js else None
+        return p or None
+    return [{"id": r["id"], "role": r["role"], "text": r["text"], "created": r["created"], "proposal": shown(r["proposal"])}
             for r in conn.execute(
         "SELECT id, role, text, created, proposal FROM chat_messages WHERE kind=? AND ref=? ORDER BY created, id", (kind, ref))]
 
@@ -216,7 +230,7 @@ class SpanChat:
     def _context_blocks(self, conn, start: float, end: float) -> list[dict]:
         import datetime as dt
         from . import stats, summaries, toggl
-        from .config import logical_date
+        from .config import local_dt, logical_date
         t0, t1 = stats.day_bounds(logical_date(start))
         day_segs = stats.labelled_segments(conn, t0, t1)
         se = stats.spans_and_events(day_segs, conn=conn)
@@ -237,7 +251,7 @@ class SpanChat:
         for sh in shot_rows[:4]:
             b = _b64(sh["path"])
             if b:
-                blocks.append({"type": "text", "text": f"Screenshot at {dt.datetime.fromtimestamp(sh['ts']).strftime('%H:%M')}{' - EXTERNAL display' if sh.get('display') else ''}:"})
+                blocks.append({"type": "text", "text": f"Screenshot at {local_dt(sh['ts']).strftime('%H:%M')}{' - EXTERNAL display' if sh.get('display') else ''}:"})
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         rats = {}
         if sp_ids:
@@ -249,7 +263,7 @@ class SpanChat:
         row = summaries.lookup(conn, sp["start"], sp["end"])
 
         def _t(ts, fmt="%H:%M"):
-            return dt.datetime.fromtimestamp(ts).strftime(fmt)
+            return local_dt(ts).strftime(fmt)   # the zone the Mac was in then
 
         overview = "\n".join(
             f"  {_t(s2['start'])}-{_t(s2['end'])}: "
@@ -271,7 +285,7 @@ class SpanChat:
             before = before[-120:]
         lines += [summaries.seg_line(s2) for s2 in before]
         lines.append(">>> START OF THE SPAN UNDER REVIEW <<<")
-        lines += [summaries.seg_line(s2) + (f"  // {rats[s2['id']][:80]}" if s2["id"] in rats else "")
+        lines += [summaries.seg_line(s2) + (f"  // {rats[s2['id']]}" if s2["id"] in rats else "")
                   for s2 in inside]
         lines.append(">>> END OF THE SPAN UNDER REVIEW <<<")
         lines += [summaries.seg_line(s2) for s2 in after[:120]]
@@ -300,8 +314,18 @@ DAY and want to talk it over with you: how the day went, where their attention h
 the system's calls look right, what the day's shape suggests for tomorrow.
 
 You see the day's headline metrics, every hypothesized focus span (qualifying and disqualified) with the system's \
-call and its summary, the self-distraction and interruption events, the day's Toggl "intent" entries, the whole \
-day's activity log, and a few screenshots sampled across the day.
+call, its summary, its own coherence check and the person's verdict on it, the self-distraction and interruption \
+events, the day's Toggl "intent" entries, every review question asked about the day with the person's answer, the \
+whole day's activity log - every block, with the evaluator's note in full, what the block continues, the person's \
+own rulings and notes, and the signals the Mac recorded - and a few screenshots sampled across the day.
+
+You can LOOK THINGS UP, and should before asserting what a block was or why it was judged as it was:
+- get_screenshots: the captures of a block, or of a stretch of time. The few screenshots you start with are a \
+sample; look at the block itself when it matters.
+- get_evaluation: the evaluation run behind a block's judgment - what the evaluator was shown and its answer.
+- get_segment_detail: everything on record about one block (probabilities, ruling, questions, earlier chat).
+- get_log: the activity log of another day, or of a time range.
+These only read. What you looked up in earlier turns of this conversation is still in it.
 
 Answer concisely and concretely - point at specific times, spans, and blocks. When asked for an assessment, give \
 one and say what it rests on; note honestly when the data is thin or a call is ambiguous. Their calibration \
@@ -322,7 +346,8 @@ never focus; correspondence content with no Toggl entry is not focus - UNLESS th
 block an exception (focus_exception=true: "this was correspondence and it still counts as independent \
 focus"); never set that on your own judgment, only when they ask for it.
 - Threads come from the switch labels: a 'shift' block starts a new thread, a 'continuation' or 'return' block \
-belongs to the thread of its antecedent. A focus span is focused time on ONE thread, and it has to start with \
+belongs to the thread of its antecedent ("<continues id=N>" on its line). A focus span is focused time on ONE \
+thread, and it has to start with \
 10 continuous focused minutes. Time on a different thread inside a span is a diversion whether or not it was \
 focused (a quick purposeful purchase is a focused block and still a diversion); under 5 minutes it is a \
 contained interruption, at 5 minutes the span ended where it began.
@@ -343,10 +368,14 @@ the blocks; you cannot create a span directly.
 Make a change only when the person has clearly asked for it or agreed to it; discuss first otherwise. Edit \
 every block the agreed change covers - the person expects the timeline to match what was agreed. Afterwards, state exactly what you changed. NEVER say you changed, queued, flagged or applied anything \
 unless a tool call in this reply actually did it; if a tool reports an error, say so. The log shows every block's \
-CURRENT labels (a user ruling shows as <switch: ...> and the content tag): do not redo edits that are already in \
+CURRENT labels (a block the person has ruled on says RULED BY THE PERSON, with the fields they set and their \
+note): do not redo edits that are already in \
 place, and do not open a review question that is already in the queue. A field you leave null on \
 set_segment_judgment keeps the person's earlier ruling on that block. You cannot edit the rules \
 document directly or change anything the tools do not cover - say so when asked.
+
+{legend}
+In this log a block's mark is "#id". PHONE lines cannot be edited with the tools.
 
 Their own rules and definitions (authoritative):
 {rules}
@@ -359,6 +388,8 @@ _LABEL_DOC = ("content = what the block was: creative | task | correspondence | 
               "| meeting | idle | transition. switch_label = how it relates to the thread before it: continuation "
               "(same thread) | shift (attention moved to something new: a separate thread began) | return (back to an earlier thread; give "
               "antecedent_id). focused = the quality of attention in the block: true focused, false unfocused. "
+              "self_distraction (on a shift, or a return to a distraction) = sought out stimulation without a clear intent. "
+              "next_task (on a shift) = the next task under the same task-processing intention. "
               "hybrid = the activity was carried on inside a live discussion. null leaves a field as judged.")
 
 DAY_TOOLS = [
@@ -408,7 +439,8 @@ DAY_TOOLS = [
     {"name": "open_review_question",
      "description": "Put a question in the person's review queue to answer later. Each option maps to a concrete "
                     "judgment of a block (a neutral 'just passing through' option is added automatically). Use "
-                    "when a call needs their eyes and they do not want to settle it now. " + _LABEL_DOC,
+                    "when a call needs their eyes and they do not want to settle it now. An answer changes the "
+                    "record only through its option's fields, so set every field the option's wording asserts. " + _LABEL_DOC,
      "input_schema": {"type": "object", "properties": {
          "segment_id": {"type": "integer", "description": "The block whose judgment is in doubt."},
          "context": {"type": "string", "description": "1-2 sentences setting the scene (what happened around it)."},
@@ -417,7 +449,13 @@ DAY_TOOLS = [
              "label": {"type": "string", "description": "The reading, in the person's own terms."},
              "segment_id": {"type": ["integer", "null"], "description": "The block this option edits (default: the question's)."},
              "content": {"type": ["string", "null"]}, "switch_label": {"type": ["string", "null"]},
-             "antecedent_id": {"type": ["integer", "null"]}, "hybrid": {"type": ["boolean", "null"]}},
+             "antecedent_id": {"type": ["integer", "null"]}, "hybrid": {"type": ["boolean", "null"]},
+             # 2026-11-20: an option could not say focused, drifted or next task, so "that was me
+             # drifting" could not be offered as an answer (edits.open_question kept `focused` when
+             # sent, but the schema never offered it).
+             "focused": {"type": ["boolean", "null"], "description": "true when this reading says they were getting something specific done; false when it says they were not (a drift). null when it does not say."},
+             "self_distraction": {"type": ["boolean", "null"], "description": "For a block that is, or that this option makes, a shift or a return: true = this reading says they drifted there without deciding to; false = it says they went on purpose. null when it does not say."},
+             "next_task": {"type": ["boolean", "null"], "description": "With switch_label=shift: true = this reading says it was the next task under the same task-processing intention."}},
              "required": ["label"]}}},
          "required": ["segment_id", "context", "question", "options"]}},
     {"name": "propose_rule",
@@ -428,40 +466,48 @@ DAY_TOOLS = [
 
 
 class DayChat:
-    """Chat about a whole day. Context is the full day: metrics, spans, events, Toggl, the
-    activity log (thinned when long) and screenshots sampled across the day."""
+    """Chat about a whole day. Context is the full day: metrics, spans, events, Toggl, the review
+    questions and their answers, the activity log (every block) and screenshots sampled across
+    the day; the read tools of chat_tools fetch the rest."""
 
-    MAX_LOG_LINES = 450
+    START_IMAGES = 12    # screenshots attached up front; get_screenshots shows any block
+    MAX_ROUNDS = 16      # tool rounds in one reply (8 until 2026-11-20, when every tool wrote)
+    MAX_TOKENS = 16000   # thinking counts against it, and a bulk edit lists many block ids (8,192 before)
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.client = anthropic.Anthropic()
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
+        from . import prompt_parts as pp
         from .classifiers.claude_vision import _rules_doc
         self.system = llm.with_preamble(DAY_SYSTEM.format(
-            rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
+            rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)", legend=pp.LOG_LEGEND))
 
     def _context_blocks(self, conn, day) -> list[dict]:
-        import datetime as dt
-        from . import stats, summaries, toggl
+        """What every turn starts from. Rewritten 2026-11-20 (Eli: every model call is given all
+        the information that could be relevant). Before: when a day had more than 450 blocks the
+        shortest were dropped - on 2026-11-18 that hid 334 of 665 (everything under 45 s),
+        among them 100 shifts and returns, 24 self-distractions and 31 blocks with an open
+        review question, while the instructions said to edit every block a change covers; no
+        line carried the evaluator's note, the person's note or what the block continues; only
+        open questions were listed; times were in the Mac's zone of today."""
+        import json as _json
+        from . import evaluator as ev, prompt_parts as pp, shots as _shots, stats, summaries
         t0, t1 = stats.day_bounds(day)
         segs = stats.labelled_segments(conn, t0, t1)
         se = stats.spans_and_events(segs, conn=conn)
         m = stats.daily_metrics(conn, day)
+        _t = pp.t
 
-        def _t(ts, fmt="%H:%M"):
-            return dt.datetime.fromtimestamp(ts).strftime(fmt)
-
-        blocks: list[dict] = []
-        # Screenshots: up to six, spread evenly over the active part of the day.
-        shots = [s for s in segs if s.get("first_screenshot") and s.get("state") != "idle" and s["duration"] > 0]
-        step = max(1, len(shots) // 6)
-        for s in shots[::step][:6]:
-            b = _b64(s["first_screenshot"])
-            if b:
-                blocks.append({"type": "text", "text": f"Screenshot at {_t(s['clip_start'])} ({s.get('app') or '?'}):"})
-                blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+        # Screenshots: a sample spread over the active part of the day, labelled with the block
+        # they belong to (before: six first frames labelled with a time and an app only).
+        real = [s for s in stats.labelled_segments(conn, t0, t1, phone=False) if s["duration"] > 0 and not s["idle"]]
+        mom = _shots.moments(conn, [s["id"] for s in real])
+        have = [s for s in real if mom.get(s["id"])]
+        images = [im for s in _shots.spread(have, self.START_IMAGES)
+                  for im in ev._moment_images(mom[s["id"]][0], "block", s["app"] or "", both=False)]
+        blocks, meta = pp.image_blocks(images)
 
         metrics = (f"  active {m['active_min']:.0f} min; independent focus {m['total_focus_min']:.0f} min "
                    f"(longest span {m['longest_focus_min']:.0f} min, longest fully-absorbed {m['longest_absorbed_min']:.0f} min, "
@@ -472,16 +518,30 @@ class DayChat:
                    f"{m['switches']} window switches; {m['short_breaks']} short inactivity breaks "
                    f"({m['short_break_min']:.0f} min).")
 
+        reviews = conn.execute("SELECT * FROM span_reviews WHERE start < ? AND end > ? ORDER BY start", (t1, t0)).fetchall()
+
         def _span_line(sp):
             call = (f"DISQUALIFIED ({sp.get('disq_reason')})" if sp.get("disq_reason")
                     else (sp.get("subtype") or "?") + (" [hybrid]" if sp.get("hybrid") else "")
                     + (" [fully absorbed]" if sp.get("fully_absorbed") else ""))
             row = summaries.lookup(conn, sp["start"], sp["end"])
-            line = (f"  {_t(sp['start'])}-{_t(sp['end'])}  {call}: {sp['duration'] / 60:.0f} min, "
-                    f"{sp['focus_min']:.0f} focused, {len(sp.get('detours', []))} interruption(s), "
-                    f"ended by {sp.get('ended_by')}")
+            line = (f"  {_t(sp['start'], '%H:%M')}-{_t(sp['end'], '%H:%M')}  {call}: {summaries.dur_text(sp['duration'])}, "
+                    f"{sp['focus_min']:.0f} min focused, {len(sp.get('detours', []))} contained diversion(s)"
+                    + (f" ({sp.get('detour_min', 0):.1f} min)" if sp.get("detours") else "")
+                    + f", ended by {sp.get('ended_by')}")
+            for txt in summaries.span_facts(sp)[1:]:
+                line += f"\n      {txt}"
             if row and row["summary"]:
-                line += f"\n      summary: {row['summary']}"
+                line += "\n      summary" + (f" (“{pp.one(row['title'])}”)" if row["title"] else "") + f": {pp.one(row['summary'])}"
+                if not row["coherent"]:
+                    line += f"\n      the summary's own check doubted this is one object of attention: {pp.one(row['issue'])}"
+            for r in reviews:
+                ov = min(sp["end"], r["end"]) - max(sp["start"], r["start"])
+                if ov > 0 and ov >= 0.5 * min(sp["end"] - sp["start"], r["end"] - r["start"]):
+                    line += (f"\n      THE PERSON'S VERDICT on {_t(r['start'], '%H:%M')}-{_t(r['end'], '%H:%M')} (made {_t(r['created'], '%Y-%m-%d %H:%M')}"
+                             + (", through this chat" if r["chat_message_id"] else "") + "): "
+                             + ("not a focus span" if r["verdict"] == "not_focus" else f"a focus span ({r['subtype'] or 'subtype as judged'})")
+                             + (f"; their note: “{pp.one(r['note'])}”" if pp.one(r["note"]) else ""))
             return line
 
         spans = sorted(se["focus_spans"] + se["disqualified"], key=lambda s: s["start"])
@@ -489,62 +549,89 @@ class DayChat:
 
         def _ev_line(e, kind):
             where = ", ".join(e.get("where") or []) if isinstance(e.get("where"), list) else (e.get("where") or "")
-            return (f"  {_t(e['start'])}  {kind}, {e['duration'] / 60:.1f} min"
+            return (f"  {_t(e['start'])}  {kind}, {summaries.dur_text(e['duration'])}"
                     + (" inside a focus span" if e.get("inside_span") else "") + (f": {where}" if where else ""))
 
         events = sorted([(e["start"], _ev_line(e, "self-distraction")) for e in se["distractions"]]
                         + [(e["start"], _ev_line(e, "interruption")) for e in se["interruptions"]])
         evtxt = "\n".join(l for _, l in events) or "  (none)"
 
-        tg = toggl.entries_between(conn, t0, t1)
-        tgtxt = "\n".join(f"  {_t(e['start'])}-{_t(e['stop'] or t1)}: {e['description'] or '(unnamed)'}"
-                           for e in tg) or "  (no Toggl entries this day)"
-        oq = conn.execute("""SELECT q.id, q.segment_id, q.source, q.question, g.start FROM review_questions q
-                             JOIN segments g ON g.id = q.segment_id WHERE q.status = 'open' AND g.start >= ? AND g.start < ?
-                             ORDER BY g.start""", (t0, t1)).fetchall()
-        oqtxt = "\n".join(f"  #{q['id']} on block #{q['segment_id']} ({_t(q['start'])}, {q['source']}): {q['question']}"
-                           for q in oq) or "  (none)"
+        tgtxt = "\n".join(ev._toggl_lines(conn, t0, t1, None, None)[0]) or "  (no Toggl entries this day)"
 
-        # Activity log: every block; when the day is long, drop the shortest blocks first.
-        live = [s for s in segs if s["duration"] > 0]
-        kept, floor = live, 0
-        for floor in (0, 20, 45, 90, 180):
-            kept = [s for s in live if s["duration"] >= floor or s.get("state") == "idle"]
-            if len(kept) <= self.MAX_LOG_LINES:
-                break
-        note = (f"  (showing the {len(kept)} blocks of {len(live)} that lasted >= {floor}s; shorter ones omitted)\n"
-                if len(kept) < len(live) else "")
-        logtxt = note + "\n".join(f"#{s['id']} " + summaries.seg_line(s) for s in kept)
+        # Every question about the day, with what the person answered (before: the open ones only,
+        # so the chat could not see that something had been asked and settled, or left as "can't tell").
+        qrows = conn.execute("""SELECT q.*, g.start AS g_start FROM review_questions q JOIN segments g ON g.id = q.segment_id
+                                WHERE g.start >= ? AND g.start < ? ORDER BY g.start, q.id""", (t0, t1)).fetchall()
+        qtxt, others, qnotes = [], {}, {}
+        for q in qrows:
+            if q["status"] in ("open", "answered", "unsure", "none"):
+                try:
+                    opts = _json.loads(q["options"] or "[]")
+                except ValueError:
+                    opts = []
+                qtxt.append(f"  [{q['status'].upper()}] on block #{q['segment_id']} ({_t(q['g_start'], '%H:%M')}):\n"
+                            + pp.question_text(q, opts, q["answer_index"], indent="    "))
+                qnotes.setdefault(q["segment_id"], []).append(
+                    f"review question #{q['id']} ({q['status']}): {pp.one(q['question'])}"
+                    + (f" -> answered “{pp.one(q['answer'])}”" if q["status"] == "answered" else ""))
+            else:
+                others.setdefault(q["status"], []).append(q)
+        for st in ("dismissed", "archived"):
+            for q in others.get(st, []):
+                qtxt.append(f"  [{st.upper()}, never answered] #{q['id']} on block #{q['segment_id']} ({_t(q['g_start'], '%H:%M')}): {pp.one(q['question'])}"
+                            + (f" ({pp.one(q['note'])})" if pp.one(q["note"]) else ""))
+        if others.get("declined"):
+            qtxt.append(f"  ({len(others['declined'])} more doubt(s) were looked at by the question writer and no question was asked: blocks "
+                        + ", ".join(f"#{q['segment_id']}" for q in others["declined"]) + ")")
+
+        lines, shown = pp.log_lines(conn, self.cfg, t0, t1, notes=qnotes, default_mark="#{id} ", dated=True)
 
         text = (f"The day under discussion: {day.isoformat()} ({_t(t0, '%a %d %b')}; the logical day runs "
-                f"{_t(t0)} to {_t(t1)} next morning).\n\n"
+                f"{_t(t0, '%H:%M')} to {_t(t1, '%H:%M')} next morning; times are in the zone the Mac was in that day). "
+                f"This message is written {_t(time.time(), '%Y-%m-%d %H:%M')}.\n\n"
+                f"Screenshots attached above: {len(meta)}, a sample spread over the day's {len(have)} blocks that have a "
+                f"capture. get_screenshots shows any block.\n\n"
                 f"Headline metrics:\n{metrics}\n\n"
                 f"Hypothesized focus spans (the system's current calls):\n{spantxt}\n\n"
                 f"Attention events:\n{evtxt}\n\n"
-                f"Toggl entries (what they intended to work on):\n{tgtxt}\n\n"
-                f"Open review questions already in their queue for this day (do not open these again):\n{oqtxt}\n\n"
-                f"The whole day's activity log (#block id, time, length, state, app/site, title, <content label>, "
-                f"<switch label into it>, [activity], (toggl)):\n{logtxt}")
+                f"Toggl entries (what they intended to work on; all of the day's, times to the second):\n{tgtxt}\n\n"
+                f"Review questions about this day's blocks, with the person's answers (do not open again one that is OPEN):\n"
+                + ("\n".join(qtxt) or "  (none)") + "\n\n"
+                f"The whole day's activity log: all {len(shown)} blocks, none left out:\n" + "\n".join(lines))
         blocks.append({"type": "text", "text": text})
         return blocks
 
     def reply(self, conn, day, messages: list[dict]) -> dict:
         """One turn. Tool calls are executed as they come (each edit carries this reply's id as
         provenance), their results fed back, and the final text plus the list of applied changes
-        is stored on the reply - so the person can see, open and undo exactly what happened."""
+        is stored on the reply - so the person can see, open and undo exactly what happened.
+        Every tool call and its result is stored with the reply too (chat_tools.TRACE_KEY) and
+        sent again on later turns."""
+        from . import chat_tools as ct
         from .classifiers.claude_vision import _cost
         mid = begin_exchange(conn, "day", day.isoformat(), messages, self.cfg.claude_model)
         applied: list[dict] = []
         proposal: dict = {}
+        trace: list[dict] = []
         cost, text = 0.0, ""
+
+        def stored():
+            p = dict(proposal)
+            if applied:
+                p["applied_changes"] = applied
+            if trace:
+                p[ct.TRACE_KEY] = trace
+            return p or None
         try:
-            api_msgs = _api_messages(self._context_blocks(conn, day), messages)
-            tools = DAY_TOOLS + llm.CONTACT_TOOLS
+            api_msgs = _api_messages(self._context_blocks(conn, day), messages,
+                                     ct.replay(conn, self.cfg, ct.stored_traces(conn, messages), day))
+            tools = DAY_TOOLS + ct.READ_TOOLS + llm.CONTACT_TOOLS
             kept = ""   # text from turns whose only tool call was a note to Eli: still part of the reply
-            for _ in range(8):
+            read_chars = 0
+            for _ in range(self.MAX_ROUNDS):
                 resp = self.client.messages.create(
-                    model=self.cfg.claude_model, max_tokens=8192, system=self.system, messages=api_msgs,
-                    tools=tools, output_config={"effort": "low"})
+                    model=self.cfg.claude_model, max_tokens=self.MAX_TOKENS, system=self.system, messages=api_msgs,
+                    tools=tools, output_config={"effort": _effort(self.cfg)})
                 cost += _cost(resp.usage)
                 rec = llm.contacted("day_chat", self.cfg.claude_model, self.system, api_msgs, resp, tools)
                 if rec:   # the model wants Eli: no tool runs, no further turns
@@ -559,9 +646,18 @@ class DayChat:
                 if not uses:
                     break
                 kept = text if all(u.name == llm.NOTE_TOOL_NAME for u in uses) else ""
-                results = [{"type": "tool_result", "tool_use_id": u.id,
-                            "content": self._run_tool(conn, day, u.name, dict(u.input), mid, applied, proposal)}
-                           for u in uses]
+                results, calls = [], []
+                for u in uses:
+                    if u.name in ct.READ_NAMES and read_chars > ct.TURN_TEXT_MAX:
+                        out = (f"not run: the lookups in this reply have already returned {read_chars:,} characters, the most one "
+                               "reply may read. Answer from what you have, or say what you would look at next.")
+                    else:
+                        out = self._run_tool(conn, day, u.name, dict(u.input), mid, applied, proposal)
+                    if u.name in ct.READ_NAMES:
+                        read_chars += ct.size(out)
+                    results.append({"type": "tool_result", "tool_use_id": u.id, "content": out})
+                    calls.append(ct.trace_entry(u.id, u.name, dict(u.input), out))
+                trace.append({"said": said, "calls": calls})
                 api_msgs.append({"role": "assistant",
                                  "content": [b.model_dump(exclude_none=True) for b in resp.content]})
                 api_msgs.append({"role": "user", "content": results})
@@ -570,35 +666,27 @@ class DayChat:
                 abort_exchange(conn, mid)
                 raise
             # Edits already carry this reply's id as provenance - keep the row, record the failure.
-            finish_exchange(conn, mid, f"(error after {len(applied)} change(s) were applied: {e})", cost,
-                            {**proposal, "applied_changes": applied})
+            finish_exchange(conn, mid, f"(error after {len(applied)} change(s) were applied: {e})", cost, stored())
             raise
         if not text:
             text = "(changes applied - see below)" if applied else "(no reply)"
         prop = ({**proposal, "applied_changes": applied} if (applied or proposal) else None)
-        finish_exchange(conn, mid, text, cost, prop)
-        log.info("day chat %s: %d change(s), $%.3f", day, len(applied), cost)
+        finish_exchange(conn, mid, text, cost, stored())
+        log.info("day chat %s: %d change(s), %d tool round(s), $%.3f", day, len(applied), len(trace), cost)
         return {"reply": text, "message_id": mid, "applied": applied, "proposal": prop}
 
-    def _run_tool(self, conn, day, name: str, args: dict, mid: int, applied: list[dict], proposal: dict) -> str:
-        import datetime as dt
-        from . import edits, stats
+    def _run_tool(self, conn, day, name: str, args: dict, mid: int, applied: list[dict], proposal: dict):
+        import json as _json
+        from . import chat_tools as ct, edits, prompt_parts as pp, stats
         t0, t1 = stats.day_bounds(day)
-
-        def _t(ts):
-            return dt.datetime.fromtimestamp(ts).strftime("%H:%M")
-
-        def _hhmm(s: str) -> float | None:
-            try:
-                h, m = (int(x) for x in s.strip().split(":")[:2])
-            except (ValueError, AttributeError):
-                return None
-            base = dt.datetime.fromtimestamp(t0).replace(hour=h, minute=m, second=0, microsecond=0).timestamp()
-            return base + 86400 if base < t0 else base  # after midnight belongs to the same logical day
+        _t = lambda ts: pp.t(ts, "%H:%M")       # the zone the Mac was in then
+        _hhmm = lambda s: ct.clock(day, s)
 
         try:
             if name == llm.NOTE_TOOL_NAME:   # already recorded by llm.contacted (check); the turn carries on
                 return llm.NOTE_RESULT_TEXT
+            if name in ct.READ_NAMES:
+                return ct.run(conn, self.cfg, name, args, day)
             if name == "set_segment_judgment":
                 # the model is shown 'shift'; the stored name is unchanged
                 args = dict(args, switch_label=stored_switch(args.get("switch_label")))
@@ -659,8 +747,27 @@ class DayChat:
                 sid = int(args["segment_id"])
                 if not conn.execute("SELECT 1 FROM segments WHERE id=? AND start>=? AND start<?", (sid, t0, t1)).fetchone():
                     return f"error: block #{sid} is not in this day's log"
+                asked = list(args.get("options") or [])
                 qid = edits.open_question(conn, sid, "chat", args.get("context") or "", args.get("question") or "",
-                                          list(args.get("options") or []), chat_message_id=mid)
+                                          asked, chat_message_id=mid)
+                # edits.open_question keeps content, switch, antecedent, hybrid and focused of an
+                # option and drops the rest. The two shift judgments are put back here, as the
+                # question writer stores them (self_distraction not on a continuation; next_task
+                # only on a shift), so the answer writes what the option's wording says.
+                extra = {}
+                for o in asked:
+                    sw = stored_switch(o.get("switch_label"))
+                    e = {"self_distraction": o.get("self_distraction") if sw != "continuation" else None,
+                         "next_task": o.get("next_task") if sw == "interruption" else None}
+                    if any(v is not None for v in e.values()):
+                        extra[((o.get("label") or "").strip(), int(o.get("segment_id") or sid))] = e
+                if extra:
+                    row = conn.execute("SELECT options FROM review_questions WHERE id=?", (qid,)).fetchone()
+                    opts = _json.loads(row["options"])
+                    for o in opts:
+                        o.update({k: bool(v) for k, v in extra.get((o.get("label"), o.get("segment_id")), {}).items() if v is not None})
+                    with db.tx(conn):
+                        conn.execute("UPDATE review_questions SET options=? WHERE id=?", (_json.dumps(opts), qid))
                 applied.append({"kind": "question", "question_id": qid, "segment_id": sid,
                                 "question": (args.get("question") or "").strip()})
                 return f"ok: review question #{qid} is in the queue (it shows as a flag on the timeline)"
