@@ -464,6 +464,32 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Dashboard bug hunt, 2026-11-21 (25 bugs from a headless-browser test).**
+  * *One card, one set of ids.* Question, span and capture cards are drawn into `#reviewCard` or
+    `#segCard` and share element ids (`#segNoteEv`, `#afterShot`, `#scrubGrab`, `#qNote<id>`). A
+    capture left in `#segCard` stayed in the page when a question card was drawn, and `$()` found
+    the hidden one: the block editor on one question saved another block's note, a typed note was
+    dropped, and the scrubber moved a hidden picture. `CARD` says which card is drawn and where,
+    `cardSet` empties the other container, and every lookup inside a card goes through `cardEl` /
+    `cardAll`. Never use `$('#...')` for an id that lives on a card. Handlers decide by `CARD`.
+  * *Read the card's identity before the request, use it after.* Every handler that awaits takes
+    the segment, question, span and draft key first; a field carries its draft key (`data-draft`)
+    and `draftGiveBack` returns unsent text to that key. A failed send on question A used to land
+    in question B's box. `loadQueue` gives up when a newer load has started (`LOADQ`).
+  * *An answer redraws parts, not the card* (`qRefreshCard` -> `qRedrawTL`): the question's box and
+    timeline at once, the timeline again 8 s later. Rebuilding the whole card took focus out of
+    the chat box and reset the scrubber. `keepFocus` restores text, focus and caret.
+  * *Several answers on one block* share one `seg_reviews` row. Clearing one rebuilds the row from
+    the ruling it found plus the answers still standing (`web._undo_question_answer`): any order
+    of answering and clearing ends with exactly the answers still standing.
+  * *The legacy switch review follows the ruling* (`edits.sync_legacy`, earlier state kept in
+    `review_undo` kind `legacy`), and an edit that sets nothing deletes the row
+    (`edits.empty_ruling`) instead of storing an all-NULL ruling that hid the review dot.
+  * *Keys* act only on the card visible in the current tab, never with a field focused or a
+    modifier held; 1-4 only while "older per-switch models and labels" is open.
+  * *Speed.* Question scoring runs beside `/api/questions/queue`, not inside it (3 to 5 s after
+    every answer); `/api/metrics` keeps each past day until its `day_stamp` changes;
+    `_warm_phone_cache` keeps `phone.autolock_s` warm for the span queue.
 * **A call with no key press or pointer move is not time away (2026-11-21).** The away rule read
   only `HIDIdleTime`, so four calls on 2026-11-20 and 21 (113.9 minutes with camera and microphone
   on throughout) were recorded as away and cut the meeting spans around them. When input has been

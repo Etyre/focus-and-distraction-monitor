@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -80,23 +81,84 @@ def _kick_kind_derivation(segment_id: int, note: str | None = None):
     t.start()
 
 
+_score_busy = threading.Lock()
 _kind_timers: dict = {}
 _kind_lock = threading.Lock()
 
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    _warm_phone_cache()
     return HTML
+
+
+_phone_warm = threading.Lock()
+
+
+def _warm_phone_cache() -> None:
+    """Keep phone.autolock_s worked out for the last 8 days, in the background.
+
+    Every timeline payload asks phone.window for the Auto-Lock interval, which phone.py works
+    out per six hours of the day (0.12 s each) and keeps for ten minutes. /api/span/queue covers
+    seven days, so opening the Review tab with a cold cache took 2.2 to 2.9 s against 0.33 s
+    warm (2026-11-21). One thread, started when the server starts or the page is first loaded,
+    fills the cache every 8 minutes; a six-hour piece whose two days either side have all
+    arrived from the phone cannot change, so its answer is kept for six hours."""
+    if not _phone_warm.acquire(blocking=False):
+        return   # already running
+    def _run():
+        while True:
+            try:
+                pc = phone._connect(cfg)
+                if pc is not None:
+                    try:
+                        now = time.time()
+                        through = phone.through(cfg) or 0.0
+                        for part in range(int((now - 8 * 86400) // 21600), int(now // 21600) + 1):
+                            mid = part * 21600 + 10800.0
+                            val = phone.autolock_s(pc, mid)
+                            if mid + phone.AUTOLOCK_HALF_WINDOW_S < through - 3600:
+                                phone._AUTOLOCK_CACHE[part] = (time.time() + 6 * 3600, val)
+                    finally:
+                        pc.close()
+            except Exception:
+                log.exception("phone cache warm-up failed")
+            time.sleep(480)
+    threading.Thread(target=_run, daemon=True, name="phone-autolock-warm").start()
+
+
+app.router.on_startup.append(_warm_phone_cache)
+
+
+def _day_arg(day: str | None):
+    """(date, t0, t1) for a ?day= value, or a 400. 2026-11-21: `day=garbage` on /api/day/stamp and
+    `day=0001-01-01` / `9999-12-31` on /api/day were 500s (an unparsed date; a date the time
+    zone arithmetic cannot represent)."""
+    try:
+        d = dt.date.fromisoformat(day) if day else logical_date()
+        if not 2000 <= d.year <= 2100:
+            raise ValueError("out of range")
+        t0, t1 = stats.day_bounds(d)
+    except (ValueError, OverflowError, OSError):
+        raise HTTPException(400, "day must be a date YYYY-MM-DD between 2000 and 2100")
+    return d, t0, t1
+
+
+def _ts_arg(*ts: float) -> None:
+    """400 for a time that is not a real moment (nan, inf, 1e18 were 500s on /api/span/at, 2026-11-21)."""
+    for t in ts:
+        if not math.isfinite(t) or not 0 < t < 4_102_444_800:   # up to the year 2100
+            raise HTTPException(400, "not a valid time")
+
+
+def _capped(n: int, lo: int, hi: int) -> int:
+    return max(lo, min(int(n), hi))
 
 
 @app.get("/api/day")
 def api_day(day: str | None = None):
-    try:
-        d = dt.date.fromisoformat(day) if day else logical_date()
-    except ValueError:
-        raise HTTPException(400, "day must be YYYY-MM-DD")
+    d, t0, t1 = _day_arg(day)
     c = conn()
-    t0, t1 = stats.day_bounds(d)
     segs = stats.labelled_segments(c, t0, t1)
     se = stats.spans_and_events(segs, conn=c)
     # "Needs review" marks the PRIMARY review stream: segments with an open question, or an
@@ -130,7 +192,9 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception")} for s in segs]
+                                   "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception",
+                                   # 2026-11-21: `phone` was left out, so the Day tooltip never said "low confidence" on a phone block
+                                   "phone")} for s in segs]
     from . import summaries as _summ
     def _summary(r):
         row = _summ.lookup(c, r["start"], r["end"])
@@ -240,19 +304,46 @@ def api_toggl_entries(days: float = 7):
 
 @app.get("/api/metrics")
 def api_metrics(days: int = 30):
-    return {"count_events": cfg.count_events, "days": stats.metrics_range(conn(), days)}
+    # capped: ?days=100000 ran for minutes (2026-11-21); the page asks for 90 at most
+    return {"count_events": cfg.count_events, "days": _metrics_days(conn(), _capped(days, 1, 366))}
+
+
+_METRICS: dict = {}   # date -> (fingerprint, that day's metrics)
+
+
+def _metrics_days(c, days: int) -> list[dict]:
+    """stats.metrics_range with each past day's numbers kept until the day changes. A day costs
+    about 40 ms to work out and Trends asks for up to 90 on every visit (0.75 s for 30 days, 2 to
+    3.6 s for 90, 2026-11-21), while a past day almost never changes. The key is stats.day_stamp
+    of the day and of the days either side, because a span that crosses 4am is assembled from
+    both days. Today is always worked out afresh (its spend is not in the stamp)."""
+    today = logical_date()
+    stamps: dict = {}
+    def stamp(d):
+        if d not in stamps:
+            stamps[d] = stats.day_stamp(c, *stats.day_bounds(d))
+        return stamps[d]
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = today - dt.timedelta(days=i)
+        key = (stamp(d - dt.timedelta(days=1)), stamp(d), stamp(d + dt.timedelta(days=1)))
+        hit = _METRICS.get(d)
+        if i == 0 or hit is None or hit[0] != key:
+            hit = _METRICS[d] = (key, stats.daily_metrics(c, d))
+        out.append(hit[1])
+    return out
 
 
 @app.get("/api/agreement")
 def api_agreement(days: int = 60):
     """The app's judgments vs the person's: agreements and corrections, overall and by day."""
-    return stats.agreement_report(conn(), days)
+    return stats.agreement_report(conn(), _capped(days, 1, 366))
 
 
 @app.get("/api/accuracy")
 def api_accuracy(days: int = 60):
     c = conn()
-    return {"daily": stats.accuracy_over_time(c, days), "scores": ensemble.model_scores(c),
+    return {"daily": stats.accuracy_over_time(c, _capped(days, 1, 366)), "scores": ensemble.model_scores(c),
             "spend_today": db.spend_today(c), "budget": cfg.daily_budget_usd,
             "spend_total": db.spend_total(c), "budget_total": cfg.total_budget_usd,
             "reviews": c.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]}
@@ -337,7 +428,7 @@ def api_span_queue(days: int = 7):
     c = conn()
     out = []
     today = logical_date()
-    for i in range(days):
+    for i in range(_capped(days, 1, 31)):
         day = today - dt.timedelta(days=i)
         t0, t1 = stats.day_bounds(day)
         day_segs = stats.labelled_segments(c, t0, t1)
@@ -354,6 +445,7 @@ def api_span_queue(days: int = 7):
 @app.get("/api/span/at")
 def api_span_at(ts: float):
     """The hypothesized span (qualifying or disqualified) containing ts, as a review payload."""
+    _ts_arg(ts)
     c = conn()
     d = logical_date(ts)
     t0, t1 = stats.day_bounds(d)
@@ -379,6 +471,7 @@ class SpanReview(BaseModel):
 
 @app.post("/api/span/review")
 def api_span_review(r: SpanReview):
+    _ts_arg(r.start, r.end)
     try:
         edits.write_span_review(conn(), r.start, r.end, r.verdict, r.subtype, r.note)
     except edits.BadEdit as e:
@@ -412,6 +505,7 @@ def api_span_unfocused(r: SpanUnfocused):
 @app.delete("/api/span/review")
 def api_span_unreview(start: float, end: float):
     """Withdraw the verdict on a span (the span goes back to the system's own call)."""
+    _ts_arg(start, end)
     return {"ok": True, "deleted": edits.delete_span_review(conn(), start, end)}
 
 
@@ -433,7 +527,7 @@ def api_efforts_summary():
 @app.get("/api/efforts/trials")
 def api_efforts_trials(role: str | None = None, effort: str | None = None, limit: int = 50):
     from . import efforts
-    return efforts.trials(conn(), role, effort, limit)
+    return efforts.trials(conn(), role, effort, _capped(limit, 1, 500))   # limit=-1 returned everything (0.66 s)
 
 
 @app.get("/api/efforts/trial/{trial_id}")
@@ -447,6 +541,7 @@ def api_efforts_trial(trial_id: int):
 
 @app.get("/api/review/queue")
 def api_review_queue(limit: int = 30, all: bool = False):
+    limit = _capped(limit, 1, 500)
     c = conn()
     if all:
         rows = c.execute("""
@@ -641,8 +736,7 @@ def get_day_chat():
 @app.get("/api/day/stamp")
 def api_day_stamp(day: str | None = None):
     """Cheap change fingerprint of a day; the Day view polls it and redraws only when it moves."""
-    d = dt.date.fromisoformat(day) if day else logical_date()
-    t0, t1 = stats.day_bounds(d)
+    d, t0, t1 = _day_arg(day)
     return {"day": d.isoformat(), "stamp": stats.day_stamp(conn(), t0, t1)}
 
 
@@ -700,6 +794,35 @@ def _shots_for(c, timeline: list[dict]) -> list[dict]:
                     for s in timeline if s.get("first_screenshot")]
 
 
+def _question_segments(c, segment_id: int, t0: float, t1: float) -> list[dict]:
+    """The blocks drawn on a question card: the usual timeline, with the question's own block
+    always in it. A phone app segment judged time away is carved out of the Mac record
+    (stats._carve_phone), and where it covered the whole of the question's block that block was
+    gone from the card: nothing highlighted, no "moment in question" captures (9 of 224 open
+    questions, 2026-11-21: 3153, 3165, 3185, 3192, 3277, 3194, 3196, 3216, 3229). Here the
+    block is put back whole and whatever overlapped it is cut back to what lies outside it.
+    The phone lane under the timeline still shows the phone use."""
+    segs = [s for s in stats.labelled_segments(c, t0, t1) if s["duration"] > 0]
+    if any(s["id"] == segment_id for s in segs):
+        return segs
+    own = next((s for s in stats.labelled_segments(c, t0, t1, phone=False)
+                if s["id"] == segment_id and s["duration"] > 0), None)
+    if own is None:
+        return segs
+    a, b = own["clip_start"], own["clip_end"]
+    out = [own]
+    for s in segs:
+        if s["clip_end"] <= a or s["clip_start"] >= b:
+            out.append(s)
+            continue
+        if s["clip_start"] < a:
+            out.append(dict(s, clip_end=a, duration=a - s["clip_start"]))
+        if s["clip_end"] > b:
+            out.append(dict(s, clip_start=b, duration=s["clip_end"] - b))
+    out.sort(key=lambda s: s["clip_start"])
+    return out
+
+
 @app.get("/api/questions/queue")
 def api_questions_queue(limit: int = 1000):
     """Open review questions in chronological order, oldest first (user ruling 2026-11-16: "next"
@@ -710,10 +833,23 @@ def api_questions_queue(limit: int = 1000):
     from .config import logical_date
     c = conn()
     import json as _json
-    try:
-        _q.score_questions(c, limit=25)  # catch up on a few stale ones; the loop does the bulk
-    except Exception:
-        log.exception("question scoring failed")
+    # Scoring runs beside the request, not inside it. Every answer makes scores stale, so the
+    # first load after one waited 3 to 5 s here (the delay Eli saw after clicking a review dot,
+    # 2026-11-21). The tiers shown can be one load behind.
+    def _score():
+        if not _score_busy.acquire(blocking=False):
+            return
+        try:
+            c2 = db.connect()
+            try:
+                _q.score_questions(c2, limit=25)
+            finally:
+                c2.close()
+        except Exception:
+            log.exception("question scoring failed")
+        finally:
+            _score_busy.release()
+    threading.Thread(target=_score, daemon=True, name="score-questions").start()
     out = []
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
@@ -748,7 +884,7 @@ def api_questions_queue(limit: int = 1000):
             if not g:
                 continue
             seg_start, seg_end = g["start"], g["end"] or g["start"]
-            segs = stats.labelled_segments(c, seg_start - QCTX_S, seg_end + QCTX_S)
+            segs = _question_segments(c, t["segment_id"], seg_start - QCTX_S, seg_end + QCTX_S)
             out.append({
                 "id": None, "pending": True, "segment_id": t["segment_id"], "source": t["source"],
                 "day": logical_date(seg_start).isoformat(),
@@ -803,41 +939,173 @@ def _spot_unanswer(c, segment_id: int) -> None:
     _spot_unmark(c, segment_id)
 
 
-def _undo_question_answer(c, undo_json: str | None) -> dict:
-    """Put back whatever a previous answer to a review question overwrote (the segment review,
-    and the legacy switch review), so changing or clearing an answer leaves no residue."""
+_SEG_COLS = ("segment_id", "content", "switch_label", "interruption_kind", "antecedent_id", "note", "created", "hybrid",
+             "chat_message_id", "focus_exception", "focused", "self_distraction", "next_task")
+
+
+def _ruling_row(c, o: dict, prev: dict | None, note: str | None, chat_message_id: int | None, created: float) -> dict | None:
+    """The seg_reviews row that choosing option `o` makes of the ruling `prev` (None = no ruling
+    yet): the option's fields laid over the earlier ones. None when the option says nothing
+    about the block. One function for the answer itself and for replaying it (see
+    _undo_question_answer)."""
+    # self_distraction on an option (since 2026-11-20): true = I drifted there without deciding
+    # to, false = I went there on purpose. Before, an answer could keep or clear the
+    # evaluator's flag but never set it, so "I was after something specific: an errand"
+    # (q2942: content task, focused) left the visit counted as a self-distraction event.
+    # Options stored before that have no such field: None = leave it as it is. Like
+    # edits.write_seg_review, it is not kept on a continuation, where it means nothing.
+    o_sd = o.get("self_distraction") if o.get("switch_label") != "continuation" else None
+    # next_task and focus_exception (2026-11-20) come only on an option made from a judgment the
+    # evaluator proposed in chat (or, for next_task, one the day chat wrote): "that was the next
+    # task" and "count this as focus anyway" could be said in the chat and not recorded.
+    o_nt = o.get("next_task") if o.get("switch_label") in (None, "interruption") else None
+    o_fx = True if o.get("focus_exception") is True and o.get("proposed_from") else None
+    if not (o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None
+            or o_sd is not None or o_nt is not None or o_fx):
+        return None
+    osw = o.get("switch_label")
+    _keep = lambda k: prev.get(k) if prev is not None else None
+    ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id")) if osw in ("continuation", "return")
+            else (None if osw else _keep("antecedent_id")))
+    kept_kind = _keep("interruption_kind")
+    if o_sd is False and kept_kind == "self_distraction":
+        kept_kind = None   # an older ruling's kind must not contradict "on purpose"
+    return {
+        "segment_id": o["segment_id"],
+        "content": o.get("content") or _keep("content"),
+        "switch_label": osw or _keep("switch_label"),
+        "interruption_kind": o.get("interruption_kind") if osw == "interruption" else (None if osw else kept_kind),
+        "antecedent_id": ante,
+        "note": note.strip() if note and note.strip() else f"(answered review question: {o['label']})",
+        "created": created,
+        "hybrid": int(o["hybrid"]) if o.get("hybrid") is not None else _keep("hybrid"),
+        "chat_message_id": chat_message_id if chat_message_id is not None else o.get("proposed_from"),
+        "focus_exception": 1 if o_fx else _keep("focus_exception"),   # only a chat proposal the person applies sets it
+        # the person's focused/unfocused ruling: set by the option, else kept
+        "focused": int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused"),
+        "self_distraction": int(bool(o_sd)) if o_sd is not None else (None if osw else _keep("self_distraction")),
+        "next_task": (int(bool(o_nt)) if o_nt is not None and (osw or _keep("switch_label")) == "interruption"
+                      else (None if osw else _keep("next_task"))),
+    }
+
+
+def _standing_answers(c, seg_id: int, not_qid: int | None) -> list[tuple[dict, dict]]:
+    """(question row, its undo record) for every answered question whose answer wrote a ruling
+    on this block, oldest answer first."""
+    import json as _json
+    out = []
+    for q in c.execute("SELECT * FROM review_questions WHERE status='answered' AND undo LIKE ?",
+                       (f'%"seg_id": {int(seg_id)}%',)).fetchall():
+        u = _json.loads(q["undo"] or "{}")
+        if q["id"] != not_qid and u.get("seg_id") == seg_id and u.get("seg_written") is not None:
+            out.append((dict(q), u))
+    out.sort(key=lambda t: t[1]["seg_written"])
+    return out
+
+
+def _undo_question_answer(c, undo_json: str | None, qid: int | None = None) -> dict:
+    """Take one answer to a review question back out of the record, so that changing or
+    clearing an answer leaves no residue.
+
+    Several questions can sit on one block (one about its switch, one about its content), and
+    their answers are laid over each other in one seg_reviews row. Until 2026-11-21 each answer
+    simply restored the row it had found: block 36902, answer q3171, answer q3172, clear q3171,
+    clear q3172 left q3171's ruling behind with both questions open (clearing q3171 saw a row
+    that was no longer its own and left it; clearing q3172 then put back the row from before
+    it, which was q3171's). Now, when later answers stand on top of this one, the row is built
+    again from the ruling this answer found plus those later answers in order, and each of them
+    is handed the row it now rests on. Whatever order the answers are given and cleared in, the
+    block ends with exactly the answers still standing, and with nothing when none are.
+    A ruling edited by hand after the answer is still not the answer's to take back."""
     import json as _json
     u = _json.loads(undo_json) if undo_json else {}
-    if u.get("seg_id") is not None:
-        cur = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (u["seg_id"],)).fetchone()
-        if u.get("seg_written") is not None and cur is not None and abs(cur["created"] - u["seg_written"]) > 1e-3:
-            # The ruling was edited by hand after this answer: it is no longer the answer's to
-            # take back. (Clearing the answer used to delete the hand edit with it.) The legacy
-            # switch review written with that ruling stays too; a phone review is still restored.
-            if u.get("phone_key") is not None:
-                _restore_rows(c, "phone_reviews", "seg_key", u["phone_key"], u.get("phone_review"))
-            return u
-        _restore_rows(c, "seg_reviews", "segment_id", u["seg_id"], u.get("seg_review"))
+    seg = u.get("seg_id")
+    if seg is not None:
+        cur = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (seg,)).fetchone()
+        mine = u.get("seg_written")
+        if mine is None or cur is None or abs(cur["created"] - mine) <= 1e-3:
+            _restore_rows(c, "seg_reviews", "segment_id", seg, u.get("seg_review"))
+        else:
+            later = [t for t in _standing_answers(c, seg, qid) if t[1]["seg_written"] > mine]
+            if later and abs(later[-1][1]["seg_written"] - cur["created"]) <= 1e-3:
+                row = u.get("seg_review")
+                for q2, u2 in later:
+                    o2 = _json.loads(q2["options"])[q2["answer_index"]]
+                    u2["seg_review"] = row
+                    row = _ruling_row(c, o2, row, q2["note"], u2.get("seg_cmid"), u2["seg_written"]) or row
+                    c.execute("UPDATE review_questions SET undo=? WHERE id=?", (_json.dumps(u2), q2["id"]))
+                _restore_rows(c, "seg_reviews", "segment_id", seg, row)
+            elif later:
+                # a hand edit on top of everything: the row stays, and the next answer up now
+                # rests on what this one had found
+                later[0][1]["seg_review"] = u.get("seg_review")
+                c.execute("UPDATE review_questions SET undo=? WHERE id=?", (_json.dumps(later[0][1]), later[0][0]["id"]))
     if u.get("phone_key") is not None:
         _restore_rows(c, "phone_reviews", "seg_key", u["phone_key"], u.get("phone_review"))
     if u.get("switch_id") is not None:
+        # an answer recorded before 2026-11-21 kept the legacy switch review it replaced
         _restore_rows(c, "reviews", "switch_id", u["switch_id"], u.get("review"))
         c.execute("UPDATE switches SET status=? WHERE id=?", (u.get("switch_status"), u["switch_id"]))
+    if seg is not None:
+        edits.sync_legacy(c, seg)   # the legacy switch review follows whatever ruling is left
     return u
+
+
+def _flag_before(c, q, old_u: dict) -> int | None:
+    """seg_evals.uncertain as it was before any question on this block was settled. A second
+    question answered on the same block used to record the flag as the first answer had left
+    it (0), so clearing both in the order they were given ended with the doubt flag off."""
+    import json as _json
+    if old_u.get("uncertain") is not None:
+        return old_u["uncertain"]
+    for r in c.execute("SELECT undo FROM review_questions WHERE segment_id=? AND id!=? AND status IN ('answered','unsure','none')"
+                       " AND undo IS NOT NULL", (q["segment_id"], q["id"])).fetchall():
+        v = _json.loads(r["undo"] or "{}").get("uncertain")
+        if v is not None:
+            return v
+    ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
+    return ev0["uncertain"] if ev0 else None
+
+
+def _other_settled(c, q) -> bool:
+    """Is another question on this block still settled in a way that cleared its doubt flag?"""
+    import json as _json
+    for r in c.execute("SELECT status, source, options, answer_index FROM review_questions WHERE segment_id=? AND id!=?"
+                       " AND status IN ('answered','unsure','none')", (q["segment_id"], q["id"])).fetchall():
+        if r["status"] != "answered":
+            if r["source"] != "phone":
+                return True
+        elif r["answer_index"] is not None and not _json.loads(r["options"])[r["answer_index"]].get("phone"):
+            return True
+    return False
+
+
+def _unapply_proposals(c, q, keep_index: int | None = None) -> None:
+    """A chat proposal applied as the answer to this question is no longer the answer: take
+    its "applied" mark off, so its card can be clicked again. (2026-11-21: the card stayed
+    "applied as your answer (option 4)", disabled, after that answer was cleared.)"""
+    import json as _json
+    for m in c.execute("SELECT id, proposal FROM chat_messages WHERE kind='evaluator' AND ref=? AND proposal LIKE '%\"applied\"%'",
+                       (str(q["segment_id"]),)).fetchall():
+        prop = _json.loads(m["proposal"])
+        aj = (prop.get("applied") or {}).get("judgment")
+        if aj and aj.get("question_id") == q["id"] and (keep_index is None or aj.get("option_index") != keep_index):
+            prop["applied"].pop("judgment")
+            _save_proposal(c, m["id"], prop)
 
 
 @app.get("/api/questions/{qid}/context")
 def api_question_context(qid: int):
     """The timeline around one question's segment, fetched when its card is shown."""
     c = conn()
-    g = c.execute("""SELECT g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end
+    g = c.execute("""SELECT q.segment_id, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end
                      FROM review_questions q JOIN segments g ON g.id = q.segment_id WHERE q.id=?""", (qid,)).fetchone()
     if not g:
         raise HTTPException(404)
     t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
-    timeline = [{k: s.get(k) for k in keys} for s in stats.labelled_segments(c, t0, t1) if s["duration"] > 0]
+    timeline = [{k: s.get(k) for k in keys} for s in _question_segments(c, g["segment_id"], t0, t1)]
     return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
             "phone": phone.window(cfg, t0, t1),
             "toggl_entries": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1),
@@ -866,10 +1134,9 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
     a = QAnswer(option_index=option_index, note=note)
     with db.tx(c):
         # Re-answering (fixing a misclick): first put back what the earlier answer overwrote.
-        old_u = (_undo_question_answer(c, q["undo"]) if q["status"] == "answered"
+        old_u = (_undo_question_answer(c, q["undo"], qid) if q["status"] == "answered"
                  else (_json.loads(q["undo"]) if q["status"] in ("unsure", "none") and q["undo"] else {}))
-        ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
-        undo = {"uncertain": old_u.get("uncertain", ev0["uncertain"] if ev0 else None)}
+        undo = {"uncertain": _flag_before(c, q, old_u)}
         if o.get("phone"):   # a ruling on a phone app segment: its own table, read by stats._phone_rows
             prev_p = c.execute("SELECT * FROM phone_reviews WHERE seg_key=?", (o["phone_key"],)).fetchone()
             undo.update(phone_key=o["phone_key"], phone_review=dict(prev_p) if prev_p else None)
@@ -883,61 +1150,21 @@ def _answer_question(c, qid: int, option_index: int, note: str | None,
                       (o["phone_key"], e.get("switch_label"), e.get("content"), e.get("focused"), e.get("self_distraction"),
                        e.get("away"), (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"),
                        time.time()))
-        # self_distraction on an option (since 2026-11-20): true = I drifted there without deciding
-        # to, false = I went there on purpose. Before, an answer could keep or clear the
-        # evaluator's flag but never set it, so "I was after something specific: an errand"
-        # (q2942: content task, focused) left the visit counted as a self-distraction event.
-        # Options stored before that have no such field: None = leave it as it is. Like
-        # edits.write_seg_review, it is not kept on a continuation, where it means nothing.
-        o_sd = o.get("self_distraction") if o.get("switch_label") != "continuation" else None
-        # next_task and focus_exception (2026-11-20) come only on an option made from a judgment the
-        # evaluator proposed in chat (or, for next_task, one the day chat wrote): "that was the next
-        # task" and "count this as focus anyway" could be said in the chat and not recorded.
-        o_nt = o.get("next_task") if o.get("switch_label") in (None, "interruption") else None
-        o_fx = True if o.get("focus_exception") is True and o.get("proposed_from") else None
-        if (o.get("switch_label") or o.get("content") or o.get("hybrid") is not None or o.get("focused") is not None
-                or o_sd is not None or o_nt is not None or o_fx):
-            prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()
-            undo.update(seg_id=o["segment_id"], seg_review=dict(prev) if prev else None)
-            osw = o.get("switch_label")
-            ante = (_valid_antecedent(c, o["segment_id"], o.get("antecedent_id"))
-                    if osw in ("continuation", "return")
-                    else (None if osw else (prev["antecedent_id"] if prev else None)))
-            _keep = lambda k: prev[k] if prev is not None and k in prev.keys() else None
-            kept_kind = prev["interruption_kind"] if prev else None
-            if o_sd is False and kept_kind == "self_distraction":
-                kept_kind = None   # an older ruling's kind must not contradict "on purpose"
-            c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id, note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
-                      " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (o["segment_id"],
-                       o.get("content") or (prev["content"] if prev else None),
-                       osw or (prev["switch_label"] if prev else None),
-                       o.get("interruption_kind") if osw == "interruption" else (None if osw else kept_kind),
-                       ante,
-                       (a.note.strip() if a.note and a.note.strip() else f"(answered review question: {o['label']})"), time.time(),
-                       (int(o["hybrid"]) if o.get("hybrid") is not None else (prev["hybrid"] if prev else None)),
-                       chat_message_id if chat_message_id is not None else o.get("proposed_from"),
-                       1 if o_fx else (prev["focus_exception"] if prev else None),  # only a chat proposal the person applies sets it
-                       # the person's focused/unfocused ruling: set by the option, else kept
-                       (int(bool(o["focused"])) if o.get("focused") is not None else _keep("focused")),
-                       (int(bool(o_sd)) if o_sd is not None else (None if osw else _keep("self_distraction"))),
-                       (int(bool(o_nt)) if o_nt is not None and (osw or _keep("switch_label")) == "interruption"
-                        else (None if osw else _keep("next_task")))))
-            # which row this answer wrote, so clearing the answer later can tell whether the
-            # ruling is still that one or has been edited by hand since (see _undo_question_answer)
-            undo["seg_written"] = c.execute("SELECT created FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone()[0]
+        prev = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (o["segment_id"],)).fetchone() if o.get("segment_id") else None
+        prev = dict(prev) if prev is not None else None
+        row = _ruling_row(c, o, prev, a.note, chat_message_id, time.time()) if o.get("segment_id") else None
+        if row is not None:
+            _restore_rows(c, "seg_reviews", "segment_id", o["segment_id"], row)
+            # seg_written: which row this answer wrote, so clearing the answer later can tell whether
+            # the ruling is still that one, has another answer on top, or was edited by hand since;
+            # seg_cmid: the chat message it came from, for replaying it (see _undo_question_answer)
+            undo.update(seg_id=o["segment_id"], seg_review=prev, seg_written=row["created"], seg_cmid=row["chat_message_id"])
             from . import propagation
             propagation.note_event(c, o["segment_id"])
-            old = _NEW2OLD.get((o.get("switch_label"),
-                                o.get("interruption_kind") if o.get("switch_label") == "interruption" else None))
-            sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (o["segment_id"],)).fetchone()
-            if old and sw:
-                prev_rev = c.execute("SELECT * FROM reviews WHERE switch_id=?", (sw["id"],)).fetchone()
-                undo.update(switch_id=sw["id"], review=dict(prev_rev) if prev_rev else None,
-                            switch_status=c.execute("SELECT status FROM switches WHERE id=?", (sw["id"],)).fetchone()[0])
-                c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
-                          (sw["id"], old, (a.note.strip() if a.note and a.note.strip() else o["label"]), time.time()))
-                c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+            # the legacy switch review follows the ruling (edits.sync_legacy); until 2026-11-21 it
+            # was written here and its earlier state kept in this undo record
+            edits.sync_legacy(c, o["segment_id"])
+        _unapply_proposals(c, q, keep_index=option_index)
         c.execute("UPDATE review_questions SET status='answered', answer=?, answer_index=?, note=?, answered_at=?, undo=?"
                   " WHERE id=?",
                   (o["label"], a.option_index, (a.note.strip() or None) if a.note else None, time.time(),
@@ -992,11 +1219,14 @@ def api_question_reopen(qid: int):
     if q["status"] not in ("answered", "unsure", "none"):
         return {"ok": True}
     with db.tx(c):
-        u = _undo_question_answer(c, q["undo"]) if q["status"] == "answered" else (_json.loads(q["undo"]) if q["undo"] else {})
+        u = _undo_question_answer(c, q["undo"], qid) if q["status"] == "answered" else (_json.loads(q["undo"]) if q["undo"] else {})
         c.execute("UPDATE review_questions SET status='open', answer=NULL, answer_index=NULL, note=NULL,"
                   " answered_at=NULL, undo=NULL WHERE id=?", (qid,))
-        if u.get("uncertain") is not None:
+        # the doubt flag comes back only when no other question on the block still settles it
+        # (two questions on one block, 2026-11-21: see _flag_before)
+        if u.get("uncertain") is not None and not _other_settled(c, q):
             c.execute("UPDATE seg_evals SET uncertain=? WHERE segment_id=?", (u["uncertain"], q["segment_id"]))
+        _unapply_proposals(c, q)
         if q["source"] == "sample":
             _spot_unanswer(c, q["segment_id"])
     return {"ok": True}
@@ -1015,14 +1245,14 @@ def _settle_without_ruling(c, qid: int, status: str, answer: str, note: str | No
         raise HTTPException(404)
     with db.tx(c):
         if q["status"] == "answered":
-            _undo_question_answer(c, q["undo"])
+            _undo_question_answer(c, q["undo"], qid)
             undo = _json.loads(q["undo"]) if q["undo"] else {}
             undo = {"uncertain": undo.get("uncertain")}
+            _unapply_proposals(c, q)
         elif q["status"] in ("unsure", "none"):
             undo = _json.loads(q["undo"]) if q["undo"] else {}
         else:
-            ev0 = c.execute("SELECT uncertain FROM seg_evals WHERE segment_id=?", (q["segment_id"],)).fetchone()
-            undo = {"uncertain": ev0["uncertain"] if ev0 else None}
+            undo = {"uncertain": _flag_before(c, q, {})}
         c.execute("UPDATE review_questions SET status=?, answer=?, answer_index=NULL, note=?, answered_at=?, undo=?"
                   " WHERE id=?", (status, answer, (note.strip() or None) if note else None, time.time(),
                                   _json.dumps(undo), qid))
@@ -1054,6 +1284,8 @@ def api_question_none(qid: int, body: UnsureReq):
 @app.post("/api/questions/{qid}/dismiss")
 def api_question_dismiss(qid: int):
     c = conn()
+    if not c.execute("SELECT 1 FROM review_questions WHERE id=?", (qid,)).fetchone():
+        raise HTTPException(404, "no such question")   # it used to answer ok for an id that does not exist
     with db.tx(c):
         c.execute("UPDATE review_questions SET status='dismissed', answered_at=? WHERE id=?",
                   (time.time(), qid))

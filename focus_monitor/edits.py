@@ -78,6 +78,15 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
             next_task = None
         if switch_label and switch_label not in ("interruption", "return"):
             self_distraction = None   # the two shift judgments only mean something on a shift
+        if empty_ruling(content, switch_label, interruption_kind if switch_label == "interruption" else None, ante, note,
+                        hybrid, focus_exception, focused, self_distraction, next_task):
+            # 2026-11-21: "save note" with an empty box, or un-clicking the only selection, stored a
+            # row with every field NULL (block 36839). The block then counted as reviewed: its
+            # needs-review dot went while its question was still open, and the editor said "your
+            # ruling is shown on the buttons". Saying nothing is not a ruling: no row.
+            c.execute("DELETE FROM seg_reviews WHERE segment_id=?", (segment_id,))
+            sync_legacy(c, segment_id)
+            return False
         if chat_message_id is not None:
             # What a chat replaces is kept, so undoing the chat's edit puts back the ruling that
             # was there before it (undo_seg_review). The first copy per reply wins: a reply that
@@ -96,13 +105,67 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
         if content or switch_label or hybrid is not None:
             from . import propagation
             propagation.note_event(c, segment_id)
-        old = NEW2OLD.get((switch_label, interruption_kind if switch_label == "interruption" else None))
-        sw = c.execute("SELECT id FROM switches WHERE to_segment=?", (segment_id,)).fetchone()
-        if old and sw:
-            c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
-                      (sw["id"], old, note, time.time()))
-            c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+        sync_legacy(c, segment_id)
     return switch_label == "interruption" and not interruption_kind and focused is None
+
+
+def empty_ruling(content, switch_label, interruption_kind, antecedent_id, note, hybrid, focus_exception,
+                 focused, self_distraction, next_task) -> bool:
+    """True when a ruling says nothing at all: no field set and no note of the person's own.
+    The app's own "(answered ...)" note is not something the person said."""
+    said = (note or "").strip()
+    if said.startswith("(answered"):
+        said = ""
+    return not said and all(v is None for v in (content, switch_label, interruption_kind, antecedent_id, hybrid,
+                                                focus_exception, focused, self_distraction, next_task))
+
+
+def sync_legacy(c, segment_id: int) -> None:
+    """Make the legacy per-switch review (`reviews`, `switches.status`) follow the block's ruling.
+
+    While the ruling maps onto one of the four old labels (NEW2OLD) the legacy review is that
+    label. The first time that happens the legacy state as it was is kept (review_undo, kind
+    'legacy'), and it is put back when the ruling stops mapping or is removed.
+
+    2026-11-21: undoing a block edit left the legacy review behind. Block 36839 ruled
+    "continuation", changed to "shift", then undone: `reviews` for switch 33272 stayed
+    "continuation" and the switch stayed "reviewed" through both steps, feeding the Day tile,
+    "Reviews so far" and the learned model. Deriving the legacy row from the ruling, instead of
+    writing it beside each edit, also makes it independent of the order in which several
+    answers on one block are given and cleared. A legacy review the person made directly
+    afterwards (keys 1-4) is not the ruling's to take back: it is left alone."""
+    sw = c.execute("SELECT id, status FROM switches WHERE to_segment=?", (segment_id,)).fetchone()
+    if sw is None:
+        return
+    rv = c.execute("SELECT switch_label, interruption_kind, note FROM seg_reviews WHERE segment_id=?",
+                   (segment_id,)).fetchone()
+    old = (NEW2OLD.get((rv["switch_label"], rv["interruption_kind"] if rv["switch_label"] == "interruption" else None))
+           if rv is not None else None)
+    snap = c.execute("SELECT rowid, rows FROM review_undo WHERE kind='legacy' AND key=? AND chat_message_id=0",
+                     (str(segment_id),)).fetchone()
+    cur = c.execute("SELECT * FROM reviews WHERE switch_id=?", (sw["id"],)).fetchone()
+    if old:
+        now = time.time()
+        was = (json.loads(snap["rows"])[0] if snap is not None
+               else {"switch_id": sw["id"], "review": dict(cur) if cur is not None else None, "switch_status": sw["status"]})
+        was["wrote"] = now
+        c.execute("INSERT OR REPLACE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('legacy',?,0,?,?)",
+                  (str(segment_id), json.dumps([was]), now))
+        note = rv["note"]
+        if note and note.startswith("(answered review question: ") and note.endswith(")"):
+            note = note[len("(answered review question: "):-1]   # the legacy note is the option's own words
+        c.execute("INSERT OR REPLACE INTO reviews(switch_id, label, note, created) VALUES (?,?,?,?)",
+                  (sw["id"], old, note, now))
+        c.execute("UPDATE switches SET status='reviewed' WHERE id=?", (sw["id"],))
+    elif snap is not None:
+        was = json.loads(snap["rows"])[0]
+        if cur is not None and abs(cur["created"] - (was.get("wrote") or 0)) < 1e-3:   # still the row the ruling wrote
+            if was.get("review") is None:
+                c.execute("DELETE FROM reviews WHERE switch_id=?", (sw["id"],))
+            else:
+                _put_back(c, "reviews", [was["review"]])
+            c.execute("UPDATE switches SET status=? WHERE id=?", (was.get("switch_status"), sw["id"]))
+        c.execute("DELETE FROM review_undo WHERE rowid=?", (snap["rowid"],))
 
 
 def write_span_review(c, start: float, end: float, verdict: str, subtype: str | None = None,
@@ -164,6 +227,7 @@ def undo_seg_review(c, segment_id: int) -> bool:
         if u is not None:
             _put_back(c, "seg_reviews", json.loads(u["rows"]))
             c.execute("DELETE FROM review_undo WHERE rowid=?", (u["rowid"],))
+        sync_legacy(c, segment_id)   # the legacy switch review goes back with the ruling (2026-11-21)
         return u is not None
 
 

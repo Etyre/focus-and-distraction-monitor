@@ -62,13 +62,6 @@ reads `toggl_id`, whose meaning changed).
 - The app writes the Rules doc and never commits it. Proposal: commit it whenever a rule is
   accepted (and commit the dictation-fix rule accepted on 2026-11-20, now uncommitted).
 
-## Seen on 2026-11-21, not fixed
-
-- The dashboard's requests wait seconds while the evaluator works: `/api/questions/queue` took
-  0.2 s on a database copy and up to 5 s on the running app. The web server shares one Python
-  process with the evaluator, which now builds very large prompts (60 images, all rulings).
-  Likely fix: run the judging work in its own process.
-
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator

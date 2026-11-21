@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS feedback_events (  -- user corrections queued for pro
 );
 
 CREATE TABLE IF NOT EXISTS review_undo (     -- the ruling(s) a chat's edit replaced, so undoing
-    kind TEXT NOT NULL,                       --  that edit puts them back: 'seg' | 'span'
+    kind TEXT NOT NULL,                       --  that edit puts them back: 'seg' | 'span' | 'legacy' (the old per-switch review a ruling replaced)
     key TEXT NOT NULL,                        -- segment id, or "start:end" of the span verdict
     chat_message_id INTEGER NOT NULL,
     rows TEXT NOT NULL,                       -- JSON list of the replaced rows
@@ -327,6 +327,17 @@ def kv_set(conn, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO kv(key, value) VALUES (?,?)", (key, value))
 
 
+def _alter(conn, sql: str) -> None:
+    """One ALTER TABLE ... ADD COLUMN. Two connections opening at once on a database that still
+    needs the column both try it; the second gets "duplicate column name", which is fine (one
+    HTTP 500 came from that on a test server, 2026-11-21)."""
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
+
 def connect() -> sqlite3.Connection:
     ensure_dirs()
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None, check_same_thread=False)
@@ -336,77 +347,77 @@ def connect() -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(segments)")}
     if "neutral" not in cols:  # migrate older databases
-        conn.execute("ALTER TABLE segments ADD COLUMN neutral INTEGER NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE segments ADD COLUMN neutral INTEGER NOT NULL DEFAULT 0")
     scols = {r[1] for r in conn.execute("PRAGMA table_info(switches)")}
     if "group_id" not in scols:
-        conn.execute("ALTER TABLE switches ADD COLUMN group_id INTEGER")
+        _alter(conn, "ALTER TABLE switches ADD COLUMN group_id INTEGER")
     ecols = {r[1] for r in conn.execute("PRAGMA table_info(ensemble)")}
     if "importance" not in ecols:
-        conn.execute("ALTER TABLE ensemble ADD COLUMN importance REAL NOT NULL DEFAULT 1.0")
-        conn.execute("ALTER TABLE ensemble ADD COLUMN focus_run_min REAL NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE ensemble ADD COLUMN importance REAL NOT NULL DEFAULT 1.0")
+        _alter(conn, "ALTER TABLE ensemble ADD COLUMN focus_run_min REAL NOT NULL DEFAULT 0")
     if "activity" not in ecols and "importance" in ecols:
-        conn.execute("ALTER TABLE ensemble ADD COLUMN activity TEXT")
+        _alter(conn, "ALTER TABLE ensemble ADD COLUMN activity TEXT")
     elif "activity" not in {r[1] for r in conn.execute("PRAGMA table_info(ensemble)")}:
-        conn.execute("ALTER TABLE ensemble ADD COLUMN activity TEXT")
+        _alter(conn, "ALTER TABLE ensemble ADD COLUMN activity TEXT")
     vcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_evals)")}
     if vcols and "uncertain" not in vcols:
-        conn.execute("ALTER TABLE seg_evals ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE seg_evals ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0")
     if vcols and "run_id" not in vcols:
-        conn.execute("ALTER TABLE seg_evals ADD COLUMN run_id INTEGER REFERENCES eval_runs(id)")
+        _alter(conn, "ALTER TABLE seg_evals ADD COLUMN run_id INTEGER REFERENCES eval_runs(id)")
     if vcols and "probs" not in vcols:
-        conn.execute("ALTER TABLE seg_evals ADD COLUMN probs TEXT")
+        _alter(conn, "ALTER TABLE seg_evals ADD COLUMN probs TEXT")
     if vcols and "antecedent_id" not in vcols:
         # Thread primitive: the nearest EARLIER segment of the same attentional thread
         # (continuation/return); NULL for a new thread. Thread identity = the transitive chain.
-        conn.execute("ALTER TABLE seg_evals ADD COLUMN antecedent_id INTEGER")
+        _alter(conn, "ALTER TABLE seg_evals ADD COLUMN antecedent_id INTEGER")
     rvcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
     if rvcols and "antecedent_id" not in rvcols:
-        conn.execute("ALTER TABLE seg_reviews ADD COLUMN antecedent_id INTEGER")
+        _alter(conn, "ALTER TABLE seg_reviews ADD COLUMN antecedent_id INTEGER")
     # Created here, not in SCHEMA: antecedent_id is added by the migrations just above, so on a
     # brand-new database an index in SCHEMA ran before the column existed and connect() failed.
     conn.execute("CREATE INDEX IF NOT EXISTS seg_evals_antecedent ON seg_evals(antecedent_id)")  # thread walks (questions.thread_mass_s)
     conn.execute("CREATE INDEX IF NOT EXISTS seg_reviews_antecedent ON seg_reviews(antecedent_id)")
     if vcols and "hybrid" not in vcols:
-        conn.execute("ALTER TABLE seg_evals ADD COLUMN hybrid INTEGER NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE seg_evals ADD COLUMN hybrid INTEGER NOT NULL DEFAULT 0")
     if rvcols and "hybrid" not in rvcols:
         conn.execute("ALTER TABLE seg_reviews ADD COLUMN hybrid INTEGER")  # NULL = the person did not say
     scols = {r[1] for r in conn.execute("PRAGMA table_info(span_summaries)")}
     if scols and "coherent" not in scols:
-        conn.execute("ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
-        conn.execute("ALTER TABLE span_summaries ADD COLUMN issue TEXT")
+        _alter(conn, "ALTER TABLE span_summaries ADD COLUMN coherent INTEGER NOT NULL DEFAULT 1")
+        _alter(conn, "ALTER TABLE span_summaries ADD COLUMN issue TEXT")
     if scols and "refined" not in scols:
-        conn.execute("ALTER TABLE span_summaries ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE span_summaries ADD COLUMN refined INTEGER NOT NULL DEFAULT 0")
     if scols and "title" not in scols:
-        conn.execute("ALTER TABLE span_summaries ADD COLUMN title TEXT")
+        _alter(conn, "ALTER TABLE span_summaries ADD COLUMN title TEXT")
     rcols = {r[1] for r in conn.execute("PRAGMA table_info(eval_runs)")}
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(review_questions)")}
     if qcols and "note" not in qcols:
-        conn.execute("ALTER TABLE review_questions ADD COLUMN note TEXT")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN note TEXT")
     if "answer_index" not in qcols:
-        conn.execute("ALTER TABLE review_questions ADD COLUMN answer_index INTEGER")
-        conn.execute("ALTER TABLE review_questions ADD COLUMN undo TEXT")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN answer_index INTEGER")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN undo TEXT")
     if qcols and "archived_at" not in qcols:
         conn.execute("ALTER TABLE review_questions ADD COLUMN archived_at REAL")  # see questions.archive_stale_questions
     if qcols and "priority" not in qcols:
         # Review priority = stakes (how far the day's headline metrics could move depending on
         # the answer, in minute-equivalents) x the model's uncertainty. Recomputed when the day
         # changes (scored_at older than the day's latest judgment or review).
-        conn.execute("ALTER TABLE review_questions ADD COLUMN stakes REAL")
-        conn.execute("ALTER TABLE review_questions ADD COLUMN stakes_detail TEXT")
-        conn.execute("ALTER TABLE review_questions ADD COLUMN uncertainty REAL")
-        conn.execute("ALTER TABLE review_questions ADD COLUMN priority REAL")
-        conn.execute("ALTER TABLE review_questions ADD COLUMN scored_at REAL")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN stakes REAL")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN stakes_detail TEXT")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN uncertainty REAL")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN priority REAL")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN scored_at REAL")
     cmcols = {r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")}
     if cmcols and "proposal" not in cmcols:
-        conn.execute("ALTER TABLE chat_messages ADD COLUMN proposal TEXT")
+        _alter(conn, "ALTER TABLE chat_messages ADD COLUMN proposal TEXT")
     # Provenance: judgments that came out of a conversation with Claude point back at the reply.
     for t in ("seg_reviews", "span_reviews", "review_questions"):
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
         if cols and "chat_message_id" not in cols:
-            conn.execute(f"ALTER TABLE {t} ADD COLUMN chat_message_id INTEGER")
+            _alter(conn, f"ALTER TABLE {t} ADD COLUMN chat_message_id INTEGER")
     srcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_reviews)")}
     if srcols and "focus_exception" not in srcols:
-        conn.execute("ALTER TABLE seg_reviews ADD COLUMN focus_exception INTEGER")
+        _alter(conn, "ALTER TABLE seg_reviews ADD COLUMN focus_exception INTEGER")
     # Redesign 2026-11-19 (Rules doc): each segment carries focused/unfocused, and a shift
     # carries two yes/no judgments. NULL = judged before the redesign (or by the local models),
     # which stats.py reads through the older switch-kind path.
@@ -414,7 +425,7 @@ def connect() -> sqlite3.Connection:
         tcols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
         for col in ("focused", "self_distraction", "next_task"):
             if tcols and col not in tcols:
-                conn.execute(f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
+                _alter(conn, f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
     conn.execute("""CREATE TABLE IF NOT EXISTS eval_holds (  -- the evaluator asked to judge these later
         segment_id INTEGER PRIMARY KEY,   -- first segment it held back (everything after waits too)
         until REAL NOT NULL,              -- do not ask again before this time
@@ -481,20 +492,20 @@ def connect() -> sqlite3.Connection:
         switch_label TEXT, content TEXT, focused INTEGER, self_distraction INTEGER, away INTEGER,
         note TEXT, created REAL NOT NULL)""")
     if qcols and "phone_key" not in qcols:   # a question about a phone judgment names its phone segment
-        conn.execute("ALTER TABLE review_questions ADD COLUMN phone_key INTEGER")
+        _alter(conn, "ALTER TABLE review_questions ADD COLUMN phone_key INTEGER")
     rqcols = {r[1] for r in conn.execute("PRAGMA table_info(reeval_queue)")}
     if rqcols and "done_to" not in rqcols:
-        conn.execute("ALTER TABLE reeval_queue ADD COLUMN done_to REAL")
+        _alter(conn, "ALTER TABLE reeval_queue ADD COLUMN done_to REAL")
     if rcols and "budget_exempt" not in rcols:
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN budget_exempt INTEGER NOT NULL DEFAULT 0")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN budget_exempt INTEGER NOT NULL DEFAULT 0")
     if rcols and "system" not in rcols:
         # The full evaluation transcript, so a review chat can talk to "the one who decided":
         # the exact system prompt, user prompt, screenshots sent, model, and the response.
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN system TEXT")
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN prompt TEXT")
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN shots TEXT")
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN response TEXT")
-        conn.execute("ALTER TABLE eval_runs ADD COLUMN model TEXT")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN system TEXT")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN prompt TEXT")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN shots TEXT")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN response TEXT")
+        _alter(conn, "ALTER TABLE eval_runs ADD COLUMN model TEXT")
     if kv_get(conn, "migrated.late_shots") is None:
         # One-off (2026-11-20): captures recorded after their segment's backdated end move to
         # the away segment that follows it (see move_late_shots).
@@ -509,7 +520,7 @@ def connect() -> sqlite3.Connection:
     pcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_propagated)")}
     for col in ("self_distraction", "next_task"):   # a propagated ruling can carry these since 2026-11-21
         if pcols and col not in pcols:
-            conn.execute(f"ALTER TABLE seg_propagated ADD COLUMN {col} INTEGER")
+            _alter(conn, f"ALTER TABLE seg_propagated ADD COLUMN {col} INTEGER")
     if kv_get(conn, "migrated.seg_propagated2") is None and kv_get(conn, "migrated.seg_propagated") is not None:
         # One-off (2026-11-21): the first reading of the marks (below) missed every second one of
         # several stacked on a row: its pattern swallowed the space the next " | corrected via"
