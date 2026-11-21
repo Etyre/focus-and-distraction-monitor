@@ -674,8 +674,13 @@ def _shots_for(c, timeline: list[dict]) -> list[dict]:
     if not ids:
         return []
     qs = ",".join("?" * len(ids))
+    # only those inside the window the segments cover (a long block reaching into it brought all
+    # of its captures, hours outside it: 2026-11-21)
+    lo = min(s.get("clip_start", s.get("start", 0)) for s in timeline)
+    hi = max(s.get("clip_end", s.get("end") or 0) or 0 for s in timeline)
     rows = [dict(r) for r in c.execute(
-        f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) ORDER BY ts", ids)]
+        f"SELECT segment_id, ts, path, display FROM segment_shots WHERE segment_id IN ({qs}) AND ts >= ? AND ts <= ? ORDER BY ts",
+        ids + [lo - 1, hi + 1])]
     return rows or [{"segment_id": s["id"], "ts": s["clip_start"], "path": s["first_screenshot"], "display": 0}
                     for s in timeline if s.get("first_screenshot")]
 

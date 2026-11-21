@@ -1034,7 +1034,10 @@ function scrubMap(){return{t0:SCRUB.t0,t1:SCRUB.t1,W:1000,L:14,R:14};}
 // Group raw captures into moments (one per instant, all monitors together) and park the
 // scrubber on the moment nearest `at` (preferring the first capture AT or after it).
 function scrubSetup(shots,timeline,t0,t1,at,svg){
-  const sorted=(shots||[]).slice().sort((a,b)=>a.ts-b.ts);const moments=[];let cur=null;
+  // Only captures inside the window drawn. A long block reaching into the window brings all of its
+  // captures with it: the overnight away block ending at 10:52 on 2026-11-20 carried 15 from
+  // 3:34 AM, and the scrubber, sent to one of them, sat off the left edge showing a 3 AM screen.
+  const sorted=(shots||[]).filter(s=>s.ts>=t0&&s.ts<=t1).sort((a,b)=>a.ts-b.ts);const moments=[];let cur=null;
   for(const s of sorted){if(cur&&s.ts-cur.ts<=1.5){cur.byD[s.display||0]=s;}else{cur={ts:s.ts,byD:{[s.display||0]:s}};moments.push(cur);}}
   SCRUB={moments,i:0,d:SCRUB&&SCRUB.d||0,f:{timeline:timeline||[]},t0,t1,svg};
   let bi=0,bd=1e18;moments.forEach((m,i)=>{const dd=Math.abs(m.ts-at)+(m.ts<at?600:0);if(dd<bd){bd=dd;bi=i;}});SCRUB.i=bi;}
