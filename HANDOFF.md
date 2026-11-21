@@ -47,6 +47,10 @@ reads `toggl_id`, whose meaning changed).
 
 - The single-task rule for task spans (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-20). Ask
   which apps or pages are his todo list and his task feed before building the detection.
+  When the rule is talked through and built, it must update the 2026-11-20 20:29-22:00 span
+  (the audio-player agent session, now disqualified as "task activity without a Toggl entry"):
+  check that the app's own call on it becomes a focus span under the new rule. Eli may also have
+  recorded a verdict on it by then (span chat or the card): look in `span_reviews` first.
 
 ## Decisions waiting for Eli
 
