@@ -506,6 +506,10 @@ def connect() -> sqlite3.Connection:
         moved = sum(move_late_shots(conn, r["id"], r["end"], r["idle_id"]) for r in late if r["idle_id"] is not None)
         kv_set(conn, "migrated.late_shots", str(moved))
         conn.execute("COMMIT")
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(seg_propagated)")}
+    for col in ("self_distraction", "next_task"):   # a propagated ruling can carry these since 2026-11-21
+        if pcols and col not in pcols:
+            conn.execute(f"ALTER TABLE seg_propagated ADD COLUMN {col} INTEGER")
     if kv_get(conn, "migrated.settled_reflags") is None:
         # One-off (2026-11-21): blocks re-flagged by a propagation after the person had settled
         # their review question (see propagation._apply) lose that flag again.
@@ -534,13 +538,13 @@ def connect() -> sqlite3.Connection:
                 if rv is None:
                     continue    # the ruling is gone; reapply would skip it anyway
                 keep = lambda f: r[f] if rv[f] is not None else None
-                conn.execute("INSERT OR IGNORE INTO seg_propagated VALUES (?,?,?,?,?,?,?,?)",
+                conn.execute("INSERT OR IGNORE INTO seg_propagated(segment_id, from_segment_id, verdict, content, switch_label, focused, note, created) VALUES (?,?,?,?,?,?,?,?)",
                              (r["segment_id"], int(m.group(1)), "applies", keep("content"), keep("switch_label"),
                               keep("focused"), m.group(2).strip(), r["created"]))
                 k += 1
             for m in _re.finditer(r" \| does your correction of segment (\d+) apply here\? ([^|]*)", r["rationale"] or ""):
                 if r["uncertain"]:
-                    conn.execute("INSERT OR IGNORE INTO seg_propagated VALUES (?,?,?,?,?,?,?,?)",
+                    conn.execute("INSERT OR IGNORE INTO seg_propagated(segment_id, from_segment_id, verdict, content, switch_label, focused, note, created) VALUES (?,?,?,?,?,?,?,?)",
                                  (r["segment_id"], int(m.group(1)), "uncertain", None, None, None, m.group(2).strip(), r["created"]))
                     k += 1
         # Corrections already erased cannot be read back. Where the ruling is recent enough for

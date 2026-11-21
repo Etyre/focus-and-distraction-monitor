@@ -334,6 +334,8 @@ backend has no tools, so no note tool there.
 | `focus_monitor/chat.py` | Interactive chats about one switch, one span, or a whole day (the day chat edits records through tools). |
 | `focus_monitor/shots.py` | Picks which captures of a stretch a model is shown: one per capture moment, the display that held the active window, spread evenly. Used by the evaluator, audit, question generator, propagation, summaries and chat. |
 | `focus_monitor/questions.py` | Writes review questions for doubted segments; ranks the queue. Each question is about one dimension (thread, content, or hybrid); a doubt uncertain along two gets two questions on the same segment, and options that would land the same judgment (blank fields count as "as the model has it") are merged. Every question's options are the model's readings plus the app's own pass-through option ("just a window I passed through"), which is left out when the segment was plainly in use: held longer than `transit_seconds` and given under 10% chance of being a transition by the evaluator. |
+| `focus_monitor/prompt_parts.py` | Shared pieces of the non-evaluator prompts: log lines in the evaluator's form, the legend, a ruling compared with the judgment before it. |
+| `focus_monitor/chat_tools.py` | Read-only lookup tools for the chats (screenshots, an evaluation's transcript, a block's record, another day's log). |
 | `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge), and applies it again after a re-judgment. |
 | `focus_monitor/resolver.py` | Attention-thread resolver: which thread a switch continues. |
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
@@ -462,6 +464,28 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **The other model calls read the evaluator's log lines (2026-11-21).** Propagation, the question
+  writer, the spot check, rule drafts, span summaries and the day, span and evaluator chats build
+  their logs with `prompt_parts.log_lines` (which calls `evaluator._log_lines`), so a change to
+  that line format changes all of them. `prompt_parts.LOG_LEGEND` is the one explanation of the
+  format outside the evaluator's own prompt; keep the two in step.
+  * *Propagation* judges up to 240 candidates in up to 6 calls per ruling, ranked around the
+    ruled segment (own sitting, same site, similar title), 40 per call with screenshots; nothing
+    is written unless every call comes back. A ruling that only re-points a thread can flag
+    candidates but never copies the pointer. `self_distraction` / `next_task` are carried only
+    when the ruling set them. Until now it saw the 80 newest segments of the same app and one image.
+  * *"The app had judged" means before the ruling*: `prompt_parts.judged_before` takes the live
+    `seg_evals` row only when it is older than the ruling, otherwise the last `eval_runs.response`
+    before it. Comparing with the live row called 63 corrections confirmations.
+  * *Chats* (day, span, evaluator) have read tools (`chat_tools.py`: screenshots, the evaluation
+    behind a judgment, a block's full record, another day's log) and keep what they looked up
+    (`chat_messages.proposal["tool_trace"]`, replayed on later turns, stripped by `chat.history`).
+    The day and span logs are no longer thinned: a day is 250-350k characters. The log lists real
+    segments once each with PHONE lines beside them, so the timeline's negative phone ids never
+    appear and cannot be edited there.
+  * *Rule drafting* reads every ruling (about 440k characters), grouped by act: a bulk edit is one
+    entry. The check on a draft is still "three valid segment ids", not "three entries".
+  * The question writer and spot check use the configured effort (they had "low" written in).
 * **A settled question is not re-flagged by propagation.** A block whose review question the
   person has answered (or marked "can't tell" / "none of these") is not flagged again when a
   ruling on another block is propagated as "uncertain": the dot came back on the timeline and

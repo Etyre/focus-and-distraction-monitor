@@ -192,7 +192,10 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
         opts.append({"label": label, "segment_id": int(sid), "switch_label": sw,
                      "antecedent_id": o.get("antecedent_id") if sw in ("continuation", "return") else None,
                      "interruption_kind": None, "content": ct, "hybrid": o.get("hybrid"),
-                     "focused": o.get("focused")})
+                     "focused": o.get("focused"),
+                     # on purpose / a drift, and "the next task": only mean something on a shift or return
+                     "self_distraction": o.get("self_distraction") if sw in (None, "interruption", "return") else None,
+                     "next_task": o.get("next_task") if sw in (None, "interruption") else None})
     if not opts:
         raise BadEdit("no valid option (each needs a label and known content/switch labels)")
     if passthrough_applies(c, segment_id):
