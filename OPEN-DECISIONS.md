@@ -244,6 +244,27 @@ or the README where it belongs.
     screenshots exist for them. Their days' numbers come from the old per-switch models.
     Choices: (a) leave; (b) judge them from titles alone and mark them low-confidence.
 
+## The review page (from the dashboard test, 2026-11-21)
+
+40. **Does a note follow a changed answer?**
+    Now: changing your answer carries the earlier note onto the new ruling. A note written with
+    "I can't tell" became the precedent note when an option was then chosen.
+    Choices: (a) keep; (b) a changed answer starts with an empty note, the old one offered back.
+
+41. **"Clear my answer" deletes the note with it.** No draft is kept.
+    Choices: (a) keep; (b) put the note back in the box as a draft.
+
+42. **A block with an open question and any ruling shows no review dot.**
+    With two questions on one block, answering the first hides the dot while the second is open.
+    Choices: (a) the dot stays while any question on the block is open; (b) keep.
+
+43. **The Day timeline opens on 9am to midnight.**
+    Today's only focus span (05:10) and its dots were outside it until zooming out.
+    Choices: (a) open on the stretch that has activity; (b) keep.
+
+44. **Review answers are numbered 1., 2., 3. but the number keys do nothing on a question card.**
+    Choices: (a) number keys choose the option; (b) drop the numbers.
+
 ## Decided
 
 - 2026-11-21: **sub-threads.** A sub-thread is an attentional thread that buds off from another
