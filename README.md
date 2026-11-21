@@ -464,6 +464,26 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **A call with no key press or pointer move is not time away (2026-11-21).** The away rule read
+  only `HIDIdleTime`, so four calls on 2026-11-20 and 21 (113.9 minutes with camera and microphone
+  on throughout) were recorded as away and cut the meeting spans around them. When input has been
+  absent for `idle_seconds`, the collector asks `signals.call_until` whether the camera, or the
+  microphone, was on for 80% (`CALL_SHARE`) of the stretch: if so the segment stays open and it
+  goes away only 10 minutes after they went off, backdated to that moment. Unsampled time counts
+  as off; microphone bursts (dictation) do not reach 80%; with the screen locked only the camera
+  counts; after 4 hours with no input at all it is treated as a stuck device. Not covered: a
+  headset that is one device for both directions reads as "audio", so a camera-off call on it
+  still goes away. The log says `not away: ... (a call)`. Past rows are not changed.
+* **Chrome's "front window" is not always the window on screen (2026-11-21).** `current_window`
+  asked Chrome for `active tab of front window`, which follows Chrome's own ordering: 11 segments
+  on 2026-11-21 were stored as a page last loaded the day before while the captures showed other
+  pages. `collector.browser_tab` now reads every window's title, tab title, address and bounds in
+  one bulk AppleScript call (0.11 s with 83 windows; a `repeat` loop took 5.6 s), takes the
+  browser's frontmost window from the system's on-screen window list and matches it by title,
+  then bounds (`pick_window`). With no match, or if the script fails, it reads the front window
+  as before. The log notes when the on-screen window is not the front window. Not yet seen
+  working on real window titles (they need Screen Recording, which only the app has), nor on
+  Safari.
 * **The other model calls read the evaluator's log lines (2026-11-21).** Propagation, the question
   writer, the spot check, rule drafts, span summaries and the day, span and evaluator chats build
   their logs with `prompt_parts.log_lines` (which calls `evaluator._log_lines`), so a change to

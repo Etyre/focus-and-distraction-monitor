@@ -96,6 +96,94 @@ def main() -> int:
     check("same app: no 'arrived by'", signals.describe(c, seg, "Google Chrome")[0], "page reached by: typed the address")
     check("a segment from before signals existed has no notes",
           signals.describe(c, {"id": 99, "start": t - 9000, "end": t - 8900, "app": "Notes", "url": ""}, "Cursor"), [])
+
+    # The away rule's "was this stretch a call" (2026-11-21). 10-second buckets from t2 on.
+    t2 = t + 10_000
+
+    def put_media(a, b, cam=0, mic=0, secs=10):
+        for k in range(int(a), int(b), 10):
+            c.execute("INSERT OR REPLACE INTO activity_samples(ts, secs, keys, clicks, scrolls, moves, audio, mic, camera)"
+                      " VALUES (?,?,0,0,0,0,0,?,?)", (t2 + k, secs, mic * secs, cam * secs))
+    until = lambda a, b, **kw: (lambda v: None if v is None else round(v - t2))(signals.call_until(c, t2 + a, t2 + b, **kw))
+    put_media(0, 1800, cam=1)
+    check("camera on throughout: the call runs to now", until(0, 1800), 1800)
+    check("... and from a last input in the middle of a bucket", until(605, 1203), 1203)
+    put_media(1800, 2600)
+    check("camera off since 1800 s: the call ended there", until(0, 2400), 1800)
+    c.execute("DELETE FROM activity_samples WHERE ts >= ?", (t2,))
+    put_media(0, 720)
+    for a in (0, 240, 500):
+        put_media(a, a + 20, mic=1)
+    check("microphone in three 20-second bursts is dictation, not a call", until(0, 720), None)
+    put_media(0, 720, mic=1)
+    check("microphone on throughout is a call", until(0, 720), 720)
+    check("... but not past the moment the screen locked", until(0, 720, mic_until=t2 + 300), 300)
+    check("under two minutes of it does not count", until(0, 100), None)
+    c.execute("DELETE FROM activity_samples WHERE ts >= ?", (t2,))
+    put_media(0, 600, cam=1)
+    check("nothing sampled after 600 s (asleep): the old reading does not carry on", until(0, 3000), 600)
+    put_media(600, 720)
+    put_media(720, 1800, cam=1)
+    check("a two-minute camera break in a call", until(0, 1800), 1800)
+    c.execute("DELETE FROM activity_samples WHERE ts >= ?", (t2,))
+    put_media(0, 300)
+    put_media(300, 720, cam=1)
+    check("camera off for the first 5 of 12 minutes: under 80%", until(0, 720), None)
+    check("no samples at all", until(5000, 6000), None)
+    put_media(0, 720, cam=1, secs=0)
+    check("buckets with no sampled seconds are not 'on'", until(0, 720), None)
+
+    # Which browser window is the one on screen (collector.pick_window, 2026-11-21).
+    from . import collector
+    full, left = (0, 33, 1728, 1117), (0, 33, 864, 1117)
+    long_tab = "A very long page title that goes on and on, with a lot of words, until its end - Example Site"
+    wins = [("Food order", "Food order", "https://food.example/cart", full),            # Chrome's "front window": stale
+            ("Inbox", "Inbox", "https://mail.example/", full),
+            ("Inbox (2) - Mail", "Inbox (2) - Mail", "https://mail.example/2", left),
+            ("A very long page title that go…til its end - Example Site", long_tab, "https://long.example/", left),
+            ("Notes", "Notes", "https://notes.example/a", full),
+            ("Notes", "Notes", "https://notes.example/b", left),
+            ("blank.example/x", "", "https://blank.example/x", full)]
+    pick = lambda *onscreen: collector.pick_window(list(onscreen), wins)
+    check("the window on screen is not the browser's front window", pick(("Inbox - Google Chrome", full)), 1)
+    check("... and the front window when it is the one on screen", pick(("Food order - Google Chrome", full)), 0)
+    check("a bare tab title", pick(("Inbox", full)), 1)
+    check("a profile suffix", pick(("Inbox - Google Chrome - Eli (Work)", full)), 1)
+    check("the longest title that fits wins", pick(("Inbox (2) - Mail - Google Chrome", left)), 2)
+    check("a long title the browser shortens around an ellipsis", pick((long_tab + " - Google Chrome", left)), 3)
+    check("the same title twice: bounds decide", pick(("Notes - Google Chrome", left)), 5)
+    check("the same title and bounds as nothing else: the browser's order", pick(("Notes - Google Chrome", (5, 5, 50, 50))), 4)
+    check("title fits nothing: bounds stand in", pick(("Something else", left)), 2)
+    check("no title (no Screen Recording): bounds, in the browser's order", pick(("", full)), 0)
+    check("an untitled tab is found by its window title", pick(("blank.example/x - Google Chrome", full)), 6)
+    check("no match at all", pick(("Something else", (1, 2, 3, 4))), None)
+    check("nothing on screen (another Space)", pick(), None)
+    check("a popup in front that fits nothing is skipped", pick(("", (300, 80, 700, 400)), ("Inbox - Google Chrome", full)), 1)
+    sep = lambda *xs: "\x1f".join(map(str, xs))
+    out = "\x1e".join([sep("A", "B"), sep("A", ""), sep("https://a.example/", "https://b.example/"), sep(0, 33, 864, 1117, 5, 6, 7, 8)])
+    check("the all-windows script's output is read", collector._parse_windows(out),
+          [("A", "A", "https://a.example/", (0, 33, 864, 1117)), ("B", "", "https://b.example/", (5, 6, 7, 8))])
+    check("no windows", collector._parse_windows("\x1e\x1e\x1e"), None)
+    check("lists of different lengths", collector._parse_windows("\x1e".join([sep("A", "B"), "A", sep("u", "v"), sep(0, 0, 1, 1, 0, 0, 1, 1)])), None)
+    check("a failed script", collector._parse_windows(""), None)
+    # browser_tab end to end, with the two readings faked
+    scripts = []
+    real = collector.osascript, collector._onscreen_windows
+    try:
+        collector.osascript = lambda script, timeout=3.0: (scripts.append(script), out if script == "ALL" else "https://front.example/\nFront")[1]
+        collector._onscreen_windows = lambda app, limit=4: [("B - Google Chrome", (5, 6, 7, 8))]
+        check("browser_tab reads the on-screen window's tab", collector.browser_tab("X", "ALL", "FRONT"), ("https://b.example/", ""))
+        collector._onscreen_windows = lambda app, limit=4: []
+        check("... the front window's when nothing matches, in the same call", (collector.browser_tab("X", "ALL", "FRONT"), scripts), (("https://a.example/", "A"), ["ALL", "ALL"]))
+        collector.osascript = lambda script, timeout=3.0: "" if script == "ALL" else "https://front.example/\nFront"
+        check("... and through the old script when the new one fails", collector.browser_tab("X", "ALL", "FRONT"), ("https://front.example/", "Front"))
+        collector._onscreen_windows = lambda app, limit=4: 1 / 0
+        collector.log.disabled = True   # the failure is logged with its traceback: not wanted in this output
+        collector.osascript = lambda script, timeout=3.0: out if script == "ALL" else "https://front.example/\nFront"
+        check("... or when the window list raises", collector.browser_tab("X", "ALL", "FRONT"), ("https://front.example/", "Front"))
+    finally:
+        collector.osascript, collector._onscreen_windows = real
+        collector.log.disabled = False
     print(f"signals self-test: {'FAILED' if fails else 'passed'}")
     return 1 if fails else 0
 

@@ -472,6 +472,45 @@ def activity(conn, t0: float, t1: float) -> dict | None:
     return tot if tot["secs"] >= 2 else None
 
 
+# The collector's away rule (2026-11-21). Camera or microphone on for this share of a stretch
+# without input makes it a call, not an absence. The microphone in short bursts is dictation.
+CALL_SHARE = 0.8
+# ... and the stretch has to be at least this long, so that the tail of a dictation that ran a
+# few seconds past the last key press does not move the start of a real absence.
+CALL_MIN_S = 120.0
+
+
+def call_until(conn, t0: float, t1: float, mic_until: float | None = None,
+               share: float = CALL_SHARE, min_s: float = CALL_MIN_S) -> float | None:
+    """For a stretch without input [t0, t1]: the latest moment E at which the camera, or the
+    microphone, was on and had been on for `share` or more of [t0, E], with E - t0 >= min_s.
+    None when there is no such moment (no call, or nothing sampled). While a call goes on E
+    keeps up with t1; once the camera and microphone go off it stays where they went off.
+
+    Why (collector.Collector._call_until): four calls on 2026-11-20 and 21, 113.9 minutes with
+    camera and microphone on throughout and no key or pointer input, were recorded as away.
+    The share is of CLOCK time: 10-second buckets nobody sampled (the Mac asleep, tracking
+    paused, the app not running) count as off, so an old "on" reading cannot stand in for a
+    live one. A bucket is on when the device was on for half of its sampled seconds or more.
+    `mic_until`: microphone readings after this time are ignored (the screen locked then)."""
+    rows = conn.execute("SELECT ts, secs, mic, camera FROM activity_samples WHERE ts > ? AND ts < ? ORDER BY ts",
+                        (t0 - BUCKET_S, t1)).fetchall()
+    best = None
+    for key in ("camera", "mic"):
+        on = 0.0
+        for r in rows:
+            a, b = max(t0, r["ts"]), min(t1, r["ts"] + BUCKET_S)
+            if key == "mic" and mic_until is not None:
+                b = min(b, mic_until)
+            secs = r["secs"] or 0
+            if b <= a or secs <= 0 or (r[key] or 0) < 0.5 * secs:
+                continue
+            on += b - a
+            if b - t0 >= min_s and on >= share * (b - t0) and (best is None or b > best):
+                best = b
+    return best
+
+
 def arrival(conn, segment_id, app: str, prev_app: str | None) -> dict | None:
     """What the person did just before a segment began (stored by Sampler.note_switch): the last
     click and where it landed, or that there was none. None for segments from before 2026-11-19."""
