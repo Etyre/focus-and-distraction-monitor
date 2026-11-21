@@ -166,6 +166,84 @@ or the README where it belongs.
     browser's current zone, so a September day reads 07:00 to 07:00. Choices: (a) show each day in
     the zone it was lived in; (b) keep the current zone.
 
+## From the first day of live running on the new code (2026-11-21)
+
+28. **A call with no typing: still in the call, or away?**
+    Until now ten minutes without keyboard or mouse input was "away" even with camera and
+    microphone on: 114 minutes of calls in two days were recorded as away, and the meeting spans
+    around them cut short. Being fixed so that a call (camera on, or microphone on most of the
+    time) is not away. To decide: what to do about past calls recorded as away (a list is being
+    produced), and whether microphone alone should count.
+
+29. **Phone open beside the keyboard while you type on the Mac.**
+    Now: a phone app segment judged a shift carves its whole length out of the Mac record as time
+    away. On 11-20, 58 minutes were counted as away from the Mac during steady Mac typing (Oura
+    open 21 min with 1,198 Mac keys typed; Signal 15 min, 889 keys). The evaluator's own notes say
+    "the phone was likely sitting unlocked and mostly unwatched" but it can only judge a phone
+    segment whole.
+    Choices: (a) keep; (b) phone time is away only for the stretch with no Mac input; (c) ask you
+    when a long phone segment overlaps Mac input.
+
+30. **Should a phone judgment be redone every time the Mac segments around it are re-judged?**
+    Now: yes, and the last answer stands. The Oura segment above was judged five times in 26
+    minutes: four said "lying beside the keyboard", the fifth said a shift, and the fifth stuck.
+    Choices: (a) a phone judgment, once made, stays until you rule or a phone-specific re-judgment
+    runs; (b) keep.
+
+31. **Can a shift judged a self-distraction open a focus span?**
+    11-21's only independent focus span (22 min, planning, "fully absorbed") starts with a Claude
+    conversation whose switch the evaluator called a self-distraction (flagged unsure).
+    Choices: (a) yes, what matters is the focused time that followed (now); (b) no; (c) ask.
+
+32. **Judge new activity in batches?**
+    Now: a call goes out as soon as any segment is 15 minutes old: 114 calls for 239 segments in
+    5.4 active hours, 60 of them judging one segment, each with about 54 screenshots (context
+    images fill the budget whatever the number of segments). $0.30 a segment at API prices, all on
+    the subscription. Since the restart the app has used about $200 of API-equivalent usage in 16
+    hours ($115 and $136 for the two days, against $30 to $70 before).
+    Choices: (a) keep; (b) wait until about 10 minutes of settled activity has gathered (several
+    times fewer calls, neighbours judged together, up to 10 minutes more delay); (c) scale the
+    context screenshots to the number of segments judged; (b) and (c) together.
+
+33. **Keep the two lower-effort "shadow" calls on every evaluator call?**
+    They exist to compare efforts for the Efforts tab. 266 calls, $21 of usage in 16 hours, each
+    re-sending the images. Agreement with the high-effort answer: 84% (low), 89% (medium).
+    Choices: (a) keep; (b) shadow one call in ten; (c) stop, the question is answered.
+
+34. **Is the piecewise daily audit worth its size?**
+    The audit of 11-20: 28 calls, $23.53 of usage (it was $0.39 to $0.50 a day), 22 flags, of
+    which the question writer could turn 3 into questions. Choices: (a) keep; (b) audit only
+    segments the evaluator was least sure of; (c) one day in N.
+
+35. **The automatic follow-up question after you correct the app is billed to the API key.**
+    It replays the evaluation (about 150,000 tokens now) on the key: $9.18 for 13 follow-ups in
+    33 minutes on 11-21, seven of which answered only "No question." These were the only real
+    charges since the restart. Choices: (a) keep; (b) send it through the subscription;
+    (c) send only the block's own lines and images; (d) only when you ask.
+
+36. **Which phone apps get "what was it used for" questions?**
+    24 are open, one per app. 11 are about apps that cannot be passive consumption (Phone, Clock,
+    Settings, Camera, Toggl, Maps, your own apps); 9 are about uses three to five days old.
+    Choices: (a) keep; (b) skip a list of utility apps; (c) only apps the evaluator has judged
+    passive at least once; and a limit on how old a use may be.
+
+37. **Pause minutes inside a span count as focus minutes.**
+    366 of 15,815 focus minutes are pauses; in 15 spans a quarter or more is pause (09-16 14:04:
+    22.6 of 52.7 min). Pauses separated by a few seconds of window activity are not added
+    together (one span holds 10.3 near-continuous minutes). Related to items 2 and 3.
+    Choices: (a) keep; (b) pauses stay in the span but are not counted as focus minutes;
+    (c) add up pauses that are seconds apart.
+
+38. **Time the evaluator labels "idle" for ten minutes ends a span even when the Mac was not idle
+    that long.** 18 away stretches exist only because of the label; in 12 the recorded time
+    without input is under ten minutes (13.7 min labelled idle, 9.0 without input).
+    Choices: (a) keep; (b) the label counts as away only for the time without input.
+
+39. **Segments older than 31 days that were never judged.**
+    2,588 segments from 08-25 to 10-17 have no judgment (the backfill covered 31 days). No
+    screenshots exist for them. Their days' numbers come from the old per-switch models.
+    Choices: (a) leave; (b) judge them from titles alone and mark them low-confidence.
+
 ## Decided
 
 - 2026-11-21: **sub-threads.** A sub-thread is an attentional thread that buds off from another
