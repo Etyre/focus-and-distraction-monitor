@@ -62,6 +62,10 @@ class Drafts(BaseModel):
 def _new_since_last(conn) -> tuple[int, float]:
     last = conn.execute("SELECT COALESCE(MAX(created), 0) FROM rule_draft_runs").fetchone()[0]
     n = conn.execute("SELECT COUNT(*) FROM seg_reviews WHERE created > ?", (last,)).fetchone()[0]
+    try:   # phone rulings count too (2026-11-21: the phone questions exist to surface rules)
+        n += conn.execute("SELECT COUNT(*) FROM phone_reviews WHERE created > ?", (last,)).fetchone()[0]
+    except Exception:
+        pass
     return n, last
 
 
@@ -84,7 +88,7 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
         FROM seg_reviews r JOIN segments g ON g.id = r.segment_id
         LEFT JOIN seg_evals e ON e.segment_id = r.segment_id
         ORDER BY r.created DESC LIMIT ?""", (MAX_REVIEWS,)).fetchall()
-    if len(rows) < 3:
+    if len(rows) < 3 and conn.execute("SELECT COUNT(*) FROM phone_reviews").fetchone()[0] < 3:
         return 0
 
     verdict = _verdict
@@ -103,8 +107,26 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
         when = dt.datetime.fromtimestamp(r["start"]).strftime("%b %d %H:%M")
         lines.append(f"id={r['segment_id']} ({when}) {r['app']} {r['domain'] or ''} | {(r['title'] or '')[:70]}"
                      f" -> {mine}{app}" + (f" - their note: {r['note'][:300]}" if r["note"] else ""))
+    # Their rulings on phone app use (Eli, 2026-11-21: the phone questions are there to surface the
+    # rules about which phone use is passive consumption and which is not).
+    plines = []
+    try:
+        for r in conn.execute("""SELECT r.*, p.app, p.start, p.end, p.content AS pc, p.created AS p_at
+                                 FROM phone_reviews r JOIN phone_evals p ON p.seg_key = r.seg_key
+                                 ORDER BY r.created""").fetchall():
+            from .config import local_dt
+            secs = (r["end"] or r["start"]) - r["start"]
+            plines.append(f"phone {r['app']} ({local_dt(r['start']).strftime('%b %d %H:%M')}, "
+                          f"{secs / 60:.0f} min) -> content={r['content'] or '(unchanged)'}"
+                          + (f", focused={'yes' if r['focused'] else 'no'}" if r["focused"] is not None else "")
+                          + (f" [the app had said content={r['pc']}]" if r["pc"] and r["pc"] != r["content"] else "")
+                          + (f" - their note: {r['note']}" if r["note"] and not r["note"].startswith("(") else ""))
+    except Exception:
+        pass
     prior = conn.execute("SELECT rule, status FROM rule_drafts ORDER BY created DESC LIMIT 60").fetchall()
     text = ("Their rulings, oldest first:\n" + "\n".join(lines)
+            + ("\n\nTheir rulings on phone app use (only the app name and timing are known; a rule here "
+               "says which use of which app is passive consumption and which is not):\n" + "\n".join(plines) if plines else "")
             + ("\n\nAlready drafted (do not repeat):\n" + "\n".join(f"- [{p['status']}] {p['rule']}" for p in prior) if prior else ""))
     resp = llm.parse(_client(), site="rule_drafts",
                      model=cfg.claude_model, max_tokens=3000,

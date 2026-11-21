@@ -462,6 +462,14 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Phone questions about what an app was used for** (Eli, 2026-11-21: "surface the rules about
+  what phone usage is passive consumption and which isn't"). `questions.phone_content_questions`
+  asks, for each phone app with fewer than `PHONE_RULE_ANSWERS` (4) answers on record and no
+  question open, about its longest recent use of 30 s or more: passive, messaging, an errand,
+  reading something specific, or not looking. Content only (the away / self-distraction axis is
+  `phone_questions`, still asked only when load-bearing). The answers are phone rulings: the
+  evaluator sees them as precedents, and `rule_drafts` now reads them to draft rules. On the
+  first run it wrote 23 questions, one per app.
 * **The span chat can act** (Eli, 2026-11-20: "The span chat should have edit access not just the
   ability to talk"). It has the day chat's tools (set_span_verdict, set_segment_judgment,
   open_review_question, propose_rule) through one shared loop, `chat._tool_turns`; its log lines

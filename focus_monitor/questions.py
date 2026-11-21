@@ -479,7 +479,7 @@ def _uncertainty(conn, segment_id: int, source: str) -> float:
             pass
     if source in ("coherence", "propagation", "audit"):
         u = max(u, 0.7)
-    if source == "phone":   # the model's own confidence is about the computer segment, not the phone
+    if source in ("phone", "phone_content"):   # the model's own confidence is about the computer segment, not the phone
         u = 0.8
     return max(0.0, min(1.0, u))
 
@@ -649,6 +649,77 @@ PHONE_OPTIONS = (
 )
 _phone_checked: dict = {}   # seg_key -> the day stamp it was last checked at (in memory: cheap to redo)
 
+# What was the phone used FOR (Eli, 2026-11-21: "We should be asking phone questions, because we
+# want to surface the rules about what phone usage is passive consumption and which isn't"). The
+# question above asks only when an answer would move the day's focus numbers, and only about
+# away-or-not. This one asks about the content, whatever the stakes, so that the person's
+# answers build up per app into precedents (the evaluator sees them with its rulings) and into
+# rules (rule_drafts reads phone rulings too). One open question per phone app at a time, and an
+# app stops being asked about once PHONE_RULE_ANSWERS answers about it are on record: the aim is
+# the rule, not a ruling on every pickup.
+PHONE_RULE_ANSWERS = 4
+PHONE_CONTENT_OPTIONS = (
+    ("Passive: scrolling, watching or browsing, nothing in particular", {"content": "passive", "focused": 0}),
+    ("Messaging: reading or replying to someone", {"content": "correspondence"}),
+    ("A specific errand or task (ordering, booking, logging, a setting)", {"content": "task", "focused": 1}),
+    ("Reading or looking up something specific", {"content": "reading", "focused": 1}),
+    ("The phone was just open; I was not looking at it", {"content": "transition"}),
+)
+
+
+def phone_content_questions(conn, lookback_s: float = 7 * 86400) -> int:
+    """Ask what a phone app was being used for (see PHONE_CONTENT_OPTIONS), for each phone app with
+    fewer than PHONE_RULE_ANSWERS answers on record and no question open: about its longest recent
+    use of PHONE_Q_MIN_S or more. No model call: the options are the same for every app."""
+    from .config import local_dt
+    try:
+        answered = {r[0]: r[1] for r in conn.execute(
+            """SELECT p.app, COUNT(*) FROM phone_reviews r JOIN phone_evals p ON p.seg_key = r.seg_key
+               WHERE r.content IS NOT NULL GROUP BY p.app""")}
+        open_apps = {r[0] for r in conn.execute(
+            """SELECT p.app FROM review_questions q JOIN phone_evals p ON p.seg_key = q.phone_key
+               WHERE q.status = 'open'""")}
+        rows = conn.execute("""SELECT p.* FROM phone_evals p
+            LEFT JOIN phone_reviews r ON r.seg_key = p.seg_key
+            LEFT JOIN review_questions q ON q.phone_key = p.seg_key
+            WHERE p.switch_label IS NOT NULL AND p.app != 'Lock screen' AND p.start >= ?
+              AND p.end - p.start >= ? AND COALESCE(p.content, '') != 'transition'
+              AND r.seg_key IS NULL AND q.id IS NULL
+            ORDER BY p.end - p.start DESC""", (time.time() - lookback_s, PHONE_Q_MIN_S)).fetchall()
+    except Exception:   # no phone tables yet
+        return 0
+    n = 0
+    for p in rows:
+        app = p["app"] or ""
+        if not app or app in open_apps or answered.get(app, 0) >= PHONE_RULE_ANSWERS:
+            continue
+        g = conn.execute("""SELECT id, app, title FROM segments WHERE start <= ? AND COALESCE(end, start) > ?
+                            ORDER BY idle, start DESC LIMIT 1""", (p["start"], p["start"])).fetchone()
+        if g is None:
+            continue
+        when = local_dt(p["start"]).strftime("%a %H:%M")
+        secs = p["end"] - p["start"]
+        length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
+        ctx = (f"On {when} your phone had {app} open for {length}"
+               f"{', while the computer sat idle' if g['app'] == '__idle__' else ', while the computer was on ' + g['app']}. "
+               f"The app sees only which phone app was open and when; it guessed: {p['content'] or 'unknown'}. "
+               f"This is not about whether it was a break or a distraction, only what the use was: your answers "
+               f"about {app} become precedents for judging it, and once a pattern holds, a rule for your rules "
+               f"document ({answered.get(app, 0)} of {PHONE_RULE_ANSWERS} answers about {app} so far).")
+        opts = [{"label": lab, "segment_id": g["id"], "phone_key": p["seg_key"], "phone": edit,
+                 "switch_label": None, "antecedent_id": None, "interruption_kind": None, "content": None, "hybrid": None}
+                for lab, edit in PHONE_CONTENT_OPTIONS]
+        conn.execute("INSERT INTO review_questions(segment_id, source, context, question, options, cost_usd, created, phone_key)"
+                     " VALUES (?,?,?,?,?,0,?,?)",
+                     (g["id"], "phone_content", ctx, f"What were you doing in {app} on your phone?",
+                      json.dumps(opts), time.time(), p["seg_key"]))
+        open_apps.add(app)
+        n += 1
+    if n:
+        conn.commit()
+        log.info("wrote %d question(s) about what phone apps were used for", n)
+    return n
+
 
 def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
     """Write a review question for each load-bearing phone judgment (see PHONE_Q_MIN). No model
@@ -689,7 +760,8 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
                             ORDER BY idle, start DESC LIMIT 1""", (p["start"], p["start"])).fetchone()
         if g is None:
             continue
-        hhmm = dt.datetime.fromtimestamp(p["start"]).strftime("%H:%M")
+        from .config import local_dt
+        hhmm = local_dt(p["start"]).strftime("%H:%M")
         secs = p["end"] - p["start"]
         length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
         call = ("a self-distraction" if p["away"] and p["self_distraction"] else
