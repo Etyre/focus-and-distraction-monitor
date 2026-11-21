@@ -48,10 +48,6 @@ reads `toggl_id`, whose meaning changed).
 - The single-task rule for task spans (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-20). Ask
   which apps or pages are his todo list and his task feed before building the detection.
 
-- The span chat cannot record anything (no tools): on 2026-11-20 Eli told it a span "should
-  actually count as a focus span" and nothing was stored. Give it a set_span_verdict tool like
-  the day chat's, or say in the card that it only talks.
-
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator

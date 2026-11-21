@@ -462,6 +462,10 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **The span chat can act** (Eli, 2026-11-20: "The span chat should have edit access not just the
+  ability to talk"). It has the day chat's tools (set_span_verdict, set_segment_judgment,
+  open_review_question, propose_rule) through one shared loop, `chat._tool_turns`; its log lines
+  carry #ids; its changes show under the reply with undo, and the span card reloads after one.
 * **Chats answered "(no reply)".** The span, switch, day and evaluator chats had `max_tokens` 1024
   (8192 for the day chat) and effort "low" written in. The model's thinking counts against
   `max_tokens`, so a question that made it think used it all and no text came back (span chat,

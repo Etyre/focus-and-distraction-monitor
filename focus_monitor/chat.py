@@ -134,6 +134,68 @@ def _run_chat(client, cfg, system, ctx_blocks, messages, max_tokens: int = CHAT_
     return text, cost
 
 
+def _tool_turns(chat, conn, kind: str, ref: str, site: str, ctx_blocks, messages: list[dict], run_tool) -> dict:
+    """One turn of a chat that can act. Tool calls are executed as they come (each edit carries
+    this reply's id as provenance), their results fed back, and the final text plus the list of
+    applied changes is stored on the reply - so the person can see, open and undo exactly what
+    happened. Shared by the day chat and the span chat."""
+    from .classifiers.claude_vision import _cost
+    cfg = chat.cfg
+    mid = begin_exchange(conn, kind, ref, messages, cfg.claude_model)
+    applied: list[dict] = []
+    proposal: dict = {}
+    cost, text = 0.0, ""
+    resp = None
+    try:
+        api_msgs = _api_messages(ctx_blocks, messages)
+        tools = DAY_TOOLS + llm.CONTACT_TOOLS
+        kept = ""   # text from turns whose only tool call was a note to Eli: still part of the reply
+        for _ in range(8):
+            resp = chat.client.messages.create(
+                model=cfg.claude_model, max_tokens=CHAT_MAX_TOKENS, system=chat.system, messages=api_msgs,
+                tools=tools, output_config={"effort": cfg.claude_effort})
+            cost += _cost(resp.usage)
+            rec = llm.contacted(site, cfg.claude_model, chat.system, api_msgs, resp, tools)
+            if rec:   # the model wants Eli: no tool runs, no further turns
+                text = llm.contact_notice(rec)
+                break
+            if resp.stop_reason == "refusal":
+                text = "(Claude declined to answer that.)"
+                break
+            said = "".join(b.text for b in resp.content if b.type == "text").strip()
+            text = "\n\n".join(t for t in (kept, said) if t) or text
+            uses = [b for b in resp.content if b.type == "tool_use"]
+            if not uses:
+                break
+            kept = text if all(u.name == llm.NOTE_TOOL_NAME for u in uses) else ""
+            results = [{"type": "tool_result", "tool_use_id": u.id,
+                        "content": run_tool(conn, u.name, dict(u.input), mid, applied, proposal)}
+                       for u in uses]
+            api_msgs.append({"role": "assistant",
+                             "content": [b.model_dump(exclude_none=True) for b in resp.content]})
+            api_msgs.append({"role": "user", "content": results})
+    except Exception as e:
+        if not applied:  # nothing happened: leave no trace of the failed turn
+            abort_exchange(conn, mid)
+            raise
+        # Edits already carry this reply's id as provenance - keep the row, record the failure.
+        finish_exchange(conn, mid, f"(error after {len(applied)} change(s) were applied: {e})", cost,
+                        {**proposal, "applied_changes": applied})
+        raise
+    if not text:
+        if applied:
+            text = "(changes applied - see below)"
+        else:
+            sr = getattr(resp, "stop_reason", None)
+            log.warning("%s: no text (stop_reason %s)", site, sr)
+            text = ("(Claude ran out of room before writing an answer. Please ask again.)"
+                    if sr == "max_tokens" else f"(no reply: stop reason {sr})")
+    prop = ({**proposal, "applied_changes": applied} if (applied or proposal) else None)
+    finish_exchange(conn, mid, text, cost, prop)
+    log.info("%s %s: %d change(s), $%.3f", site, ref, len(applied), cost)
+    return {"reply": text, "message_id": mid, "applied": applied, "proposal": prop}
+
+
 def log_exchange(conn, kind: str, ref: str, messages: list[dict], reply: str, cost: float,
                  model: str | None, question_id: int | None = None,
                  proposal: dict | None = None) -> int:
@@ -204,6 +266,9 @@ and why - and note honestly when it's genuinely ambiguous. Their calibration fee
 has been far too optimistic about what counts as focused work; do not repeat that mistake. Don't lecture; \
 be a sharp, brief thinking partner.
 
+{act}
+In this chat the blocks are the ones in the day's log below (numbered #id), and set_span_verdict takes the span under review by its start/end times as shown at the top. A verdict on the span is the most direct way to record "this was / was not a focus span"; use it when the person says so.
+
 Span subtypes: creative_work, focused_task, reading, planning, other_focused, meeting. (Correspondence - chat, email - \
 is interactive, never a focus span on its own; only email processed inside a Toggl-covered task block belongs to that span.)
 
@@ -223,7 +288,7 @@ class SpanChat:
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
         from .classifiers.claude_vision import _rules_doc
         self.system = llm.with_preamble(SPAN_SYSTEM.format(
-            rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
+            act=ACT_DOC, rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
 
     def _context_blocks(self, conn, start: float, end: float) -> list[dict]:
         import datetime as dt
@@ -281,15 +346,16 @@ class SpanChat:
         if len(before) > 120:
             lines.append(f"  ... {len(before) - 120} earlier blocks elided ...")
             before = before[-120:]
-        lines += [summaries.seg_line(s2) for s2 in before]
+        lines += [f"#{s2['id']} " + summaries.seg_line(s2) for s2 in before]
         lines.append(">>> START OF THE SPAN UNDER REVIEW <<<")
-        lines += [summaries.seg_line(s2) + (f"  // {rats[s2['id']][:80]}" if s2["id"] in rats else "")
+        lines += [f"#{s2['id']} " + summaries.seg_line(s2) + (f"  // {rats[s2['id']]}" if s2["id"] in rats else "")
                   for s2 in inside]
         lines.append(">>> END OF THE SPAN UNDER REVIEW <<<")
-        lines += [summaries.seg_line(s2) for s2 in after[:120]]
+        lines += [f"#{s2['id']} " + summaries.seg_line(s2) for s2 in after[:120]]
         if len(after) > 120:
             lines.append(f"  ... {len(after) - 120} later blocks elided ...")
         text = (f"The span under review: {_t(sp['start'], '%Y-%m-%d %H:%M')}-{_t(sp['end'])} "
+                f"(for set_span_verdict: start {_t(sp['start'])}, end {_t(sp['end'])}) "
                 f"({sp['duration'] / 60:.0f} min, {sp['focus_min']:.0f} focused, "
                 f"{len(sp.get('detours', []))} contained interruption(s), ended by {sp.get('ended_by')}).\n"
                 f"System's current call: {call}.\n"
@@ -301,26 +367,21 @@ class SpanChat:
         blocks.append({"type": "text", "text": text})
         return blocks
 
-    def reply(self, conn, start: float, end: float, messages: list[dict]) -> str:
-        text, cost = _run_chat(self.client, self.cfg, self.system, self._context_blocks(conn, start, end), messages)
-        log_exchange(conn, "span", str(round(start)), messages, text, cost, self.cfg.claude_model)
-        return text
+    def reply(self, conn, start: float, end: float, messages: list[dict]) -> dict:
+        """One turn, with the day chat's tools (Eli, 2026-11-20: "The span chat should have edit
+        access not just the ability to talk" - he told it a span should count as a focus span
+        and nothing was recorded). Edits carry this reply's id as provenance, like the day chat's."""
+        from .config import logical_date
+        day = logical_date(start)
+        doer = DayChat.__new__(DayChat)          # its tool handlers only need the config
+        doer.cfg = self.cfg
+        return _tool_turns(self, conn, "span", str(round(start)), "span_chat",
+                           self._context_blocks(conn, start, end), messages,
+                           lambda c, name, args, mid, applied, proposal:
+                               doer._run_tool(c, day, name, args, mid, applied, proposal))
 
 
-DAY_SYSTEM = """You are helping this person review their own attention-monitoring log. They are looking at ONE WHOLE \
-DAY and want to talk it over with you: how the day went, where their attention held and where it broke, whether \
-the system's calls look right, what the day's shape suggests for tomorrow.
-
-You see the day's headline metrics, every hypothesized focus span (qualifying and disqualified) with the system's \
-call and its summary, the self-distraction and interruption events, the day's Toggl "intent" entries, the whole \
-day's activity log, and a few screenshots sampled across the day.
-
-Answer concisely and concretely - point at specific times, spans, and blocks. When asked for an assessment, give \
-one and say what it rests on; note honestly when the data is thin or a call is ambiguous. Their calibration \
-feedback is that the system has been far too optimistic about what counts as focused work; do not repeat that \
-mistake. Don't lecture; be a sharp, brief thinking partner.
-
-You can also ACT, but only through the tools:
+ACT_DOC = """You can also ACT, but only through the tools:
 - set_segment_judgment: change the judgment of one or more activity blocks (blocks are numbered #id in the \
   log). This writes the person's authoritative review of each block, flagged as coming from this conversation.
 - set_span_verdict: rule on a hypothesized span (by its start/end times from the span list).
@@ -359,7 +420,22 @@ CURRENT labels (a user ruling shows as <switch: ...> and the content tag): do no
 place, and do not open a review question that is already in the queue. A field you leave null on \
 set_segment_judgment keeps the person's earlier ruling on that block. You cannot edit the rules \
 document directly or change anything the tools do not cover - say so when asked.
+"""
 
+DAY_SYSTEM = """You are helping this person review their own attention-monitoring log. They are looking at ONE WHOLE \
+DAY and want to talk it over with you: how the day went, where their attention held and where it broke, whether \
+the system's calls look right, what the day's shape suggests for tomorrow.
+
+You see the day's headline metrics, every hypothesized focus span (qualifying and disqualified) with the system's \
+call and its summary, the self-distraction and interruption events, the day's Toggl "intent" entries, the whole \
+day's activity log, and a few screenshots sampled across the day.
+
+Answer concisely and concretely - point at specific times, spans, and blocks. When asked for an assessment, give \
+one and say what it rests on; note honestly when the data is thin or a call is ambiguous. Their calibration \
+feedback is that the system has been far too optimistic about what counts as focused work; do not repeat that \
+mistake. Don't lecture; be a sharp, brief thinking partner.
+
+{act}
 Their own rules and definitions (authoritative):
 {rules}
 
@@ -451,7 +527,7 @@ class DayChat:
         if not (getattr(self.client, "api_key", None) or getattr(self.client, "auth_token", None)):
             raise RuntimeError("no Anthropic credentials (set the API key from the menu bar)")
         from .classifiers.claude_vision import _rules_doc
-        self.system = llm.with_preamble(DAY_SYSTEM.format(
+        self.system = llm.with_preamble(DAY_SYSTEM.format(act=ACT_DOC, 
             rules=_rules_doc(), about_me=cfg.about_me.strip() or "(no description given)"))
 
     def _context_blocks(self, conn, day) -> list[dict]:
@@ -541,56 +617,9 @@ class DayChat:
         return blocks
 
     def reply(self, conn, day, messages: list[dict]) -> dict:
-        """One turn. Tool calls are executed as they come (each edit carries this reply's id as
-        provenance), their results fed back, and the final text plus the list of applied changes
-        is stored on the reply - so the person can see, open and undo exactly what happened."""
-        from .classifiers.claude_vision import _cost
-        mid = begin_exchange(conn, "day", day.isoformat(), messages, self.cfg.claude_model)
-        applied: list[dict] = []
-        proposal: dict = {}
-        cost, text = 0.0, ""
-        try:
-            api_msgs = _api_messages(self._context_blocks(conn, day), messages)
-            tools = DAY_TOOLS + llm.CONTACT_TOOLS
-            kept = ""   # text from turns whose only tool call was a note to Eli: still part of the reply
-            for _ in range(8):
-                resp = self.client.messages.create(
-                    model=self.cfg.claude_model, max_tokens=CHAT_MAX_TOKENS, system=self.system, messages=api_msgs,
-                    tools=tools, output_config={"effort": self.cfg.claude_effort})
-                cost += _cost(resp.usage)
-                rec = llm.contacted("day_chat", self.cfg.claude_model, self.system, api_msgs, resp, tools)
-                if rec:   # the model wants Eli: no tool runs, no further turns
-                    text = llm.contact_notice(rec)
-                    break
-                if resp.stop_reason == "refusal":
-                    text = "(Claude declined to answer that.)"
-                    break
-                said = "".join(b.text for b in resp.content if b.type == "text").strip()
-                text = "\n\n".join(t for t in (kept, said) if t) or text
-                uses = [b for b in resp.content if b.type == "tool_use"]
-                if not uses:
-                    break
-                kept = text if all(u.name == llm.NOTE_TOOL_NAME for u in uses) else ""
-                results = [{"type": "tool_result", "tool_use_id": u.id,
-                            "content": self._run_tool(conn, day, u.name, dict(u.input), mid, applied, proposal)}
-                           for u in uses]
-                api_msgs.append({"role": "assistant",
-                                 "content": [b.model_dump(exclude_none=True) for b in resp.content]})
-                api_msgs.append({"role": "user", "content": results})
-        except Exception as e:
-            if not applied:  # nothing happened: leave no trace of the failed turn
-                abort_exchange(conn, mid)
-                raise
-            # Edits already carry this reply's id as provenance - keep the row, record the failure.
-            finish_exchange(conn, mid, f"(error after {len(applied)} change(s) were applied: {e})", cost,
-                            {**proposal, "applied_changes": applied})
-            raise
-        if not text:
-            text = "(changes applied - see below)" if applied else "(no reply)"
-        prop = ({**proposal, "applied_changes": applied} if (applied or proposal) else None)
-        finish_exchange(conn, mid, text, cost, prop)
-        log.info("day chat %s: %d change(s), $%.3f", day, len(applied), cost)
-        return {"reply": text, "message_id": mid, "applied": applied, "proposal": prop}
+        return _tool_turns(self, conn, "day", day.isoformat(), "day_chat", self._context_blocks(conn, day), messages,
+                           lambda c, name, args, mid, applied, proposal:
+                               self._run_tool(c, day, name, args, mid, applied, proposal))
 
     def _run_tool(self, conn, day, name: str, args: dict, mid: int, applied: list[dict], proposal: dict) -> str:
         import datetime as dt

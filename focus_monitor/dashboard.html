@@ -922,14 +922,17 @@ async function openChatMsg(mid){let m;try{m=await api('/api/chat/message/'+mid);
   else if(m.kind==='span')openSpanReview(+m.ref+30);}
 function spanChatKey(){return currentSpan?Math.round(currentSpan.start):null;}
 function renderSpanChat(){const log=$('#spanchatlog');if(!log)return;
-  log.innerHTML=(CHAT['sp'+spanChatKey()]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>`).join('');
+  log.innerHTML=(CHAT['sp'+spanChatKey()]||[]).map(m=>`<div class="cmsg ${m.role}"><b>${m.role==='user'?'You':'Claude'}:</b> ${esc(m.text)}</div>${m.role==='assistant'?dayAppliedHtml(m):''}`).join('');
   log.scrollTop=log.scrollHeight;}
 async function sendSpanChat(){if(!currentSpan)return;const k='sp'+spanChatKey(),inp=$('#spanchatinput'),q=inp.value.trim();if(!q)return;
   CHAT[k]=CHAT[k]||[];CHAT[k].push({role:'user',text:q});draftClear(inp);renderSpanChat();
   const log=$('#spanchatlog');log.innerHTML+='<div class="cmsg pending">Claude is thinking…</div>';log.scrollTop=log.scrollHeight;
-  try{const r=await api('/api/span/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:currentSpan.start,end:currentSpan.end,messages:CHAT[k].filter(m=>!m.err)})});CHAT[k].push({role:'assistant',text:r.reply});}
+  let changed=false;const sp0=currentSpan;
+  try{const r=await api('/api/span/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:currentSpan.start,end:currentSpan.end,messages:CHAT[k].filter(m=>!m.err)})});CHAT[k].push({id:r.message_id,role:'assistant',text:r.reply,proposal:r.proposal});changed=!!(r.applied&&r.applied.length);}
   catch(e){chatFailed(CHAT[k],e);const i2=$('#spanchatinput');if(i2&&!i2.value){i2.value=q;draftSave(i2);}}
-  renderSpanChat();}
+  renderSpanChat();
+  // the chat can now act (verdicts, block edits): show the span as it stands afterwards
+  if(changed&&sp0){try{const again=await api('/api/span/at?ts='+(sp0.start+sp0.end)/2);if(!spanOneOff&&spanQueue[sqi]===sp0)spanQueue[sqi]=again;renderSpanCard(again,spanOneOff);}catch(e){}}}
 async function spanUnfocused(yes){
   const sp=currentSpan;
   await api('/api/span/unfocused',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({segment_ids:sp.unfocused_seg_ids,unfocused:yes,note:($('#spanNote')&&$('#spanNote').value)||null})});

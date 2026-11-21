@@ -1198,7 +1198,7 @@ def api_chat_apply_rule(mid: int):
 @app.post("/api/span/chat")
 def api_span_chat(req: SpanChatReq):
     try:
-        return {"reply": get_span_chat().reply(conn(), req.start, req.end, req.messages)}
+        return get_span_chat().reply(conn(), req.start, req.end, req.messages)   # reply, message_id, applied, proposal
     except Exception as e:
         raise HTTPException(500, str(e))
 
