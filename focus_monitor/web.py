@@ -481,6 +481,16 @@ def api_adjacent(switch_id: int, dir: str = "next"):
     return {"id": r[0] if r else None}
 
 
+@app.get("/api/segment/{segment_id}/judgment")
+def api_segment_judgment(segment_id: int):
+    """The evaluator's judgment of one block and the person's ruling on it: what the block editor
+    on a question card needs (the capture page gets the same from /api/switch)."""
+    c = conn()
+    ev = c.execute("SELECT * FROM seg_evals WHERE segment_id=?", (segment_id,)).fetchone()
+    rv = c.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+    return {"eval": dict(ev) if ev else None, "review": dict(rv) if rv else None}
+
+
 @app.get("/api/switch/{switch_id}")
 def api_switch(switch_id: int):
     c = conn()

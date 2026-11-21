@@ -168,7 +168,7 @@ function draftKey(el){
   else if(id.startsWith('qNote')){field='qNote';rec=id.slice(5);}
   else if(id.startsWith('ruleDraft')){field='ruleDraft';rec=id.slice(9);}
   else if(id==='spanNote'||id==='spanchatinput')rec=(typeof spanChatKey==='function'&&spanChatKey())||'';
-  else if(id==='segNoteEv')rec=(typeof current!=='undefined'&&current)?current.to.id:'';
+  else if(id==='segNoteEv')rec=(typeof segEd!=='undefined'&&segEd&&segEd.sid)||'';   // the block in the editor (capture page or question card)
   else if(id==='chatinput'||id==='note')rec=(typeof current!=='undefined'&&current)?current.switch.id:'';
   return `fm.draft.${field}.${rec}`;}
 function draftSave(el){const k=draftKey(el);if(!k)return;try{if(el.value)localStorage.setItem(k,el.value);else localStorage.removeItem(k);}catch(e){}}
@@ -654,6 +654,12 @@ function qContext(q){return q._ctx||(q._ctx=api('/api/questions/'+q.id+'/context
 // blocks the answer changed change colour on the card right away, not only on the Day tab (Eli,
 // 2026-11-21: "I should be able to see it change"). The re-judgment some answers start lands a
 // few seconds later, so the card is fetched once more after that.
+async function qEditorLoad(q){
+  let j;try{j=await api('/api/segment/'+q.segment_id+'/judgment');}catch(e){const el=$('#qEditor');if(el)el.textContent='could not load the block ('+e.message+')';return;}
+  if(qQueue[qqi]!==q||reviewMode!=='question')return;
+  segEditorSetup(j.eval,j.review);segEd={sid:q.segment_id,redraw:()=>{qRefreshCard(q);}};
+  const el=$('#qEditor');if(!el)return;el.className='';
+  el.innerHTML=`<div class="muted small" style="margin:2px 0">${j.eval?'the evaluator: '+esc([j.eval.content,j.eval.switch_label==='interruption'?'shift':j.eval.switch_label,j.eval.focused==null?'':(j.eval.focused?'focused':'unfocused')].filter(Boolean).join(' · ')):'not judged yet'}${j.review?' · your ruling is shown on the buttons':''}</div>${segEditorRows(j.eval,j.review)}`;}
 function qRefreshCard(q){if(!q)return;
   const redraw=()=>{q._ctx=null;qContext(q).then(()=>{if(qQueue[qqi]===q&&reviewMode==='question')renderQuestion();});};
   redraw();setTimeout(redraw,8000);
@@ -698,11 +704,12 @@ function renderQuestion(){
       <div id="qchatlog" class="chatlog"></div>
       <div class="chatrow"><input id="qchatinput" spellcheck="true" autocapitalize="sentences" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
     </div>
-    ${q.switch_id?manualOpen('question','✎ edit this block by hand')+`<div class="small" style="margin:6px 0">The block editor (content, switch, focused, self-distraction and the rest) is on the capture page: <button class="small" onclick="openSegment(${q.switch_id})">open it</button></div></details>`:''}`;
+    ${q.segment_id&&!q.pending?manualOpen('question','✎ edit this block by hand')+`<div id="qEditor" class="small muted" style="margin:6px 0">loading…</div></details>`:''}`;
   qTLBind(q);
   scrubBind();
   if(SCRUB.moments.length)scrubTo(SCRUB.i);
   renderQChat();
+  if(q.segment_id&&!q.pending)qEditorLoad(q);
   if(q.segment_id)chatLoad('q'+q.segment_id,'evaluator',q.segment_id,renderQChat);
   if(q.pending)pollPendingQuestion(q);
   else qRefreshState(q);
@@ -1100,11 +1107,33 @@ async function segEdit(field,val){
     if(field==='switch_label'){segEvalSel.antecedent_id=null;segEvalSel.interruption_kind=null;} // they belonged to the old switch
   }
   const note=($('#segNoteEv')&&$('#segNoteEv').value.trim())||segEvalKeptNote||null;
-  await api(`/api/segment/${current.to.id}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...segEvalSel,note:note})});
+  await api(`/api/segment/${segEd.sid}/eval-review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...segEvalSel,note:note})});
   draftClear($('#segNoteEv'),false);
-  renderSwitch(current.switch.id);
+  segEd.redraw();
 }
-async function segEvalUndo(){await api(`/api/segment/${current.to.id}/eval-review`,{method:'DELETE'});renderSwitch(current.switch.id);}
+async function segEvalUndo(){await api(`/api/segment/${segEd.sid}/eval-review`,{method:'DELETE'});segEd.redraw();}
+// The block editor, shared by the capture page and the question card (Eli, 2026-11-21: the
+// options go in the folded section itself, not behind a link). `segEd` says which block it is
+// editing and how to redraw the card it sits on after a save.
+let segEd={sid:null,redraw:()=>{}};
+function segEditorSetup(ev,evr){
+  const b3=v=>v==null?null:!!v;
+  segEvalSel={content:(evr&&evr.content)||null,switch_label:(evr&&evr.switch_label)||null,
+    focused:evr?b3(evr.focused):null,self_distraction:evr?b3(evr.self_distraction):null,next_task:evr?b3(evr.next_task):null,
+    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:null,focus_exception:(evr&&evr.focus_exception!=null)?!!evr.focus_exception:null,
+    antecedent_id:(evr&&evr.antecedent_id)||null,interruption_kind:(evr&&evr.interruption_kind)||null};
+  segEvalKeptNote=(evr&&evr.note&&evr.note.startsWith('('))?evr.note:null;
+  segEvalShow={content:segEvalSel.content||(ev&&ev.content)||null,switch_label:segEvalSel.switch_label||(ev&&ev.switch_label)||null,
+    hybrid:segEvalSel.hybrid!=null?segEvalSel.hybrid:!!(ev&&ev.hybrid),focus_exception:!!segEvalSel.focus_exception};}
+function segEditorRows(ev,evr){return `
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalShow.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalShow.switch_label,['continuation','interruption','return'],{interruption:'shift',return:'return'},'switch_label')}</div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalShow.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalShow.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalShow.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalShow.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
+    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The quality of attention in this block, separate from which thread it belongs to. Ruling a block unfocused makes it time away from a span, even on the span's own thread.">attention:</span> ${[[true,'focused'],[false,'unfocused']].map(([v,n])=>`<button class="small" style="${segEvalSel.focused===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('focused',${v})">${n}</button>`).join(' ')} <span class="muted">${ev&&ev.focused!=null?'evaluator: '+(ev.focused?'focused':'unfocused'):'evaluator: no focus judgment (judged before 19 Nov 2026)'}${segEvalSel.focused==null?'':' · your ruling: '+(segEvalSel.focused?'focused':'unfocused')}</span></div>
+    ${segEvalShow.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
+    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
+    ${evr?`<div class="small" style="margin:4px 0"><button class="small" onclick="segEvalUndo()">undo my edits to this block</button></div>`:''}`;}
 async function renderSwitch(id){
   if(id==null)return;
   const f=await api('/api/switch/'+id);current=f;
@@ -1115,32 +1144,15 @@ async function renderSwitch(id){
   const sp=f.span;
   const spanLine=sp?`<div class="small" style="margin:4px 0">${sp.is_start?'<b style="color:var(--taskchange)">⚑ This capture is the START of a span</b> — ':''}${sp.relation==='leaving'?'this switch LEFT ':'inside '}${sp.disq_reason?'<span style="color:var(--interrupted)">a disqualified span ('+esc(sp.disq_reason)+')</span>':'a <b>'+(subName[sp.subtype]||sp.subtype)+'</b> span'} ${fmtT(sp.start)}–${fmtT(sp.end)}${sp.summary?'<br>📝 <span style="opacity:.85">'+esc(sp.summary)+'</span>':''}</div>`:'';
   const ev=f.to_eval,evr=f.to_seg_review;
-  const b3=v=>v==null?null:!!v;  // a yes/no ruling that may be unset
-  // focused / self_distraction / next_task hold YOUR ruling only (null = you have not ruled): saving
-  // some other field must not turn the evaluator's "unfocused" into a ruling of yours.
-  // EVERY field here is your ruling only. Until 2026-11-20 content, switch and hybrid started from
-  // the evaluator's values, so one click on any button stored its content as your ruling, and the
-  // thread pointer and note of an earlier answer (never loaded here) were wiped by the save.
-  segEvalSel={content:(evr&&evr.content)||null,switch_label:(evr&&evr.switch_label)||null,
-    focused:evr?b3(evr.focused):null,self_distraction:evr?b3(evr.self_distraction):null,next_task:evr?b3(evr.next_task):null,
-    hybrid:(evr&&evr.hybrid!=null)?!!evr.hybrid:null,focus_exception:(evr&&evr.focus_exception!=null)?!!evr.focus_exception:null,
-    antecedent_id:(evr&&evr.antecedent_id)||null,interruption_kind:(evr&&evr.interruption_kind)||null};
-  segEvalKeptNote=(evr&&evr.note&&evr.note.startsWith('('))?evr.note:null; // a note the app wrote ("(answered review question ...)"): not shown in the box, so kept on save
-  // what the buttons show: your ruling where there is one, else the evaluator's judgment
-  segEvalShow={content:segEvalSel.content||(ev&&ev.content)||null,switch_label:segEvalSel.switch_label||(ev&&ev.switch_label)||null,
-    hybrid:segEvalSel.hybrid!=null?segEvalSel.hybrid:!!(ev&&ev.hybrid),focus_exception:!!segEvalSel.focus_exception};
+  // EVERY field in the editor is your ruling only (see segEditorSetup). Until 2026-11-20 content,
+  // switch and hybrid started from the evaluator's values, so one click stored its content as yours.
+  segEditorSetup(ev,evr);segEd={sid:f.to.id,redraw:()=>renderSwitch(f.switch.id)};
   const evalBlock=`<div style="margin:8px 0;padding:8px;border:1px solid var(--grid);border-radius:6px">
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?(evr.chat_message_id?` · <b>edited in a chat with Claude</b> <a href="#" onclick="event.preventDefault();openChatMsg(${evr.chat_message_id})">open conversation</a>`:' · <b>edited by you</b>'):''):'not yet evaluated — runs ~15 min behind'}${evr&&evr.note?` · <span title="${esc(evr.note)}">note: ${esc(evr.note.slice(0,80))}${evr.note.length>80?'…':''}</span>`:''}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
     ${(f.to_signals||[]).length?`<div class="muted small" style="margin:4px 0" title="What the Mac recorded beside the capture: how this app came forward, how the page was reached, input rates, audio / microphone / camera. The evaluator reads these too.">Signals: ${f.to_signals.map(esc).join(' · ')}</div>`:''}
     ${manualOpen('capture','✎ edit the judgment by hand')}
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">content:</span> ${evalBtns(segEvalShow.content,['creative','task','correspondence','reading','planning','other','passive','meeting','idle','transition'],{},'content')}</div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">switch:</span> ${evalBtns(segEvalShow.switch_label,['continuation','interruption','return'],{interruption:'shift',return:'return'},'switch_label')}</div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The activity was carried on inside a live discussion (reading a bill with someone on a call, pairing). Keeps the activity label; counts with meetings, not independent focus.">with others:</span> <button class="small" style="${segEvalShow.hybrid?'outline:2px solid var(--f-meeting);font-weight:600;':''}" onclick="segEditHybrid()">${segEvalShow.hybrid?'✓ hybrid — inside a live discussion':'hybrid — inside a live discussion'}</button></div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="Your explicit ruling: this block counts as independent focus even though its content (correspondence with no Toggl entry) normally cannot. Honest content tag AND the focus credit. Only ever set by you, or by the chat when you ask for it.">exception:</span> <button class="small" style="${segEvalShow.focus_exception?'outline:2px solid var(--taskchange);font-weight:600;':''}" onclick="segEditException()">${segEvalShow.focus_exception?'✓ counts as independent focus by my ruling':'counts as independent focus anyway (exception)'}</button></div>
-    <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The quality of attention in this block, separate from which thread it belongs to. Ruling a block unfocused makes it time away from a span, even on the span's own thread.">attention:</span> ${[[true,'focused'],[false,'unfocused']].map(([v,n])=>`<button class="small" style="${segEvalSel.focused===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('focused',${v})">${n}</button>`).join(' ')} <span class="muted">${ev&&ev.focused!=null?'evaluator: '+(ev.focused?'focused':'unfocused'):'evaluator: no focus judgment (judged before 19 Nov 2026)'}${segEvalSel.focused==null?'':' · your ruling: '+(segEvalSel.focused?'focused':'unfocused')}</span></div>
-    ${segEvalShow.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
-    <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div></details>
+    ${segEditorRows(ev,evr)}</details>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
   const preds=f.predictions.map(p=>{const pr={continuation:p.p_continuation,interruption:p.p_interruption,distraction:p.p_distraction,task_change:p.p_task_change};const top=Object.keys(pr).reduce((a,b)=>pr[a]>pr[b]?a:b);
