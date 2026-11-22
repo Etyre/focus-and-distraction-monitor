@@ -61,6 +61,7 @@ class Config:
                                     # hunt (desktops -> window -> tab) is judged once as one transition  # wait this long after a switch so we can see what followed
     claude_model: str = "claude-opus-5-5"
     claude_effort: str = "medium"
+    effort_check_fraction: float = 0.1   # this share of medium calls is repeated at "high" to compare (efforts.py)
     daily_budget_usd: float = 40.0     # generous; per-switch Opus is gated against it,
     total_budget_usd: float = 500.0    # cumulative ceiling: flag the user when crossed
     hard_budget_multiple: float = 2.0  # but judgment work only stops at this multiple (safety)

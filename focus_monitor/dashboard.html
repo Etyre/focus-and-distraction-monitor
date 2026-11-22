@@ -101,8 +101,10 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 </section>
 
 <section id="view-efforts" class="hidden">
-  <div class="card"><b>Effort comparison</b> <span class="muted small">— every judgment call repeated at lower efforts, same prompt; click a row for trials, a trial for the literal side-by-side</span>
+  <div class="card"><b>Effort comparison</b> <span class="muted small">— judgments run at medium; a random share is repeated at high with the same prompt (when the setting is high, every call is repeated at medium and low). Click a row for trials, a trial for the literal side-by-side</span>
     <div id="effSummary" style="margin-top:8px"></div></div>
+  <div class="card"><b>Which effort was right</b> <span class="muted small">— blocks judged at both high and medium that you ruled on afterwards. The "disagreed" columns are the ones that say whether high is worth it.</span>
+    <div id="effAccuracy" style="margin-top:8px"></div></div>
   <div class="card hidden" id="effTrialsCard"><b id="effTrialsTitle">Trials</b><div id="effTrials" style="margin-top:8px"></div></div>
   <div class="card hidden" id="effDetailCard"><b>Side-by-side</b><div id="effDetail" style="margin-top:8px"></div></div>
 </section>
@@ -1575,6 +1577,16 @@ async function loadEfforts(){
     h+=`<tr style="cursor:pointer" onclick="loadEffTrials('${r.role}','${r.effort}')"><td>${r.role.replace(/_/g,' ')}</td><td>${r.model} · <b>${r.effort}</b></td><td>${r.is_primary?'<span class="muted small">primary</span>':''}</td><td>${r.n}</td><td>${r.is_primary?'–':(r.avg_agree==null?'–':Math.round(100*r.avg_agree)+'%')}</td><td>${r.is_primary?'–':(r.equiv_rate==null?'–':Math.round(100*r.equiv_rate)+'%')}</td><td>${r.is_primary?'–':(r.n_material||0)}</td><td>$${(r.avg_cost||0).toFixed(3)}</td></tr>`;}
   h+='</table>';
   host.innerHTML=h;
+  loadEffAccuracy();
+}
+async function loadEffAccuracy(){
+  const a=await api('/api/efforts/accuracy');
+  let h='<table><tr><th>judged with</th><th>axis</th><th>your rulings</th><th>high right</th><th>medium right</th><th>they disagreed</th><th>high right</th><th>medium right</th></tr>';
+  for(const [p,label] of [['medium','medium, checked at high'],['high','high, repeated at medium (before the switch)']]){
+    const d=a[p];if(!d)continue;
+    for(const ax of ['content','switch','focused']){const c=d.axes[ax];
+      h+=`<tr><td>${ax==='content'?esc(label)+` <span class="muted small">(${d.runs} chunks, ${d.blocks} ruled blocks)</span>`:''}</td><td>${ax==='content'?'kind of activity':ax==='switch'?'continuation or shift':'focused'}</td><td>${c.ruled}</td><td>${c.high_right}</td><td>${c.medium_right}</td><td>${c.differ}</td><td>${c.differ_high_right}</td><td>${c.differ_medium_right}</td></tr>`;}}
+  $('#effAccuracy').innerHTML=h+'</table>';
 }
 async function loadEffTrials(role,effort){
   const ts=await api(`/api/efforts/trials?role=${role}&effort=${effort}&limit=50`);

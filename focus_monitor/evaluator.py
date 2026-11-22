@@ -1530,7 +1530,7 @@ class ChunkEvaluator:
         log.info("chunk %s-%s: %d/%d segments judged, %d deferred, %d held for later, %d phone segment(s) ($%.3f)",
                  dt.datetime.fromtimestamp(t0).strftime("%m-%d %H:%M"),
                  dt.datetime.fromtimestamp(t1).strftime("%H:%M"), n, len(target), len(deferred), n_held, n_phone, cost)
-        # effort-ladder shadows: same prompt at lower efforts, compared + kept for review
+        # effort comparison: the same prompt at another effort level, compared + kept (efforts.py)
         if resp.parsed_output is not None and extra is None:
             from . import efforts as _eff
 
@@ -2173,7 +2173,7 @@ def daily_audit(conn, cfg: Config | None = None, max_pieces: int = AUDIT_PIECES_
                 return same, f"flags primary={sorted(fa)} vs {sorted(fb)}"
 
             _eff.run_shadows(conn, cfg, ev.client, "daily_audit", key, cfg.claude_effort,
-                             resp, _acall, _acmp, prompt_text=text)
+                             resp, _acall, _acmp, prompt_text=text, always=True)   # once a day: always compared
         with db.tx(conn):
             for f in (resp.parsed_output.flags if resp.parsed_output is not None else []):
                 if f.segment_id not in ids:

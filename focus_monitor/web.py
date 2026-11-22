@@ -538,6 +538,12 @@ def api_efforts_summary():
     return efforts.summary(conn())
 
 
+@app.get("/api/efforts/accuracy")
+def api_efforts_accuracy():
+    from . import efforts
+    return efforts.accuracy(conn())
+
+
 @app.get("/api/efforts/trials")
 def api_efforts_trials(role: str | None = None, effort: str | None = None, limit: int = 50):
     from . import efforts

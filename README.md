@@ -340,7 +340,7 @@ backend has no tools, so no note tool there.
 | `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge), and applies it again after a re-judgment. |
 | `focus_monitor/resolver.py` | Attention-thread resolver: which thread a switch continues. |
 | `focus_monitor/summaries.py` | Span summaries and coherence checks. |
-| `focus_monitor/efforts.py` | Effort-ladder shadow calls and the effort judge (which effort level is good enough). |
+| `focus_monitor/efforts.py` | Effort comparison: a share of medium calls repeated at high, the effort judge, and the score of each level against Eli's rulings (Efforts tab). |
 | `focus_monitor/edits.py`, `seg_models.py`, `stats.py`, `toggl.py`, `db.py` | Edits with provenance, label space, metrics/spans, Toggl sync, SQLite schema and helpers. |
 | `focus_monitor/signals.py` | Extra signals beside the captures: input counts, audio/mic/camera, what was clicked before a switch, notification banners, how Chrome reached each page (tables `activity_samples`, `ui_events`, `segment_arrivals`, `page_visits`). |
 | `focus_monitor/rule_drafts.py` | Drafts Rules-doc lines from repeated review rulings; you approve each (tables `rule_drafts`, `rule_draft_runs`). |
@@ -456,6 +456,21 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+- **Judgments run at medium effort, with high spot checks (2026-11-21).** `claude_effort = "medium"`
+  in `config.toml`; `effort_check_fraction` (0.1) of the evaluator, propagation and span-summary
+  calls are repeated at "high" with the same prompt, and the daily audit always is (`efforts.py`).
+  Calls that are not checked leave no row in `effort_trials`. The Efforts tab's "Which effort was
+  right" table scores both levels on blocks Eli ruled on afterwards (`efforts.accuracy`).
+  * Agreement and the judge's verdict only say how often the levels differ, not which is right.
+  * When the switch was made, 1.5 days of real high-against-medium data existed (623 chunks): only
+    21 ruled blocks, and the two levels differed on 2 of them (one each right). Too few to say.
+  * At a 10% sample, rulings will rarely land on a checked block, so the table fills slowly. The
+    open decision "effort disagreements as review questions" in `OPEN-DECISIONS.md` is the fix.
+  * The rulings lean toward the primary's mistakes (questions come from its doubts), so compare
+    the "disagreed" columns within one row, not across the two rows.
+  * Setting `claude_effort = "high"` again restores the old behaviour: every call repeated at
+    medium and low.
 
 * **Never commit a `.venv` symlink from a worktree (2026-11-20).** A worktree needs the main
   checkout's environment, so a `.venv` symlink gets made inside it. `.gitignore` had `.venv/`,

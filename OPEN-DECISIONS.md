@@ -302,3 +302,16 @@ or the README where it belongs.
   event, otherwise unfocused. (Rule in the README.)
 - 2026-11-20: a span crossing 4am is qualified as a whole; each day keeps its own minutes.
 - 2026-11-20: re-judge the history judged at low effort, all of it (see 19 for the limit found).
+
+## Effort: medium with high spot checks (2026-11-21, built; one point open)
+
+Built: judgments run at medium; 10% of calls are repeated at high (the daily audit always); the
+Efforts tab scores both against your rulings. Open:
+
+- **Effort disagreements as review questions.** Your rulings rarely fall on a checked block, so
+  the score will fill slowly (about one ruled block a day at 10%). Proposal: when the high check
+  and the medium judgment disagree on a block, ask you about that block, one axis, without saying
+  which level said what. Every answer is then a direct data point on whether high is more
+  accurate. At 10% that is perhaps a few questions a day; the sample share sets the number.
+- The 10% share itself, and whether the low level should still be compared (it is not now).
+
