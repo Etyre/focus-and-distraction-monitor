@@ -693,6 +693,35 @@ def cases():
         se = day(-5, 2).run()  # running at the start of the first segment, stopped 2 minutes in
         assert not se["focus_spans"] and se["disqualified"][0]["disq_reason"] == "task activity without a Toggl entry", se
 
+    @case("a sub-thread under 10 minutes is absorbed into the thread it grew out of; a longer one stands alone")
+    def _():
+        # 8 minutes of debugging that grew out of the task: one span of 12 + 8 + 10, no diversion
+        d = Day()
+        a = d.add(12, "Task")
+        b = d.add(5, "Debugger", switch="interruption", content="task")
+        d.segs[-1]["sub_of"] = a
+        d.add(3, "Logs")                       # continues the debugging
+        d.add(10, "Task", switch="return", ante=a)
+        sp = d.run()["focus_spans"]
+        assert len(sp) == 1 and _mins(sp[0]) == 30 and not sp[0]["detours"], [(_mins(x), x["detours"]) for x in sp]
+        assert d.segs[b - 1].get("sub_absorbed") and len(sp[0]["sub_threads"]) == 1 and sp[0]["sub_threads"][0]["min"] == 8.0
+        # without the mark the same 8 minutes are a different thread: the span ends where they began
+        d = Day()
+        a = d.add(12, "Task"); d.add(5, "Debugger", switch="interruption", content="task"); d.add(3, "Logs")
+        d.add(10, "Task", switch="return", ante=a)
+        assert [_mins(x) for x in d.run()["focus_spans"]] == [12, 10]
+        # 12 minutes of it: a thread of its own, and the parent span ends where it budded
+        d = Day()
+        a = d.add(12, "Task")
+        b = d.add(7, "Debugger", switch="interruption")
+        d.segs[-1]["sub_of"] = a
+        d.add(5, "Logs")
+        d.add(10, "Task", switch="return", ante=a)
+        sp = d.run()["focus_spans"]
+        assert [_mins(x) for x in sp] == [12, 12, 10], [_mins(x) for x in sp]
+        assert d.segs[b - 1].get("sub_thread") and not d.segs[b - 1].get("sub_absorbed")
+        assert d.run()["focus_spans"][0]["end"] == sp[0]["end"]     # running it twice changes nothing
+
     @case("a span's verdict is the newest one that fits it, not a stale wider one with more overlap")
     def _():
         sp = {"start": 1000.0, "end": 2000.0}

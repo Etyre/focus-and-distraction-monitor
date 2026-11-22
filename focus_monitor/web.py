@@ -192,7 +192,7 @@ def api_day(day: str | None = None):
     reviewed = c.execute("SELECT COUNT(*) FROM reviews r JOIN switches s ON s.id=r.switch_id WHERE s.ts>=? AND s.ts<?",
                          (t0, t1)).fetchone()[0]
     slim = [{k: s.get(k) for k in ("id", "app", "title", "url", "domain", "clip_start", "clip_end", "duration",
-                                   "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception",
+                                   "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "switch_id", "own_switch_id", "uncertain", "needs_review", "source", "probs", "neutral", "first_screenshot", "activity", "content", "hybrid", "toggl_id", "toggl_desc", "review_tier", "review_chat_mid", "focus_exception",
                                    # 2026-11-21: `phone` was left out, so the Day tooltip never said "low confidence" on a phone block
                                    "phone")} for s in segs]
     from . import summaries as _summ
@@ -386,7 +386,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
     row = _summ.lookup(c, sp["start"], sp["end"])
     coherence_issue = (row["issue"] if row is not None and not row["coherent"] else None)
     w0, w1 = sp["start"] - CTX_S, sp["end"] + CTX_S
-    keys = ("clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
+    keys = ("clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "app", "domain", "title",
             "url", "activity", "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
     in_span_ids = {id(s) for s in sp["segments"]}
     segs = []
@@ -403,6 +403,7 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
             "focus_min": sp["focus_min"], "subtype": sp.get("subtype"), "hybrid": bool(sp.get("hybrid")),
             "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
+            "sub_threads": sp.get("sub_threads", []),
             "summary": row["summary"] if row else None,
             "title": row["title"] if row else None,
             "coherence_issue": coherence_issue,
@@ -668,7 +669,7 @@ def api_switch(switch_id: int):
     full["timeline"] = []
     try:
         ctx_segs = stats.labelled_segments(c, ts - 6 * 3600, ts + 6 * 3600)
-        keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
+        keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "app", "domain", "title",
                 "url", "activity", "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "toggl_id", "toggl_desc")
         full["timeline"] = [{k: s.get(k) for k in keys} for s in ctx_segs
                             if s["clip_end"] > ts - 900 and s["clip_start"] < ts + 900 and s["duration"] > 0]
@@ -864,7 +865,7 @@ def api_questions_queue(limit: int = 1000):
             _score_busy.release()
     threading.Thread(target=_score, daemon=True, name="score-questions").start()
     out = []
-    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     rows = [dict(r) for r in c.execute("""SELECT q.*, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end,
                                  g.app, g.title, g.domain,
@@ -953,7 +954,7 @@ def _spot_unanswer(c, segment_id: int) -> None:
 
 
 _SEG_COLS = ("segment_id", "content", "switch_label", "interruption_kind", "antecedent_id", "note", "created", "hybrid",
-             "chat_message_id", "focus_exception", "focused", "self_distraction", "next_task")
+             "chat_message_id", "focus_exception", "focused", "self_distraction", "next_task", "sub_of")
 
 
 def _ruling_row(c, o: dict, prev: dict | None, note: str | None, chat_message_id: int | None, created: float) -> dict | None:
@@ -999,6 +1000,10 @@ def _ruling_row(c, o: dict, prev: dict | None, note: str | None, chat_message_id
         "self_distraction": int(bool(o_sd)) if o_sd is not None else (None if osw else _keep("self_distraction")),
         "next_task": (int(bool(o_nt)) if o_nt is not None and (osw or _keep("switch_label")) == "interruption"
                       else (None if osw else _keep("next_task"))),
+        # a sub-thread option names what it grew out of; a plain "separate thread" option on a
+        # block the app had as a sub-thread says it is not one (0)
+        "sub_of": ((_valid_antecedent(c, o["segment_id"], o.get("sub_of")) if o.get("sub_of") else 0)
+                   if osw == "interruption" else (None if osw else _keep("sub_of"))),
     }
 
 
@@ -1116,7 +1121,7 @@ def api_question_context(qid: int):
     if not g:
         raise HTTPException(404)
     t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
-    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "diversion", "app", "domain", "title",
+    keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     timeline = [{k: s.get(k) for k in keys} for s in _question_segments(c, g["segment_id"], t0, t1)]
     return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
@@ -1586,6 +1591,7 @@ class SegEvalReview(BaseModel):
     focused: bool | None = None           # the person's ruling: attention was focused (True) / unfocused (False)
     self_distraction: bool | None = None  # on a shift: sought out stimulation without a clear intent
     next_task: bool | None = None         # on a shift: the next task under the same task-processing intention
+    sub_of: int | None = None             # on a shift: a sub-thread of this block's thread; -1 = the block before; 0 = not one
 
 
 _valid_antecedent = edits.valid_antecedent
@@ -1611,7 +1617,7 @@ def api_seg_eval_review(segment_id: int, r: SegEvalReview):
                                         interruption_kind=r.interruption_kind, antecedent_id=r.antecedent_id,
                                         note=r.note, hybrid=r.hybrid, focus_exception=r.focus_exception,
                                         focused=r.focused, self_distraction=r.self_distraction,
-                                        next_task=r.next_task)
+                                        next_task=r.next_task, sub_of=r.sub_of)
     except edits.BadEdit as e:
         raise HTTPException(400 if "no segment" not in str(e) else 404, str(e))
     if derive:

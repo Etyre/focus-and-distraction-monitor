@@ -52,8 +52,8 @@ reads `toggl_id`, whose meaning changed).
   check that the app's own call on it becomes a focus span under the new rule. Eli may also have
   recorded a verdict on it by then (span chat or the card): look in `span_reviews` first.
 
-- Sub-threads (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-21): Rules doc wording and code.
-  Settle the four listed points with Eli first.
+- Sub-threads are built (2026-11-21); the defaults taken are listed under "Decided" in
+  `OPEN-DECISIONS.md` for Eli to confirm, with proposed Rules doc wording.
 
 ## First thing 2026-11-22
 

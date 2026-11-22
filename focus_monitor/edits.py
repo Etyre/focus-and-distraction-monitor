@@ -39,8 +39,11 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
                      note: str | None = None, hybrid: bool | None = None,
                      chat_message_id: int | None = None, focus_exception: bool | None = None,
                      merge_existing: bool = False, focused: bool | None = None,
-                     self_distraction: bool | None = None, next_task: bool | None = None) -> bool:
+                     self_distraction: bool | None = None, next_task: bool | None = None,
+                     sub_of: int | None = None) -> bool:
     """Record the person's judgment of a segment (authoritative; replaces any earlier edit).
+    `sub_of` (on a shift): the id of the segment whose thread this grew out of (a sub-thread);
+    -1 = the segment just before this one; 0 = their ruling that it is not a sub-thread.
     `focused` is their ruling on the quality of attention in the segment (True focused, False
     unfocused, None no ruling); `self_distraction` and `next_task` are their rulings on a shift.
     Returns True when a shift (a separate thread) was asserted with nothing said about what
@@ -68,6 +71,7 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
             focused = focused if focused is not None else _pb("focused")
             self_distraction = self_distraction if self_distraction is not None else _pb("self_distraction")
             next_task = next_task if next_task is not None else _pb("next_task")
+            sub_of = sub_of if sub_of is not None else prev["sub_of"]
             focus_exception = (focus_exception if focus_exception is not None
                                else (None if prev["focus_exception"] is None else bool(prev["focus_exception"])))
             note = note or prev["note"]
@@ -75,11 +79,19 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
         ante = valid_antecedent(c, segment_id, antecedent_id) if switch_label in ("continuation", "return") else None
         _i = lambda v: None if v is None else int(bool(v))
         if switch_label and switch_label != "interruption":
-            next_task = None
+            next_task = sub_of = None
+        if sub_of is not None and sub_of != 0:
+            if sub_of == -1:   # "what came just before": the last segment with any time in it
+                from .prompt_parts import _prev_id
+                sub_of = _prev_id(c, segment_id)
+            sub_of = valid_antecedent(c, segment_id, sub_of)
+            if sub_of is None:
+                raise BadEdit("a sub-thread has to name an earlier block as the thread it grew out of")
+            self_distraction = False if self_distraction is None else self_distraction
         if switch_label and switch_label not in ("interruption", "return"):
             self_distraction = None   # the two shift judgments only mean something on a shift
         if empty_ruling(content, switch_label, interruption_kind if switch_label == "interruption" else None, ante, note,
-                        hybrid, focus_exception, focused, self_distraction, next_task):
+                        hybrid, focus_exception, focused, self_distraction, next_task, sub_of):
             # 2026-11-21: "save note" with an empty box, or un-clicking the only selection, stored a
             # row with every field NULL (block 36839). The block then counted as reviewed: its
             # needs-review dot went while its question was still open, and the editor said "your
@@ -96,12 +108,12 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
                 c.execute("INSERT OR IGNORE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('seg',?,?,?,?)",
                           (str(segment_id), chat_message_id, json.dumps([dict(was)]), time.time()))
         c.execute("INSERT OR REPLACE INTO seg_reviews(segment_id, content, switch_label, interruption_kind, antecedent_id,"
-                  " note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task)"
-                  " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  " note, created, hybrid, chat_message_id, focus_exception, focused, self_distraction, next_task, sub_of)"
+                  " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (segment_id, content, switch_label, interruption_kind, ante, note, time.time(),
                    None if hybrid is None else int(hybrid), chat_message_id,
                    None if focus_exception is None else int(focus_exception),
-                   _i(focused), _i(self_distraction), _i(next_task)))
+                   _i(focused), _i(self_distraction), _i(next_task), sub_of))
         if content or switch_label or hybrid is not None:
             from . import propagation
             propagation.note_event(c, segment_id)
@@ -110,14 +122,14 @@ def write_seg_review(c, segment_id: int, *, content: str | None = None, switch_l
 
 
 def empty_ruling(content, switch_label, interruption_kind, antecedent_id, note, hybrid, focus_exception,
-                 focused, self_distraction, next_task) -> bool:
+                 focused, self_distraction, next_task, sub_of=None) -> bool:
     """True when a ruling says nothing at all: no field set and no note of the person's own.
     The app's own "(answered ...)" note is not something the person said."""
     said = (note or "").strip()
     if said.startswith("(answered"):
         said = ""
     return not said and all(v is None for v in (content, switch_label, interruption_kind, antecedent_id, hybrid,
-                                                focus_exception, focused, self_distraction, next_task))
+                                                focus_exception, focused, self_distraction, next_task, sub_of))
 
 
 def sync_legacy(c, segment_id: int) -> None:
@@ -259,7 +271,9 @@ def open_question(c, segment_id: int, source: str, context: str, question: str, 
                      "focused": o.get("focused"),
                      # on purpose / a drift, and "the next task": only mean something on a shift or return
                      "self_distraction": o.get("self_distraction") if sw in (None, "interruption", "return") else None,
-                     "next_task": o.get("next_task") if sw in (None, "interruption") else None})
+                     "next_task": o.get("next_task") if sw in (None, "interruption") else None,
+                     # "it grew out of what I was on": a sub-thread (only on an option that says shift)
+                     "sub_of": o.get("sub_of") if sw == "interruption" else None})
     if not opts:
         raise BadEdit("no valid option (each needs a label and known content/switch labels)")
     if passthrough_applies(c, segment_id):

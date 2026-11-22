@@ -40,6 +40,7 @@ class QOption(BaseModel):
     antecedent_id: int | None = Field(default=None, description="When the option asserts SAME thread (continuation/return): the id of the segment in that thread the person would be agreeing this continues - the A-thread segment your question names. Null for 'separate thread' (shift) and content-only options.")
     focused: bool | None = Field(default=None, description="Whether the person's attention was focused in the segment, when the option's reading says: true for a reading in which they were getting something specific done (an errand, a lookup, the task itself), false for a reading in which they were not (a drift, browsing with nothing in mind). None when the reading does not say.")
     self_distraction: bool | None = Field(default=None, description="For a segment that is a shift or a return (or that this option makes one): true when the option's reading is that they drifted there without deciding to, false when its reading is that they went there on purpose. Set on every option of such a question; None only when the reading says nothing about why they went there.")
+    grew_out_of_id: int | None = Field(default=None, description="Only on an option with switch_label='shift' whose reading is that the new thing GREW OUT OF the thread before it (a sub-thread): the id of the nearest segment of that parent thread. Null on every other option.")
     content: str | None = Field(default=None, description="A content label, when content is what's in doubt.")
     hybrid: bool | None = Field(default=None, description="True when the option says the activity was being done INSIDE a live discussion with someone (e.g. 'reading the bill with Dave on a call while taking notes') - content stays the activity; False when the option asserts solo work; None when the option says nothing about it.")
 
@@ -149,6 +150,15 @@ about the moment the SECOND object would begin - the split point named or implie
 doubt's reason - and you MUST include an option asserting the separate thread: \
 switch_label='shift' on the segment where it begins (its id is visible in the log). \
 "Was <activity> at <time> a separate piece of work, or still part of <thread A>?" is the shape.
+- SUB-THREADS. Between "still part of A" and "a separate thread" there is a third reading, and \
+when it is plausible you MUST offer it as its own option: the new thing GREW OUT OF A and \
+became an object of attention of its own (fixing the tool the task depends on; from planning \
+the day with an assistant to reworking how the assistant behaves). Word it in the person's \
+terms ("A sub-thread: it grew out of the nap planning and became its own thing") and set \
+switch_label='shift', grew_out_of_id=<the nearest segment of A>, self_distraction=false. The \
+plain separate-thread option then means "unrelated to A", and the same-thread option means "it \
+was A itself". The app decides what a sub-thread does to the span (under 10 minutes it is \
+counted inside A); the person only says how the two relate.
 - Options must be mutually exclusive IN THE EDIT THEY MAKE and cover the plausible readings. \
 Two options that set the same fields to the same values are one option, however differently \
 worded: never split "a separate thread" by what came after it ("a one-off question" vs "the \
@@ -468,7 +478,8 @@ def _resolved_edit(conn, o: dict) -> tuple:
     # self_distraction as written, not filled in: an option that sets it and one that leaves it
     # alone are different rulings (2026-11-20), and it only lands on a shift or a return.
     sd = o.get("self_distraction") if sw in ("interruption", "return") else None
-    return (o["segment_id"], sw, ante, content, hybrid, o.get("focused"), sd)
+    return (o["segment_id"], sw, ante, content, hybrid, o.get("focused"), sd,
+            (o.get("sub_of") or None) if sw == "interruption" else None)
 
 
 def passthrough_option(segment_id: int, opts: list[dict]) -> dict:
@@ -1173,7 +1184,8 @@ def generate_pending(conn, cfg: Config | None = None) -> int:
                              "switch_label": o.switch_label, "antecedent_id": ante,
                              "interruption_kind": None, "content": o.content,
                              "hybrid": o.hybrid, "focused": o.focused,
-                             "self_distraction": None if o.switch_label == "continuation" else o.self_distraction})
+                             "self_distraction": None if o.switch_label == "continuation" else o.self_distraction,
+                             "sub_of": o.grew_out_of_id if o.switch_label == "interruption" else None})
             # Options must differ in the EDIT they make, not just in their wording. The model
             # likes to split one reading by what came after it ("a one-off question" vs "the
             # start of a run of lookups") - both write the same new thread on this segment, and

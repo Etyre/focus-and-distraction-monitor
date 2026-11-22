@@ -426,6 +426,10 @@ def connect() -> sqlite3.Connection:
         for col in ("focused", "self_distraction", "next_task"):
             if tcols and col not in tcols:
                 _alter(conn, f"ALTER TABLE {t} ADD COLUMN {col} INTEGER")
+        # Sub-threads (2026-11-21): on a shift, the id of the segment whose thread it grew out of.
+        # NULL = not said. In seg_reviews, 0 = the person ruled "not a sub-thread".
+        if tcols and "sub_of" not in tcols:
+            _alter(conn, f"ALTER TABLE {t} ADD COLUMN sub_of INTEGER")
     conn.execute("""CREATE TABLE IF NOT EXISTS eval_holds (  -- the evaluator asked to judge these later
         segment_id INTEGER PRIMARY KEY,   -- first segment it held back (everything after waits too)
         until REAL NOT NULL,              -- do not ask again before this time

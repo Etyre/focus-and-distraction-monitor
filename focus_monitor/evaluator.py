@@ -88,6 +88,7 @@ class SegJudgement(BaseModel):
     antecedents: list[AnteCand] = Field(default_factory=list, description="When switch is continuation or return: up to 3 RANKED candidate antecedents - each the id of the nearest earlier segment of a thread this might continue. Usually one candidate carrying ~all the mass; add a runner-up (and rarely a third) only when genuinely torn between attachments. Empty when switch is shift (a new thread).")
     self_distraction: bool = Field(default=False, description="When switch is 'shift', or a 'return' to something that is not their work: true when the person sought out stimulation or distraction WITHOUT a clear intent. False otherwise, and always false for a continuation.")
     next_task: bool = Field(default=False, description="Only when switch is 'shift': true when this is the person moving on to the NEXT TASK under the same overall intention of processing tasks. False for every other shift, and always false for continuation/return.")
+    grew_out_of: int | None = Field(default=None, description="Only when switch is 'shift' and the new object is a SUB-THREAD (section 4): the id of the nearest earlier segment of the thread it grew out of. null for every other shift, and always null for continuation/return.")
     uncertain: bool = Field(default=False, description="True only when you are genuinely unsure of the content, focus or switch judgment and a human should check it. Use sparingly - these are flagged for the person to review.")
     hybrid: bool = Field(default=False, description="True when the activity (reading, task, creative, planning...) was being done INSIDE a live discussion with someone - e.g. reading a bill together on a call while taking notes. Keep content = the activity; hybrid marks the live-discussion dimension. False for solo work and for plain meetings (content='meeting').")
     note: str = Field(description="One short sentence of reasoning.")
@@ -252,7 +253,7 @@ all is your switch judgment) and sum to ~1 across candidates. Usually one candid
 essentially all the mass; when you are genuinely torn between two attachments, say so with a \
 runner-up (and rarely a third). This pointer is the primary statement of thread structure; \
 make it consistent with your switch judgment.
-4. Two yes/no judgments, for switch='shift' (false otherwise; the one exception is noted):
+4. Two yes/no judgments and one pointer, for switch='shift' (false / null otherwise; the one exception is noted):
    - self_distraction: the person sought out stimulation or distraction WITHOUT A CLEAR INTENT \
 - absent-mindedly opening a feed, a blocked site, a dating or shopping app with no objective. \
 It is about WHY they moved, not what is on the screen. NOT a self-distraction: a planned break \
@@ -274,6 +275,21 @@ one focused task block, and it applies the rule that a block needs a running Tog
 judge the intention. False when the shift is not the next task: a glance at a feed, a stray \
 question, drifting to something else. How long a task takes does not matter: one task that turns \
 out fiddly and takes 25 slower minutes is still the next task, and so is the one after it.
+   - grew_out_of (SUB-THREADS): sometimes a new object of attention BUDS OFF the thread they \
+were on. Doing a task, they hit a bug in the tool the task depends on, and attention moves to \
+debugging the tool; planning their day with an assistant, they start reworking how the assistant \
+itself should behave. That is a real shift - a new and distinct object - and it is also in \
+service of, or grew directly out of, what they were doing. Mark it as a shift and give in \
+grew_out_of the id of the nearest earlier segment of the thread it grew out of (normally the \
+segment just before). The app decides what to do with it: a sub-thread under 10 minutes is \
+absorbed into its parent, a longer one stands as a thread of its own. So do NOT stretch \
+'continuation' to cover such a move, and do not withhold 'shift' because the move was in service \
+of the task; say shift, and say what it grew out of. (The rules document's line about a tool \
+that breaks being "part of that activity's thread" is the same case seen from the other side: \
+label it this way, and the short ones end up in the thread as that line wants.) null when the new \
+object did not grow out of what they were on: an unrelated task, an incoming message, a \
+distraction. A sub-thread is never a self-distraction. Coming back from the sub-thread to the \
+parent is an ordinary return (or a shift after more than 10 minutes), pointing at the parent.
 
 5. PHONE SEGMENTS. The log may contain PHONE lines. Each is one app on the screen of the \
 person's iPhone for a stretch of time: a segment, like a computer segment, and judged BY THE \
@@ -843,6 +859,7 @@ class ChunkEvaluator:
                     None if e["focused"] is None else ("focused" if e["focused"] else "unfocused"),
                     "self-distraction" if e["self_distraction"] else None,
                     "next task in the block" if e["next_task"] else None,
+                    f"a sub-thread that grew out of id={e['sub_of']}" if e["sub_of"] else None,
                     "hybrid (inside a live discussion)" if e["hybrid"] else None,
                     f"kind of shift (older label)={e['interruption_kind']}" if e["interruption_kind"] and e["focused"] is None else None,
                     "flagged uncertain" if e["uncertain"] else None]
@@ -1389,8 +1406,15 @@ class ChunkEvaluator:
                             rsw = "interruption"
                             nxt = False
                             j.note = (j.note or "") + " [return after more than 10 minutes: stored as a shift]"
+                    sub = None
                     if rsw == "interruption":
                         cands = []  # a new thread has no antecedent
+                        g_of = j.grew_out_of
+                        if (g_of is not None and not sd and g_of in seg_starts and g_of != j.segment_id
+                                and seg_starts[g_of] < seg_starts.get(j.segment_id, 0)):
+                            sub = g_of
+                        elif g_of is not None:
+                            log.warning("dropping grew_out_of %s for segment %d", g_of, j.segment_id)
                     else:
                         nxt = False
                         if rsw != "return":   # a return carries its own self-distraction judgment (always stored 0 until 2026-11-20)
@@ -1415,10 +1439,10 @@ class ChunkEvaluator:
                     if cands:
                         comb["antecedent"] = {str(i): p for i, p in cands}
                     conn.execute(
-                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id, hybrid, focused, self_distraction, next_task)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT OR REPLACE INTO seg_evals(segment_id, content, switch_label, interruption_kind, uncertain, rationale, probs, created, run_id, antecedent_id, hybrid, focused, self_distraction, next_task, sub_of)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (j.segment_id, rc, rsw, rk, unc, j.note, json.dumps(comb), now, run_id, ante, int(bool(j.hybrid)),
-                         int(foc), int(sd), int(nxt)))
+                         int(foc), int(sd), int(nxt), sub))
                     n += 1
                 # Phone app segments: one row each, with the fields of a computer segment. `away`
                 # is worked out here: is this time away from what was on the Mac (a shift, or

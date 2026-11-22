@@ -465,6 +465,18 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Sub-threads (2026-11-21).** A shift can be marked as growing out of the thread before it
+  (`sub_of` on `seg_evals` / `seg_reviews`: the id of a segment of the parent thread; in a
+  review 0 means "not a sub-thread"). The evaluator sets it (`grew_out_of`), the question writer
+  must offer it as a third option between "same thread" and "separate thread", the chats and the
+  block editor can set it. `stats._absorb_sub_threads` runs at the start of `spans_and_events`:
+  a sub-thread whose own time (its opening segment plus what continues or returns to it) is
+  under 10 minutes has its shift turned into a continuation of the parent, in memory, so it is
+  neither a diversion nor a break; a longer one stays a shift, and the parent span ends where it
+  began by the ordinary 5-minute rule. A span lists what it absorbed in `sub_threads`. Not
+  covered yet: propagation does not carry `sub_of`, the evaluator-chat proposal tool and
+  `derive_kind` do not set it, phone segments cannot be sub-threads, and a sub-thread cut by
+  the edge of the day window is measured only inside the window.
 * **Exceptions to the rules (2026-11-21).** A ruling that goes against the written rules takes
   effect like any ruling, and is also kept in `rule_exceptions` (`exceptions.py`): what was ruled,
   what the app had under the rules, the rule it departs from when a chat named it, and the reason.

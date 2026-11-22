@@ -268,52 +268,24 @@ or the README where it belongs.
 ## Decided
 
 - 2026-11-21: **sub-threads.** A sub-thread is an attentional thread that buds off from another
-  one: a new and distinct object of focus that is still in service of, or at least originated
-  from, the first (e.g. in the middle of a task, a blocking bug in the software the task depends
-  on, and attention moves to debugging it). If they are focus spans: the sub-thread is recorded as
-  a separate focus span if and only if it runs longer than 10 minutes; otherwise it is absorbed
-  into the parent span (possibly with a note in the spans table). Eli: "I currently think", so
-  treat it as provisional. NOT YET BUILT: needs the Rules doc (his file: propose the wording) and
-  the code (a "buds off from" relation on a shift, judged by the evaluator and askable in review
-  questions; stats absorbing or splitting by the 10-minute line). Points to settle when building:
-  - It overlaps the rule accepted on 2026-11-20 ("if a tool I'm using breaks ... the fixing is
-    part of that activity's thread, not a separate task"). That rule treats the fix as the same
-    thread; the sub-thread idea treats it as a new thread that is absorbed when short. Reconcile.
-  - Today a diversion of 5 minutes or more ends a span. A sub-thread of 5 to 10 minutes would be
-    absorbed instead: confirm that it overrides the 5-minute rule.
-  - When a sub-thread runs past 10 minutes: does the parent span end where it budded, and does
-    returning to the parent start a new span or continue the old one?
-  - Does an absorbed sub-thread's time count as the parent's focus time, or as a contained
-    diversion that does not break it?
-
-- 2026-11-21: **a category for talking to AI models** (Eli: "probably"). Like meetings: an
-  activity of its own, and also something that supports creative work or tasks. NOT YET BUILT.
-  Proposed shape, mirroring meetings: a content kind (the conversation is the activity) plus a
-  flag on other kinds (as "hybrid" marks work done inside a live discussion). To settle:
-  - Does directing coding agents (Claude Code terminals) count, or only conversations (claude.ai
-    and the like)? Agent sessions are a large share of the day and are "task" today.
-  - Is a stand-alone AI conversation a focus span of its own subtype, as a meeting is?
-  - With the flag set, does the time count as the work it supports (as hybrid does)?
-  - Needs a line in the Rules doc (Eli's file: propose the wording).
-  - Eli, 2026-11-21: "we'll need to recompute some past history based on this." Old segments
-    keep their old kinds until re-judged, so decide how far back, and fold it into the history
-    re-judgment (items 19, 26, 27, 32) so the history is judged once, with the new category.
-  TO DISCUSS FIRST THING 2026-11-22 (Eli asked for the morning, when he is fresh).
-
-- 2026-11-21: **accepted rules** stay in one list at the bottom of the Rules doc; Eli refactors
-  them into the body by hand. The Rules doc is committed when a rule is accepted. (Built.)
-
-- 2026-11-21: **exceptions to the rules** are implemented, recorded, and feed rule drafting
-  (built; README Gotchas). Choices made while building, to confirm:
-  - Decided 2026-11-21: only what Eli marks is an exception: by telling a chat model (the usual
-    way) or by hand (checkbox on the span card, button in the block editor).
-  - Three occasions (answers and exceptions together) are enough for a draft, as before.
-  - An exception applies to its own span or blocks only. The span rules do not treat it as a
-    precedent for similar spans until a rule is accepted, and an accepted rule changes what the
-    models read, not the span code (a rule about span qualification still has to be built).
-  - A rule drafted from exceptions may contradict a line in the body of the doc until Eli
-    refactors the list; the models then read both.
-  - The 82 older "counts as focus anyway" block rulings are not in the exceptions list.
+  (a blocking bug found mid-task, then debugging it). Recorded as its own thread if and only if
+  it runs longer than 10 minutes; otherwise absorbed into the parent. BUILT 2026-11-21 (README
+  Gotchas), after Eli asked for a "grew out of" option on a review question. The four open
+  points were built with these defaults, to confirm:
+  - The accepted rule "if a tool I'm using breaks ... the fixing is part of that activity's
+    thread": the evaluator is told this is the sub-thread case. Short fixes end up in the thread
+    as the rule says; a fix over 10 minutes now stands as its own thread, which the rule did
+    not say. The Rules doc (Eli's file) still has only the old line.
+  - A sub-thread of 5 to 10 minutes is absorbed: it overrides the 5-minute break rule.
+  - Past 10 minutes the parent span ends where the sub-thread began (ordinary 5-minute rule),
+    and coming back to the parent starts a new span, or is a return if within 10 minutes of
+    leaving, which cannot rejoin a span that has ended.
+  - An absorbed sub-thread's time counts as the parent's focus time, not as a diversion.
+  - Length is the sub-thread's own time (its segments), not wall-clock time from bud to return.
+  - Proposed wording for the Rules doc, for Eli to place: "A sub-thread is a new object of
+    attention that grows out of the thread I was on and serves it (a tool breaks mid-task and I
+    debug it). It is a shift. If it runs under 10 minutes it counts as part of the thread it
+    grew out of; if longer, it is a thread of its own and the first one ended where it began."
 
 - 2026-11-20: **a task span and Toggl.** One task is one attentional thread. Committed,
   consistent focused engagement on a single thread can be a focus span without a Toggl entry.

@@ -148,6 +148,7 @@ def judged_before(conn, segment_id: int, ruled_at: float) -> dict | None:
         return {"content": e["content"], "switch_label": e["switch_label"] or "continuation",
                 "antecedent_id": e["antecedent_id"], "focused": b(e["focused"]),
                 "self_distraction": b(e["self_distraction"]), "next_task": b(e["next_task"]), "hybrid": bool(e["hybrid"]),
+                "sub_of": e["sub_of"] if "sub_of" in e.keys() else None,
                 "kind": e["interruption_kind"], "uncertain": bool(e["uncertain"]), "note": e["rationale"] or "",
                 "source": "the judgment stored then"}
     g = conn.execute("SELECT start FROM segments WHERE id=?", (segment_id,)).fetchone()
@@ -170,6 +171,7 @@ def judged_before(conn, segment_id: int, ruled_at: float) -> dict | None:
                 "focused": b(j.get("focused")) if "focused" in j else None,
                 "self_distraction": bool(j.get("self_distraction")) if "focused" in j else None,
                 "next_task": bool(j.get("next_task")) if "focused" in j else None,
+                "sub_of": j.get("grew_out_of") if sw == "interruption" else None,
                 "hybrid": bool(j.get("hybrid")), "kind": j.get("shift_kind") or j.get("interruption_kind"),
                 "uncertain": bool(j.get("uncertain")), "note": j.get("note") or "",
                 "source": f"the evaluation run of {t(run['created'], '%Y-%m-%d %H:%M')}, the last before they ruled"}
@@ -185,6 +187,7 @@ def judged_text(j: dict | None, note: bool = True) -> str:
             None if j["focused"] is None else ("focused" if j["focused"] else "unfocused"),
             "self-distraction" if j["self_distraction"] else None,
             "next task in the block" if j["next_task"] else None,
+            f"a sub-thread that grew out of id={j['sub_of']}" if j.get("sub_of") else None,
             "hybrid (inside a live discussion)" if j["hybrid"] else None,
             f"kind of shift (older label)={j['kind']}" if j["kind"] and j["focused"] is None else None,
             "flagged uncertain" if j["uncertain"] else None]
@@ -236,6 +239,10 @@ def compare(conn, rv, j: dict | None) -> dict:
             out["extra"].append(f"{mine} (the app's judgment then had no such field)")
         else:
             put(bool(g(f)) == j[f], f"{f.replace('_', ' ')} (app: {yes if j[f] else no}; person: {mine})")
+    if g("sub_of") is not None:
+        js = j.get("sub_of")
+        mine = f"a sub-thread that grew out of id={g('sub_of')}" if g("sub_of") else "not a sub-thread"
+        put(bool(g("sub_of")) == bool(js), f"sub-thread (app: {'grew out of id=' + str(js) if js else 'not marked as one'}; person: {mine})")
     if g("interruption_kind") and g("focused") is None:
         from .evaluator import kind_of
         jk = j["kind"] if j["focused"] is None else kind_of(j["switch_label"], j["focused"], j["self_distraction"])

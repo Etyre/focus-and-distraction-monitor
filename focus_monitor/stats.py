@@ -252,13 +252,13 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
     if overrides:
         blank = {"segment_id": None, "content": None, "switch_label": None, "interruption_kind": None,
                  "antecedent_id": None, "note": None, "created": now, "hybrid": None, "focus_exception": None,
-                 "focused": None, "self_distraction": None, "next_task": None}
+                 "focused": None, "self_distraction": None, "next_task": None, "sub_of": None}
         for sid, o in overrides.items():
             if sid not in ids:
                 continue
             base = dict(rv[sid]) if sid in rv else dict(blank, segment_id=sid)
             for k in ("content", "switch_label", "interruption_kind", "antecedent_id", "hybrid",
-                      "focused", "self_distraction", "next_task"):
+                      "focused", "self_distraction", "next_task", "sub_of"):
                 if o.get(k) is not None:
                     base[k] = o[k]
             if o.get("switch_label") == "interruption":
@@ -300,6 +300,13 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
         foc, u_foc = g2("focused")
         sd, _ = g2("self_distraction")
         nxt, _ = g2("next_task")
+        # Sub-thread: the id of the segment whose thread this shift grew out of. The person's
+        # value wins when they gave one, and their 0 means "not a sub-thread".
+        sub = None
+        for row in (u, e):
+            if row is not None and "sub_of" in row.keys() and row["sub_of"] is not None:
+                sub = int(row["sub_of"]) or None
+                break
         if foc is not None and not u_foc and u is not None:
             # The person's rulings predate the focused field: none of them sets it. They said
             # the same thing with the shift's kind (focus start / detour / self-distraction)
@@ -320,7 +327,7 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
             # follows from the focus field and the self-distraction flag (whoever set them).
             kind_ = "self_distraction" if sd else ("focus_start" if foc else "detour")
         return (g("content"), sw_, kind_, u is not None, unc, pr, u_sw, u_kind, ante, u_ante,
-                int(hyb or 0), fex, foc, u_foc, sd, nxt)
+                int(hyb or 0), fex, foc, u_foc, sd, nxt, sub)
     tg = conn.execute("SELECT id, start, stop, tags, description FROM toggl_entries WHERE start < ? AND COALESCE(stop, ?) > ? ORDER BY start",
                       (t1, now, t0)).fetchall() if _has_toggl(conn) else []
     inact = conn.execute("SELECT start, end FROM inactivity WHERE start < ? AND end > ?", (t1, t0)).fetchall()
@@ -408,7 +415,7 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
         if v is not None:
             # The evaluator's (or the user's edited) per-segment judgment drives the state.
             (content, vsw, vkind, edited, v_unc, v_probs, u_sw, u_kind, v_ante, u_ante, v_hyb, v_fex,
-             v_foc, u_foc, v_sd, v_nxt) = v
+             v_foc, u_foc, v_sd, v_nxt, v_sub) = v
             s["hybrid"] = v_hyb
             s["focus_exception"] = v_fex
             # Thread pointer: meaningful only for continuation/return (an interruption IS
@@ -438,6 +445,7 @@ def _labelled_segments(conn, t0: float, t1: float, overrides: dict | None = None
             s["user_unfocused"] = bool(by_field and u_foc and not v_foc)
             s["self_distraction"] = bool(vsw in ("interruption", "return") and sd_live)
             s["next_task"] = bool(vsw == "interruption" and v_nxt)
+            s["sub_of"] = v_sub if vsw == "interruption" else None
             if by_field:
                 # "Distracted" is not a judgment about the segment: it marks unfocused time that
                 # follows a self-distraction shift, so the event can be counted and coloured.
@@ -715,6 +723,48 @@ def _detour_label(run: dict) -> str:
     return c.most_common(1)[0][0] if c else "interrupted"
 
 
+SUB_THREAD_MIN = 10.0   # a sub-thread shorter than this is absorbed into the thread it grew out of
+
+
+def _absorb_sub_threads(segs: list[dict]) -> None:
+    """Sub-threads (Eli, 2026-11-21): an attentional thread that buds off another one - a
+    blocking bug found while doing a task, and the debugging that follows. It is a real shift
+    to a new object, in service of the first. It is recorded as a thread of its own if and only
+    if it runs longer than SUB_THREAD_MIN; a shorter one is absorbed into the thread it grew out
+    of: here its opening shift becomes a continuation of the parent (`sub_of`), with a stated
+    pointer, so everything downstream reads it as the parent's own time. A sub-thread's length
+    is its own time: its opening segment and what continues or returns to it.
+    A longer one is left as the shift it is: by the ordinary rules the parent span ends where
+    the sub-thread began once five minutes have passed.
+    Changes the segments in place and is safe to run twice. Latest first, so a short sub-thread
+    of a sub-thread is already part of its parent when the parent is measured."""
+    real = [s for s in segs if s["duration"] > 0]
+    limit = SUB_THREAD_MIN * 60
+    for k in range(len(real) - 1, -1, -1):
+        S = real[k]
+        if not S.get("sub_of") or S.get("switch") != "interruption" or S.get("phone"):
+            continue
+        members, total, prev_in = {S["id"]}, 0.0, False
+        for g in real[k:]:
+            ptr = g.get("antecedent_id")
+            inside = (g["id"] in members or (ptr is not None and ptr in members)
+                      # a continuation with no stated pointer continues the line before it
+                      or (prev_in and ptr is None and g.get("switch") not in ("interruption", "return")))
+            if inside:
+                members.add(g["id"])
+                total += g["duration"]
+                if total >= limit:
+                    break
+            if not g.get("phone"):
+                prev_in = inside
+        if total >= limit:
+            S["sub_thread"] = True      # stands as a thread of its own; shown as "grew out of"
+            continue
+        S.update(switch="continuation", label="continuation", antecedent_id=S["sub_of"], antecedent_p=1.0,
+                 self_distraction=False, next_task=False, sub_absorbed=True, sub_min=total / 60)
+        S.pop("eval_split_p", None)
+
+
 def _runs3(segs: list[dict]) -> list[dict]:
     """Runs of three categories: 'focus', 'detour' (interrupted+distracted MERGED - stacked
     interruptions/distractions are one event), and 'idle'. Split on recording gaps and on a
@@ -898,6 +948,7 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
     # is given by the self-test, and as [] by the wider pass itself.
     if whole is None:
         whole = _whole_spans(conn, segs, min_focus_min, break_min, overrides) if conn is not None and min_focus_min > 0 else []
+    _absorb_sub_threads(segs)
     _real = [s for s in segs if s["duration"] > 0]
     win0, win1 = (_real[0]["clip_start"], _real[-1]["clip_end"]) if _real else (0.0, 0.0)
     # Spans are LAZILY evaluated, like segments (user rule 2026-09-01): never assemble a span
@@ -1050,6 +1101,9 @@ def spans_and_events(segs: list[dict], min_focus_min: float | None = None, break
         sp["duration"] = sp["end"] - sp["start"]
         sp["ended_by"] = ended_by
         sp["segments"] = [seg for r in sp["runs"] for seg in r["segments"]]
+        # short sub-threads absorbed into this span, for the note in the spans table
+        sp["sub_threads"] = [{"start": g["clip_start"], "min": round(g.get("sub_min", 0.0), 1), "app": g["app"]}
+                             for g in sp["segments"] if g.get("sub_absorbed")]
         return sp
 
     def _assemble(rs):

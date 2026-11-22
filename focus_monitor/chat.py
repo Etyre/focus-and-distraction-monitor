@@ -441,6 +441,12 @@ You can also ACT, but only through the tools:
 - open_review_question: put a question in the person's review queue for later, with options that each map to \
   a concrete judgment - use this when a call needs their eyes and they do not want to settle it now.
 - propose_rule: suggest a general rule for their rules document (they approve it with a click).
+- SUB-THREADS: a shift can be marked as growing out of the thread before it (sub_of = a block of the parent \
+thread): hitting a blocking bug mid-task and debugging it; planning with an assistant and then reworking the \
+assistant. It is still a shift. The app counts a sub-thread under 10 minutes inside its parent thread (it does \
+not break the span and is not a diversion); one that runs longer stands as a thread of its own, and the parent \
+span ends where it began. When the person says "that grew out of X" or "that was a sub-thread", this is the \
+edit: switch_label=shift with sub_of.
 EXCEPTIONS to the written rules: the person may rule against what the rules say ("this should be a focus \
 span even though it did not follow the rule, because ...", or the reverse). Make the ruling they ask for; the \
 rules do not outrank them. Pass exception_to_rule naming the rule, and put THEIR reason in the note; if they \
@@ -546,6 +552,10 @@ DAY_TOOLS = [
                        "description": "With switch_label=shift only: true = this was the next task under the "
                                       "same task-processing intention (part of a focused task block)."},
          "antecedent_id": {"type": ["integer", "null"]},
+         "sub_of": {"type": ["integer", "null"],
+                    "description": "With switch_label=shift only: this shift opened a SUB-THREAD - it grew out of the "
+                                   "thread the person was on and became its own object of attention. The #id of the "
+                                   "nearest earlier block of that parent thread. 0 = they say it is not a sub-thread."},
          "hybrid": {"type": ["boolean", "null"]},
          "focus_exception": {"type": ["boolean", "null"],
                              "description": "true ONLY when the person explicitly asked that this block count as "
@@ -589,7 +599,8 @@ DAY_TOOLS = [
              # sent, but the schema never offered it).
              "focused": {"type": ["boolean", "null"], "description": "true when this reading says they were getting something specific done; false when it says they were not (a drift). null when it does not say."},
              "self_distraction": {"type": ["boolean", "null"], "description": "For a block that is, or that this option makes, a shift or a return: true = this reading says they drifted there without deciding to; false = it says they went on purpose. null when it does not say."},
-             "next_task": {"type": ["boolean", "null"], "description": "With switch_label=shift: true = this reading says it was the next task under the same task-processing intention."}},
+             "next_task": {"type": ["boolean", "null"], "description": "With switch_label=shift: true = this reading says it was the next task under the same task-processing intention."},
+             "sub_of": {"type": ["integer", "null"], "description": "With switch_label=shift: this reading says it was a sub-thread that grew out of the thread of block #id."}},
              "required": ["label"]}}},
          "required": ["segment_id", "context", "question", "options"]}},
     {"name": "propose_rule",
@@ -756,7 +767,7 @@ class DayChat:
                 if not ids:
                     return "error: segment_ids is empty"
                 parts = [f"{k} -> {args[k]}" for k in ("content", "switch_label", "focused", "self_distraction",
-                                                       "next_task", "antecedent_id", "hybrid", "focus_exception")
+                                                       "next_task", "antecedent_id", "sub_of", "hybrid", "focus_exception")
                          if args.get(k) is not None]
                 note = (args.get("note") or "").strip() or None
                 done, errs = [], []
@@ -772,7 +783,7 @@ class DayChat:
                             antecedent_id=args.get("antecedent_id"), hybrid=args.get("hybrid"),
                             note=note, chat_message_id=mid, focus_exception=args.get("focus_exception"),
                             focused=args.get("focused"), self_distraction=args.get("self_distraction"),
-                            next_task=args.get("next_task"), merge_existing=True)
+                            next_task=args.get("next_task"), sub_of=args.get("sub_of"), merge_existing=True)
                     except edits.BadEdit as e:
                         errs.append(f"#{sid}: {e}")
                         continue

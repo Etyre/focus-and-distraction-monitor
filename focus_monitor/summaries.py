@@ -82,6 +82,7 @@ def verdict_text(r) -> str:
             None if g("focused") is None else ("focused" if g("focused") else "unfocused"),
             None if g("self_distraction") is None else ("self-distraction" if g("self_distraction") else "not a self-distraction"),
             None if g("next_task") is None else ("next task in the block" if g("next_task") else "not the next task"),
+            None if g("sub_of") is None else (f"a sub-thread that grew out of id={g('sub_of')}" if g("sub_of") else "not a sub-thread"),
             None if g("hybrid") is None else ("hybrid (inside a live discussion)" if g("hybrid") else "solo, not hybrid"),
             "counts as independent focus by their explicit exception" if g("focus_exception") else None,
             # the older single label for a shift, on rulings made before 2026-11-19
@@ -100,7 +101,11 @@ def _tags(s) -> list[str]:
                     ("<unfocused, ruled by the person>" if s.get("user_unfocused") else "<unfocused>"))
         if s.get("switch") == "interruption":
             bits.append("<switch: shift" + (", self-distraction" if s.get("self_distraction") else "")
-                        + (", next task in the block" if s.get("next_task") else "") + ">")
+                        + (", next task in the block" if s.get("next_task") else "")
+                        + (f", a sub-thread that grew out of id={s['sub_of']}" if s.get("sub_of") else "") + ">")
+        elif s.get("sub_absorbed"):
+            bits.append(f"<switch: shift, a sub-thread that grew out of id={s['sub_of']}; under 10 minutes, so the app "
+                        "counts it as part of that thread>")
         elif s.get("switch") == "return":
             bits.append("<switch: return>")
     elif s.get("label") and s["label"] != "continuation":
@@ -265,6 +270,9 @@ def span_facts(sp) -> list[str]:
                        + ", ".join(dict.fromkeys(str(g["id"]) for g in r["segments"])) + ")")
     else:
         out.append("Contained diversions: none.")
+    for st in sp.get("sub_threads") or []:
+        out.append(f"A short sub-thread is counted inside it: {t(st['start'])}, {st['min']:.1f} min in {st['app']}. It grew out of "
+                   "the span's thread and ran under 10 minutes, so the app absorbed it (a longer one would stand on its own).")
     if sp.get("trimmed_start_min"):
         out.append(f"Its opening was cut off: the {sp['trimmed_start_min']:.1f} min before {t(sp['start'])} were on the same thread "
                    "but broken up, and a span has to start with 10 continuous focused minutes.")
