@@ -286,6 +286,17 @@ or the README where it belongs.
   - Does an absorbed sub-thread's time count as the parent's focus time, or as a contained
     diversion that does not break it?
 
+- 2026-11-21: **a category for talking to AI models** (Eli: "probably"). Like meetings: an
+  activity of its own, and also something that supports creative work or tasks. NOT YET BUILT.
+  Proposed shape, mirroring meetings: a content kind (the conversation is the activity) plus a
+  flag on other kinds (as "hybrid" marks work done inside a live discussion). To settle:
+  - Does directing coding agents (Claude Code terminals) count, or only conversations (claude.ai
+    and the like)? Agent sessions are a large share of the day and are "task" today.
+  - Is a stand-alone AI conversation a focus span of its own subtype, as a meeting is?
+  - With the flag set, does the time count as the work it supports (as hybrid does)?
+  - Needs a line in the Rules doc (Eli's file: propose the wording), and old segments keep
+    their old kinds unless re-judged.
+
 - 2026-11-21: **accepted rules** stay in one list at the bottom of the Rules doc; Eli refactors
   them into the body by hand. The Rules doc is committed when a rule is accepted. (Built.)
 
