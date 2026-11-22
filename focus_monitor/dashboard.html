@@ -805,10 +805,15 @@ function qPaintBody(q){if(CARD.kind!=='question'||qQueue[qqi]!==q)return;
   keepFocus(b,()=>{b.innerHTML=qBodyHtml(q);});if(pr)pr.innerHTML=qPriorityLine(q);}
 // Manual editing is folded away by default (Eli, 2026-11-21: "the manual edit options for a span
 // or a switch should be collapsed and hidden, but still accessible ... Talking to a model is the
-// default interface"). Whether each kind of panel was left open is remembered per browser.
-function manualOpen(kind,summary){let open=false;try{open=localStorage.getItem('manualOpen.'+kind)==='1';}catch(e){}
-  return `<details class="manual" data-kind="${kind}" style="margin:10px 0"${open?' open':''} ontoggle="manualRemember('${kind}',this.open)"><summary class="small muted" style="cursor:pointer">${summary}</summary>`;}
-function manualRemember(kind,open){try{localStorage.setItem('manualOpen.'+kind,open?'1':'0');}catch(e){}}
+// default interface"). Closed on every card when it is first shown (Eli, later that day: "This
+// should be closed on all cards by default"; it used to remember "open" per browser, so one
+// opening left it open on every card after). A panel opened on a card stays open only while
+// that same card is redrawn (after an edit); `rec` names the card.
+let MANUAL_OPEN={};
+function manualOpen(kind,summary,rec){const open=MANUAL_OPEN[kind]===String(rec);
+  if(!open)delete MANUAL_OPEN[kind];
+  return `<details class="manual" data-kind="${kind}" style="margin:10px 0"${open?' open':''} ontoggle="manualRemember('${kind}',this.open,'${rec}')"><summary class="small muted" style="cursor:pointer">${summary}</summary>`;}
+function manualRemember(kind,open,rec){if(open)MANUAL_OPEN[kind]=String(rec);else if(MANUAL_OPEN[kind]===String(rec))delete MANUAL_OPEN[kind];}
 function renderQuestion(){
   // Not while the Captures tab is in front: drawing a card here empties the other container
   // (cardSet), and a queue that finished loading late must not blank the capture being looked at.
@@ -843,7 +848,7 @@ function renderQuestion(){
       <div id="qchatlog" class="chatlog"></div>
       <div class="chatrow"><input id="qchatinput" data-draft="fm.draft.qchatinput.${q.segment_id??''}" spellcheck="true" autocapitalize="sentences" placeholder="e.g. I was just passing through here, not reading — what did you see?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendQChat();}"><button class="primary" onclick="sendQChat()">Send</button></div>
     </div>
-    ${q.segment_id&&!q.pending?manualOpen('question','✎ edit this block by hand')+`<div id="qEditor" class="small muted" style="margin:6px 0">loading…</div></details>`:''}`;
+    ${q.segment_id&&!q.pending?manualOpen('question','✎ edit this block by hand',q.id)+`<div id="qEditor" class="small muted" style="margin:6px 0">loading…</div></details>`:''}`;
   qTLBind(q);
   scrubBind();
   if(SCRUB.moments.length)scrubTo(SCRUB.i);
@@ -1089,7 +1094,7 @@ function renderSpanCard(sp,oneOff){
       <div id="spanchatlog" class="chatlog"></div>
       <div class="chatrow"><input id="spanchatinput" data-draft="fm.draft.spanchatinput.${spKey}" spellcheck="true" autocapitalize="sentences" placeholder="e.g. Was I actually focused here? What was I doing at the amber block?" onkeydown="if(event.key==='Enter'){event.preventDefault();sendSpanChat();}"><button class="primary" onclick="sendSpanChat()">Send</button></div>
     </div>
-    ${manualOpen('span','✎ record a verdict by hand')}    <div style="margin-top:6px"><b>Was this a focus span?</b>
+    ${manualOpen('span','✎ record a verdict by hand',spKey)}    <div style="margin-top:6px"><b>Was this a focus span?</b>
       <div class="row" style="margin:6px 0;flex-wrap:wrap;gap:6px">
         <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
         ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
@@ -1389,7 +1394,7 @@ async function renderSwitch(id){
     <b>Evaluator</b> <span class="muted small">${ev?'model judgment'+(evr?(evr.chat_message_id?` · <b>edited in a chat with Claude</b> <a href="#" onclick="event.preventDefault();openChatMsg(${evr.chat_message_id})">open conversation</a>`:' · <b>edited by you</b>'):''):'not yet evaluated — runs ~15 min behind'}${evr&&evr.note?` · <span title="${esc(evr.note)}">note: ${esc(evr.note.slice(0,80))}${evr.note.length>80?'…':''}</span>`:''}</span>${evr?` <button onclick="segEvalUndo()">undo edits</button>`:''}
     ${ev&&ev.rationale?`<div class="muted small" style="margin:4px 0">${esc(ev.rationale)}</div>`:''}
     ${(f.to_signals||[]).length?`<div class="muted small" style="margin:4px 0" title="What the Mac recorded beside the capture: how this app came forward, how the page was reached, input rates, audio / microphone / camera. The evaluator reads these too.">Signals: ${f.to_signals.map(esc).join(' · ')}</div>`:''}
-    ${manualOpen('capture','✎ edit the judgment by hand')}
+    ${manualOpen('capture','✎ edit the judgment by hand',id)}
     ${segEditorRows(ev,evr,f.to.id)}</details>
   </div>`;
   const ens=f.ensemble?ctxLine+`<div><b>Ensemble:</b> ${f.ensemble.label} (${Math.round(100*Math.max(...Object.values(P())))}%)${f.ensemble.uncertain?' · <i>uncertain</i>':''}${probBar(P())}<span class="muted small">weights ${esc(f.ensemble.weights)}</span></div>`:'<div class="muted">not yet classified</div>';
@@ -1416,7 +1421,7 @@ async function renderSwitch(id){
     <details><summary class="muted small">Surrounding activity</summary><div class="mono">${f.before.map(s=>'  '+esc(appName(s.app))+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}\n  FROM >>> ${esc(appName(f.from?.app||''))}\n  TO   >>> ${esc(appName(f.to.app))}\n${f.after.map(s=>'  then: '+esc(appName(s.app))+' | '+esc(s.title.slice(0,80))+' | '+fmtT(s.start)).join('\n')}</div></details>
     ${f.question?chatBlock:''}
     ${togglLine}${spanLine}${evalBlock}${f.question?'':chatBlock}
-    ${manualOpen('capture-legacy','older per-switch models and labels')}${ens}<table style="margin:8px 0">${preds}</table>${rev}
+    ${manualOpen('capture-legacy','older per-switch models and labels',id)}${ens}<table style="margin:8px 0">${preds}</table>${rev}
     <div style="margin-top:10px"><b>What was this switch?</b>
       <div class="row" style="margin:6px 0">${Object.keys(LABELS).map((l,i)=>`<button class="lbl-${l}" title="${esc(LABELS[l].help)}" onclick="review('${l}')">${i+1}. ${LABELS[l].name}</button>`).join('')}</div>
       <div class="muted small">keys 1–4 choose a label while this section is open</div>
