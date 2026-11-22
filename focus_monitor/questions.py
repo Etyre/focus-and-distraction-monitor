@@ -825,7 +825,8 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
 
 
 SPOT_GAP_S = 2 * 3600.0     # at most one new spot check per this long, so they spread over the day
-SPOT_MIN_S = 20.0           # shorter segments are not drawn
+SPOT_MIN_S = 120.0          # shorter segments are not drawn (Eli, 2026-11-22: no spot checks under 2 minutes; it was 20 s.
+                            #  A short segment can still get an ordinary review question when its judgment matters)
 SPOT_SETTLE_S = 600.0       # ...nor ones that ended less than this ago (their judgment may still change)
 
 
@@ -964,6 +965,13 @@ def spot_checks(conn, cfg: Config | None = None) -> int:
     import random
     from .config import day_bounds, logical_date
     cfg = cfg or load_config()
+    # open spot checks drawn under the old 20-second floor are archived, not left in the queue
+    with db.tx(conn):
+        k = conn.execute("""UPDATE review_questions SET status='archived', archived_at=? WHERE source='sample' AND status='open'
+                            AND segment_id IN (SELECT id FROM segments WHERE COALESCE(end, start) - start < ?)""",
+                         (time.time(), SPOT_MIN_S)).rowcount
+    if k:
+        log.info("archived %d open spot check(s) on segments under %d s", k, SPOT_MIN_S)
     _refresh_open_spot_checks(conn, cfg)
     n = cfg.spot_checks_per_day
     if not n or n <= 0:

@@ -457,6 +457,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+- **No spot checks on segments under 2 minutes (2026-11-22).** `questions.SPOT_MIN_S` is 120 (it
+  was 20). Open spot checks on shorter segments are archived at the next draw. Ordinary review
+  questions are not affected: a short segment still gets one when its judgment is in doubt and
+  matters.
+
 - **Judgments run at medium effort, with high spot checks (2026-11-21).** `claude_effort = "medium"`
   in `config.toml`; `effort_check_fraction` (0.1) of the evaluator, propagation and span-summary
   calls are repeated at "high" with the same prompt, and the daily audit always is (`efforts.py`).
