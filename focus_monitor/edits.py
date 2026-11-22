@@ -181,8 +181,10 @@ def sync_legacy(c, segment_id: int) -> None:
 
 
 def write_span_review(c, start: float, end: float, verdict: str, subtype: str | None = None,
-                      note: str | None = None, chat_message_id: int | None = None) -> None:
-    """The person's verdict on a hypothesized span (replaces any earlier verdict on it)."""
+                      note: str | None = None, chat_message_id: int | None = None, own: dict | None = None) -> None:
+    """The person's verdict on a hypothesized span (replaces any earlier verdict on it).
+    `own`: the app's own call on it (stats: own_call), kept beside the verdict so the share of
+    focus spans the person confirms can be counted (stats.span_check_rate)."""
     from .stats import SUBTYPES
     if verdict not in ("focus", "not_focus"):
         raise BadEdit(f"bad verdict {verdict!r}")
@@ -196,8 +198,9 @@ def write_span_review(c, start: float, end: float, verdict: str, subtype: str | 
                 c.execute("INSERT OR IGNORE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('span',?,?,?,?)",
                           (f"{start:.0f}:{end:.0f}", chat_message_id, json.dumps(was), time.time()))
         c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60))
-        c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created, chat_message_id)"
-                  " VALUES (?,?,?,?,?,?,?)", (start, end, verdict, subtype, note, time.time(), chat_message_id))
+        own_call = None if not own else (f"focus:{own.get('subtype') or ''}" if own.get("focus") else "not_focus")
+        c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created, chat_message_id, own_call)"
+                  " VALUES (?,?,?,?,?,?,?,?)", (start, end, verdict, subtype, note, time.time(), chat_message_id, own_call))
 
 
 def _put_back(c, table: str, rows: list[dict]) -> None:

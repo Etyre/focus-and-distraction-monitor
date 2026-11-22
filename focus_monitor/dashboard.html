@@ -451,7 +451,11 @@ async function loadTrends(){
 let queue=[],qi=0,current=null,spanQueue=[],sqi=0;
 // ---- moving through review items: questions, then span confirmations, then switches, as ONE list.
 // ⌘←/⌘→ (or ctrl) step through it without answering; `s` is the same as ⌘→.
-let reviewMode=null,returnMode=null;const RV={span:false,switch:false},RV_ORDER=['question','span','switch'];
+// 'check' comes first: the focus spans you are asked to confirm (/api/span/checks; Eli, 2026-11-22).
+// It is a span card like 'span' (every unconfirmed span, after the questions), from its own list.
+let reviewMode=null,returnMode=null,checkQueue=[],cqi=0,checkRate=null;const RV={span:false,switch:false},RV_ORDER=['check','question','span','switch'];
+const isSpanMode=m=>m==='span'||m==='check';
+const CHECK_SKIP=new Set();   // checks stepped past: a later reload of the queue does not open on them again
 function enterOneOff(){if(reviewMode!=='oneoff')returnMode=reviewMode;reviewMode='oneoff';}
 // ---- the one card on screen. Question, span and capture cards are drawn into #reviewCard (Review
 // tab) or #segCard (Captures tab) and use the same element ids (#segNoteEv, #afterShot, #scrubGrab,
@@ -476,21 +480,22 @@ function cardError(e,what){const root=CARD.target&&$(CARD.target);cardErrorClear
   d.style.cssText='margin:0 0 8px;padding:8px;border:1.5px solid var(--distracted);border-radius:6px;color:var(--distracted)';
   d.textContent=`Could not ${what}: ${String((e&&e.message)||e).slice(0,200)}. Nothing was changed, and anything you typed is still in its box. Try again.`;
   root.prepend(d);d.scrollIntoView({block:'nearest'});}
-function rvList(m){return m==='question'?qQueue:m==='span'?spanQueue:queue;}
-function rvIdx(m,v){if(v===undefined)return m==='question'?qqi:m==='span'?sqi:qi;if(m==='question')qqi=v;else if(m==='span')sqi=v;else qi=v;}
+function rvList(m){return m==='question'?qQueue:m==='span'?spanQueue:m==='check'?checkQueue:queue;}
+function rvIdx(m,v){if(v===undefined)return m==='question'?qqi:m==='span'?sqi:m==='check'?cqi:qi;if(m==='question')qqi=v;else if(m==='span')sqi=v;else if(m==='check')cqi=v;else qi=v;}
 async function reviewEnsure(m){
   if(m==='span'&&!RV.span){spanQueue=await api('/api/span/queue');sqi=0;RV.span=true;}
   if(m==='switch'&&!RV.switch){queue=await api('/api/review/queue?limit=50&all='+$('#reviewAll').checked);qi=0;RV.switch=true;}}
 function reviewShow(m){
   if(detailTarget!=='#reviewCard')return;
   if(m==='question')return renderQuestion();
-  if(m==='span')return renderSpanReview();
+  if(isSpanMode(m))return renderSpanReview(m);
   reviewMode='switch';detailTarget='#reviewCard';$('#queueCount').textContent=`${queue.length} in queue`;return renderSwitch(queue[qi].switch.id);}
 let rvBusy=false;
 async function reviewStep(dir){
   if(rvBusy)return;rvBusy=true;
   try{
     let m=reviewMode;
+    if(m==='check'&&dir>0&&checkQueue[cqi])CHECK_SKIP.add(Math.round(checkQueue[cqi].start));
     if(m==='oneoff'){m=returnMode;if(!m){if(dir>0&&current&&current.switch)pendingAfter=current.switch.ts;return await loadQueue();}if(dir<0)return reviewShow(m);} // back = the item you came from
     if(!m)return await loadQueue();
     let i=rvIdx(m)+dir;
@@ -507,7 +512,7 @@ async function reviewStep(dir){
         if(i<qQueue.length){qqi=i;return renderQuestion();}}
       const k=RV_ORDER.indexOf(m)+dir;
       if(k<0||k>=RV_ORDER.length){$('#queueCount').textContent=dir>0?'that was the last review item — ⌘← goes back':'this is the first review item';return;}
-      m=RV_ORDER[k];await reviewEnsure(m);i=dir>0?0:rvList(m).length-1;}
+      const from=m;m=RV_ORDER[k];await reviewEnsure(m);i=dir>0?(from==='check'&&m==='question'?qqi:0):rvList(m).length-1;}
   }finally{rvBusy=false;}}
 // Rules the app drafted from several of your answers that agree (rule_drafts.py). The wording is
 // editable; nothing is in the rules document until "add to my rules" is clicked.
@@ -607,7 +612,11 @@ async function loadQueue(){
   // exception is a segment opened on purpose from the Day tab, which shows its placeholder card.
   if(!queueRows)queueRows=await api('/api/questions/queue');
   if(left())return;   // before anything shared is touched: a superseded load must not swap the queue under the card on screen
+  // The spans to confirm come first, unless this load is carrying on from a card or going to a chosen question.
+  const straight=pendingQSeg!=null||pendingAfter!=null;let checks=null;
+  if(!straight){try{checks=await api('/api/span/checks');}catch(e){console.error('span checks failed',e);checks={spans:[],rate:checkRate};}if(left())return;}
   RV.span=RV.switch=false;spanQueue=[];queue=[];sqi=0;qi=0;reviewMode=null;returnMode=null;
+  if(checks){checkQueue=checks.spans.filter(x=>!CHECK_SKIP.has(Math.round(x.start)));checkRate=checks.rate;cqi=0;}
   qQueue=queueRows.filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();qPastEnd=false;
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
@@ -615,6 +624,7 @@ async function loadQueue(){
     const day=$('#daypick').value||new Date(Date.now()-DAY_START_HOUR*3600*1000).toLocaleDateString('en-CA');
     let i=qQueue.findIndex(q=>q.day===day);if(i<0)i=qQueue.findIndex(q=>q.day>day);if(i>=0)qqi=i;}
   pendingAfter=null;
+  if(!straight&&checkQueue.length){renderSpanReview('check');return;}
   if(qQueue.length){renderQuestion();return;}
   await reviewEnsure('span');
   if(left())return;
@@ -1060,10 +1070,16 @@ async function dismissQuestion(id){
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
 }
 let currentSpan=null,spanOneOff=false;
-function renderSpanReview(){
-  const sp=spanQueue[sqi];if(!sp)return loadQueue();
-  reviewMode='span';
-  $('#queueCount').textContent=`${spanQueue.length-sqi} span(s) to confirm — switch reviews unlock once their span is confirmed`;
+function spanCheckWhy(){const r=checkRate;if(!r)return '';
+  return r.n<r.full_until?`every focus span is asked about until ${r.full_until} have your verdict (${r.n} so far)`
+    :`${Math.round(100*r.rate)}% of focus spans are asked about: you agreed with ${r.agree} of the last ${r.n}`;}
+function renderSpanReview(m){
+  m=m||(reviewMode==='check'?'check':'span');
+  const list=rvList(m),sp=list[rvIdx(m)];
+  if(!sp){if(m==='check'){cqi=checkQueue.length;if(qQueue.length){reviewMode='question';return renderQuestion();}}return loadQueue();}
+  reviewMode=m;
+  $('#queueCount').textContent=m==='check'?`${list.length-rvIdx(m)} focus span(s) to confirm, then the questions · ${spanCheckWhy()}`
+    :`${spanQueue.length-sqi} span(s) to confirm — switch reviews unlock once their span is confirmed`;
   renderSpanCard(sp,false);
 }
 function renderSpanCard(sp,oneOff){
@@ -1071,7 +1087,7 @@ function renderSpanCard(sp,oneOff){
   cardSet('span','#reviewCard'); // also: keys 1-4 and the arrows must not act on a capture opened earlier (they reviewed an unrelated switch)
   currentSpan=sp;spanOneOff=!!oneOff;const spKey=Math.round(sp.start);
   const subs=['creative_work','focused_task','reading','planning','other_focused','meeting'];
-  const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${sqi+1}/${spanQueue.length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button>`;
+  const nav=oneOff?`<button onclick="loadQueue()">back to queue</button>`:`${rvIdx(reviewMode==='check'?'check':'span')+1}/${rvList(reviewMode==='check'?'check':'span').length} <button onclick="reviewStep(-1)" title="previous review item (⌘←)">◀ prev</button> <button onclick="reviewStep(1)" title="next review item (⌘→)">next (s) ▶</button>`;
   // (one line states the verdict; until 2026-11-21 "already reviewed: …" said it a second time)
   keepFocus($('#reviewCard'),()=>{$('#reviewCard').innerHTML=`
     <div class="row" style="justify-content:space-between"><div><b>Span review</b> · ${sp.day} · ${fmtT(sp.start)}–${fmtT(sp.end)} · ${fmtMin(sp.duration/60)}</div><div>${nav}</div></div>
@@ -1178,7 +1194,8 @@ function renderSpanChat(){const log=cardEl('#spanchatlog');if(!log)return;const 
 // person was typing there (2026-11-21). Returns 'ok', 'elsewhere', or 'gone' (no span there now).
 async function spanRefresh(sp0){
   let again=null;try{again=await api('/api/span/at?ts='+(sp0.start+sp0.end)/2);}catch(e){}
-  const i=spanQueue.indexOf(sp0);if(i>=0&&again)spanQueue[i]=again;
+  // by start time, not by object: the same span can be in both lists and on a one-off card as separate copies
+  if(again)for(const l of [spanQueue,checkQueue]){const i=l.findIndex(x=>Math.round(x.start)===Math.round(sp0.start));if(i>=0)l[i]=again;}
   if(CARD.kind!=='span'||currentSpan!==sp0)return 'elsewhere';
   if(!again)return 'gone';
   renderSpanCard(again,spanOneOff);return 'ok';}
@@ -1208,7 +1225,9 @@ async function spanReview(verdict,subtype){
   // Stay on the card and redraw it from the server, so the verdict shows on its timeline and
   // call line straight away (Eli, 2026-11-21). It used to jump to the next span at once, so the
   // change was never seen. ⌘→ / "next" moves on, as on a question card.
-  if(await spanRefresh(sp)==='gone'){if(spanOneOff){loadQueue();return;}sqi++;if(sqi<spanQueue.length)renderSpanReview();else loadQueue();}
+  if(await spanRefresh(sp)==='gone'){if(spanOneOff){loadQueue();return;}
+    if(reviewMode==='check'){const i=checkQueue.indexOf(sp);if(i>=0)checkQueue.splice(i,1);renderSpanReview('check');return;}   // past the last one: on to the questions
+    sqi++;if(sqi<spanQueue.length)renderSpanReview();else loadQueue();}
 }
 async function spanUnreview(){const sp=currentSpan;if(!sp)return;
   try{await api(`/api/span/review?start=${sp.start}&end=${sp.end}`,{method:'DELETE'});}

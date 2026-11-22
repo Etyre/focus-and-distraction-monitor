@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import time
 
 from . import db
@@ -838,6 +839,43 @@ def _runs3(segs: list[dict]) -> list[dict]:
 
 
 SUBTYPES = ("creative_work", "focused_task", "reading", "planning", "other_focused", "meeting")
+
+
+# Confirming whole focus spans (Eli, 2026-11-22). Every focus span is asked about until
+# SPAN_CHECK_FULL_N of them have a verdict; after that the share asked falls as the person keeps
+# agreeing, and rises again when they do not. The measure is the lower end of the 95% interval
+# on the agreement over the last SPAN_CHECK_WINDOW verdicts, so a few lucky confirmations do not
+# cut the checks: 20 of 20 still asks half, 50 of 50 about one in six, 100 of 100 one in ten.
+SPAN_CHECK_FULL_N = 20
+SPAN_CHECK_WINDOW = 100
+SPAN_CHECK_FLOOR = 0.1               # never fewer than this share
+SPAN_CHECK_LOW, SPAN_CHECK_HIGH = 0.70, 0.95   # the bound at which checks start to fall / reach the floor
+
+
+def span_check_rate(conn) -> dict:
+    """The share of focus spans to ask the person to confirm, with the figures behind it.
+    Counted: verdicts on spans the app itself had as focus spans (span_reviews.own_call).
+    Agreement = "focus", with the kind left as the app had it."""
+    rows = conn.execute("SELECT verdict, subtype, own_call FROM span_reviews WHERE own_call LIKE 'focus:%'"
+                        " ORDER BY created DESC LIMIT ?", (SPAN_CHECK_WINDOW,)).fetchall()
+    n = len(rows)
+    agree = sum(1 for r in rows if r["verdict"] == "focus" and (not r["subtype"] or r["own_call"] == "focus:" + r["subtype"]))
+    out = {"n": n, "agree": agree, "full_until": SPAN_CHECK_FULL_N, "lower": None, "rate": 1.0}
+    if n < SPAN_CHECK_FULL_N:
+        return out
+    z, p = 1.96, agree / n
+    lower = (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)   # Wilson
+    out["lower"] = lower
+    x = (lower - SPAN_CHECK_LOW) / (SPAN_CHECK_HIGH - SPAN_CHECK_LOW)
+    out["rate"] = min(1.0, max(SPAN_CHECK_FLOOR, 1.0 - x * (1.0 - SPAN_CHECK_FLOOR)))
+    return out
+
+
+def span_check_due(sp: dict, rate: float) -> bool:
+    """Is this span one of the share that is asked about. Fixed per span (from its start time),
+    not drawn again on every load, so a span does not come and go from the list."""
+    import zlib
+    return zlib.crc32(str(int(sp["start"] // 60)).encode()) / 2 ** 32 < rate
 
 
 def _span_review_for(rows, sp):

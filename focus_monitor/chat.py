@@ -816,7 +816,7 @@ class DayChat:
                 if sp is None or abs(sp["start"] - s0) > 150 or abs(sp["end"] - e0) > 150:
                     return "error: no hypothesized span with those times; use a span from the list exactly"
                 edits.write_span_review(conn, sp["start"], sp["end"], args["verdict"], args.get("subtype"),
-                                        (args.get("note") or "").strip() or None, chat_message_id=mid)
+                                        (args.get("note") or "").strip() or None, chat_message_id=mid, own=sp.get("own_call"))
                 from . import exceptions
                 eid = exceptions.record_span(conn, sp["start"], sp["end"], args["verdict"], args.get("subtype"),
                                              sp.get("own_call"), bool((args.get("exception_to_rule") or "").strip()),

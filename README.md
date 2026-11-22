@@ -457,6 +457,22 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+- **Whole focus spans are confirmed first, fewer as agreement grows (2026-11-22).** The Review tab
+  opens on the focus spans to confirm (`/api/span/checks`, mode `check` in `dashboard.html`), then
+  the questions. Spans of the last 3 days that the app counts as focus spans, finished and without
+  a verdict, oldest first.
+  * Every one is asked until 20 have a verdict. After that the share is `stats.span_check_rate`:
+    it falls with the lower end of the 95% interval on agreement over the last 100 verdicts (20 of
+    20 asks half, 50 of 50 about one in six, 100 of 100 one in ten, the floor) and rises again
+    after disagreements. Changing the kind of a span counts as a disagreement.
+  * Agreement is counted only on verdicts that carry the app's own call
+    (`span_reviews.own_call`, written since this change), so the count started at zero.
+  * Which spans are asked is fixed by the span's start minute (`stats.span_check_due`), not drawn
+    again on each load. A span whose start moves after a re-judgment may enter or leave the list.
+  * Disqualified spans are not in this list; they are still in the full span list after the
+    questions. Opening a chosen question, or carrying on after a card, skips the checks.
+  * The list costs about 1.4 s when the Review tab opens (three days of spans are computed).
+
 - **No spot checks on segments under 2 minutes (2026-11-22).** `questions.SPOT_MIN_S` is 120 (it
   was 20). Open spot checks on shorter segments are archived at the next draw. Ordinary review
   questions are not affected: a short segment still gets one when its judgment is in doubt and

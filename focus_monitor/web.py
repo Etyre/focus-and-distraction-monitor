@@ -446,6 +446,30 @@ def api_span_queue(days: int = 7):
     return out
 
 
+@app.get("/api/span/checks")
+def api_span_checks(days: int = 3):
+    """The focus spans the person is asked to confirm, shown ahead of the review questions
+    (Eli, 2026-11-22: "spot check every focus span, and then fewer over time as the confidence
+    increases"). Finished, unconfirmed spans the app counts as focus spans, oldest first; which
+    of them are asked is stats.span_check_due. Only the last few days: older ones are not
+    remembered well enough to confirm (they stay in the full list, /api/span/queue)."""
+    c = conn()
+    rate = stats.span_check_rate(c)
+    out = []
+    today = logical_date()
+    for i in reversed(range(_capped(days, 1, 7))):
+        day = today - dt.timedelta(days=i)
+        t0, t1 = stats.day_bounds(day)
+        day_segs = stats.labelled_segments(c, t0, t1)
+        se = stats.spans_and_events(day_segs, conn=c)
+        for sp in sorted(se["focus_spans"], key=lambda s: s["start"]):
+            if sp.get("ended_by") in ("ongoing", "awaiting evaluation") or sp.get("confirmed"):
+                continue
+            if stats.span_check_due(sp, rate["rate"]):
+                out.append(_span_payload(c, sp, day.isoformat(), day_segs))
+    return {"spans": out, "rate": rate}
+
+
 @app.get("/api/span/at")
 def api_span_at(ts: float):
     """The hypothesized span (qualifying or disqualified) containing ts, as a review payload."""
@@ -481,7 +505,7 @@ def api_span_review(r: SpanReview):
     c = conn()
     sp = exceptions.find_span(c, r.start, r.end)   # the app's own call, read before the verdict changes the span
     try:
-        edits.write_span_review(c, r.start, r.end, r.verdict, r.subtype, r.note)
+        edits.write_span_review(c, r.start, r.end, r.verdict, r.subtype, r.note, own=sp.get("own_call") if sp else None)
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
     # Marked as an exception to the rules: kept on record, with the note as the reason (exceptions.py).

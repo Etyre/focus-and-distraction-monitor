@@ -411,6 +411,8 @@ def connect() -> sqlite3.Connection:
     if cmcols and "proposal" not in cmcols:
         _alter(conn, "ALTER TABLE chat_messages ADD COLUMN proposal TEXT")
     # Provenance: judgments that came out of a conversation with Claude point back at the reply.
+    # the app's own call on the span when the verdict was given ("focus:<subtype>" or "not_focus"): stats.span_check_rate
+    _alter(conn, "ALTER TABLE span_reviews ADD COLUMN own_call TEXT")
     for t in ("seg_reviews", "span_reviews", "review_questions"):
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}
         if cols and "chat_message_id" not in cols:
