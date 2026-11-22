@@ -294,8 +294,11 @@ or the README where it belongs.
     and the like)? Agent sessions are a large share of the day and are "task" today.
   - Is a stand-alone AI conversation a focus span of its own subtype, as a meeting is?
   - With the flag set, does the time count as the work it supports (as hybrid does)?
-  - Needs a line in the Rules doc (Eli's file: propose the wording), and old segments keep
-    their old kinds unless re-judged.
+  - Needs a line in the Rules doc (Eli's file: propose the wording).
+  - Eli, 2026-11-21: "we'll need to recompute some past history based on this." Old segments
+    keep their old kinds until re-judged, so decide how far back, and fold it into the history
+    re-judgment (items 19, 26, 27, 32) so the history is judged once, with the new category.
+  TO DISCUSS FIRST THING 2026-11-22 (Eli asked for the morning, when he is fresh).
 
 - 2026-11-21: **accepted rules** stay in one list at the bottom of the Rules doc; Eli refactors
   them into the body by hand. The Rules doc is committed when a rule is accepted. (Built.)

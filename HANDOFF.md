@@ -55,6 +55,12 @@ reads `toggl_id`, whose meaning changed).
 - Sub-threads (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-21): Rules doc wording and code.
   Settle the four listed points with Eli first.
 
+## First thing 2026-11-22
+
+Eli wants to talk through the "talking to AI models" category in the morning (see "Decided" in
+`OPEN-DECISIONS.md`, 2026-11-21). Open with the question about coding agents. It will need
+past history recomputed: plan it together with the history re-judgment, which has not started.
+
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator
