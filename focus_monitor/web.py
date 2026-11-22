@@ -448,13 +448,20 @@ def api_span_queue(days: int = 7):
 
 @app.get("/api/span/checks")
 def api_span_checks(days: int = 3):
-    """The focus spans the person is asked to confirm, shown ahead of the review questions
+    """The spans the person is asked to confirm, shown ahead of the review questions
     (Eli, 2026-11-22: "spot check every focus span, and then fewer over time as the confidence
-    increases"). Finished, unconfirmed spans the app counts as focus spans, oldest first; which
-    of them are asked is stats.span_check_due. Only the last few days: older ones are not
-    remembered well enough to confirm (they stay in the full list, /api/span/queue)."""
+    increases", and the same for spans the app leaves out that might count or be an exception).
+    Finished spans without a verdict, oldest first; which are asked is stats.span_check_due at
+    the rate for the span's own kind of call (stats.span_check_rate). Only the last few days:
+    older ones are not remembered well enough (they stay in the full list, /api/span/queue)."""
     c = conn()
-    rate = stats.span_check_rate(c)
+    rates: dict = {}
+    def rate_for(sp):
+        own = sp.get("own_call") or {}
+        key = None if own.get("focus") else (own.get("reason") or "")
+        if key not in rates:
+            rates[key] = stats.span_check_rate(c, key)
+        return rates[key]
     out = []
     today = logical_date()
     for i in reversed(range(_capped(days, 1, 7))):
@@ -462,12 +469,13 @@ def api_span_checks(days: int = 3):
         t0, t1 = stats.day_bounds(day)
         day_segs = stats.labelled_segments(c, t0, t1)
         se = stats.spans_and_events(day_segs, conn=c)
-        for sp in sorted(se["focus_spans"], key=lambda s: s["start"]):
+        for sp in sorted(se["focus_spans"] + se["disqualified"], key=lambda s: s["start"]):
             if sp.get("ended_by") in ("ongoing", "awaiting evaluation") or sp.get("confirmed"):
                 continue
+            rate = rate_for(sp)
             if stats.span_check_due(sp, rate["rate"]):
-                out.append(_span_payload(c, sp, day.isoformat(), day_segs))
-    return {"spans": out, "rate": rate}
+                out.append(dict(_span_payload(c, sp, day.isoformat(), day_segs), check=rate))
+    return {"spans": out}
 
 
 @app.get("/api/span/at")

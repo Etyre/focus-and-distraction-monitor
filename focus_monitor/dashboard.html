@@ -453,7 +453,7 @@ let queue=[],qi=0,current=null,spanQueue=[],sqi=0;
 // ⌘←/⌘→ (or ctrl) step through it without answering; `s` is the same as ⌘→.
 // 'check' comes first: the focus spans you are asked to confirm (/api/span/checks; Eli, 2026-11-22).
 // It is a span card like 'span' (every unconfirmed span, after the questions), from its own list.
-let reviewMode=null,returnMode=null,checkQueue=[],cqi=0,checkRate=null;const RV={span:false,switch:false},RV_ORDER=['check','question','span','switch'];
+let reviewMode=null,returnMode=null,checkQueue=[],cqi=0;const RV={span:false,switch:false},RV_ORDER=['check','question','span','switch'];
 const isSpanMode=m=>m==='span'||m==='check';
 const CHECK_SKIP=new Set();   // checks stepped past: a later reload of the queue does not open on them again
 function enterOneOff(){if(reviewMode!=='oneoff')returnMode=reviewMode;reviewMode='oneoff';}
@@ -614,9 +614,9 @@ async function loadQueue(){
   if(left())return;   // before anything shared is touched: a superseded load must not swap the queue under the card on screen
   // The spans to confirm come first, unless this load is carrying on from a card or going to a chosen question.
   const straight=pendingQSeg!=null||pendingAfter!=null;let checks=null;
-  if(!straight){try{checks=await api('/api/span/checks');}catch(e){console.error('span checks failed',e);checks={spans:[],rate:checkRate};}if(left())return;}
+  if(!straight){try{checks=await api('/api/span/checks');}catch(e){console.error('span checks failed',e);checks={spans:[]};}if(left())return;}
   RV.span=RV.switch=false;spanQueue=[];queue=[];sqi=0;qi=0;reviewMode=null;returnMode=null;
-  if(checks){checkQueue=checks.spans.filter(x=>!CHECK_SKIP.has(Math.round(x.start)));checkRate=checks.rate;cqi=0;}
+  if(checks){checkQueue=checks.spans.filter(x=>!CHECK_SKIP.has(Math.round(x.start)));cqi=0;}
   qQueue=queueRows.filter(q=>!q.pending||q.segment_id===pendingQSeg);qqi=0;qLate.clear();qPastEnd=false;
   if(pendingQSeg!=null){const i=qQueue.findIndex(q=>q.segment_id===pendingQSeg);pendingQSeg=null;if(i>=0)qqi=i;}
   else if(pendingAfter!=null){const i=qQueue.findIndex(q=>q.seg_start>pendingAfter);if(i>=0)qqi=i;} // carry on in time from the card just left
@@ -1070,15 +1070,16 @@ async function dismissQuestion(id){
   qqi++;if(qqi<qQueue.length)renderQuestion();else loadQueue();
 }
 let currentSpan=null,spanOneOff=false;
-function spanCheckWhy(){const r=checkRate;if(!r)return '';
-  return r.n<r.full_until?`every focus span is asked about until ${r.full_until} have your verdict (${r.n} so far)`
-    :`${Math.round(100*r.rate)}% of focus spans are asked about: you agreed with ${r.agree} of the last ${r.n}`;}
+function spanCheckWhy(sp){const r=sp&&sp.check;if(!r)return '';
+  const what=r.reason==null?'focus spans':`spans left out for “${r.reason}”`;
+  return r.n<r.full_until?`all ${what} are asked about until ${r.full_until} have your verdict (${r.n} so far)`
+    :`${Math.round(100*r.rate)}% of ${what} are asked about: you agreed with ${r.agree} of the last ${r.n}`;}
 function renderSpanReview(m){
   m=m||(reviewMode==='check'?'check':'span');
   const list=rvList(m),sp=list[rvIdx(m)];
   if(!sp){if(m==='check'){cqi=checkQueue.length;if(qQueue.length){reviewMode='question';return renderQuestion();}}return loadQueue();}
   reviewMode=m;
-  $('#queueCount').textContent=m==='check'?`${list.length-rvIdx(m)} focus span(s) to confirm, then the questions · ${spanCheckWhy()}`
+  $('#queueCount').textContent=m==='check'?`${list.length-rvIdx(m)} span(s) to confirm, then the questions · ${spanCheckWhy(sp)}`
     :`${spanQueue.length-sqi} span(s) to confirm — switch reviews unlock once their span is confirmed`;
   renderSpanCard(sp,false);
 }
@@ -1195,6 +1196,7 @@ function renderSpanChat(){const log=cardEl('#spanchatlog');if(!log)return;const 
 async function spanRefresh(sp0){
   let again=null;try{again=await api('/api/span/at?ts='+(sp0.start+sp0.end)/2);}catch(e){}
   // by start time, not by object: the same span can be in both lists and on a one-off card as separate copies
+  if(again&&sp0.check)again.check=sp0.check;   // why it is asked about (only /api/span/checks sends it)
   if(again)for(const l of [spanQueue,checkQueue]){const i=l.findIndex(x=>Math.round(x.start)===Math.round(sp0.start));if(i>=0)l[i]=again;}
   if(CARD.kind!=='span'||currentSpan!==sp0)return 'elsewhere';
   if(!again)return 'gone';

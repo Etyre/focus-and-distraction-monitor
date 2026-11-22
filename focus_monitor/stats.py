@@ -852,15 +852,25 @@ SPAN_CHECK_FLOOR = 0.1               # never fewer than this share
 SPAN_CHECK_LOW, SPAN_CHECK_HIGH = 0.70, 0.95   # the bound at which checks start to fall / reach the floor
 
 
-def span_check_rate(conn) -> dict:
-    """The share of focus spans to ask the person to confirm, with the figures behind it.
-    Counted: verdicts on spans the app itself had as focus spans (span_reviews.own_call).
-    Agreement = "focus", with the kind left as the app had it."""
-    rows = conn.execute("SELECT verdict, subtype, own_call FROM span_reviews WHERE own_call LIKE 'focus:%'"
-                        " ORDER BY created DESC LIMIT ?", (SPAN_CHECK_WINDOW,)).fetchall()
+def span_check_rate(conn, reason: str | None = None) -> dict:
+    """The share of spans to ask the person to confirm, with the figures behind it. One figure
+    for the spans the app counts as focus spans (reason None; agreement = "focus", with the kind
+    left as the app had it), and one for each reason the app leaves a span out ("task activity
+    without a Toggl entry", ...; agreement = "not a focus span"). Kept apart so the checks go
+    where the person overrules the app: a reason they always agree with is asked about less, one
+    they often overrule or mark as an exception keeps being asked (Eli, 2026-11-22: also ask
+    about "spans that the app thinks don't count, but might or that I might mark as an
+    exception"). Counted from span_reviews.own_call, the app's call when the verdict was given."""
+    if reason is None:
+        rows = conn.execute("SELECT verdict, subtype, own_call FROM span_reviews WHERE own_call LIKE 'focus:%'"
+                            " ORDER BY created DESC LIMIT ?", (SPAN_CHECK_WINDOW,)).fetchall()
+        agree = sum(1 for r in rows if r["verdict"] == "focus" and (not r["subtype"] or r["own_call"] == "focus:" + r["subtype"]))
+    else:
+        rows = conn.execute("SELECT verdict FROM span_reviews WHERE own_call = ? ORDER BY created DESC LIMIT ?",
+                            ("not_focus:" + reason, SPAN_CHECK_WINDOW)).fetchall()
+        agree = sum(1 for r in rows if r["verdict"] == "not_focus")
     n = len(rows)
-    agree = sum(1 for r in rows if r["verdict"] == "focus" and (not r["subtype"] or r["own_call"] == "focus:" + r["subtype"]))
-    out = {"n": n, "agree": agree, "full_until": SPAN_CHECK_FULL_N, "lower": None, "rate": 1.0}
+    out = {"n": n, "agree": agree, "full_until": SPAN_CHECK_FULL_N, "lower": None, "rate": 1.0, "reason": reason}
     if n < SPAN_CHECK_FULL_N:
         return out
     z, p = 1.96, agree / n

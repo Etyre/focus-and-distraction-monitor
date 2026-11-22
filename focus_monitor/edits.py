@@ -198,7 +198,7 @@ def write_span_review(c, start: float, end: float, verdict: str, subtype: str | 
                 c.execute("INSERT OR IGNORE INTO review_undo(kind, key, chat_message_id, rows, created) VALUES ('span',?,?,?,?)",
                           (f"{start:.0f}:{end:.0f}", chat_message_id, json.dumps(was), time.time()))
         c.execute("DELETE FROM span_reviews WHERE start >= ? AND end <= ?", (start - 60, end + 60))
-        own_call = None if not own else (f"focus:{own.get('subtype') or ''}" if own.get("focus") else "not_focus")
+        own_call = None if not own else (f"focus:{own.get('subtype') or ''}" if own.get("focus") else f"not_focus:{own.get('reason') or ''}")
         c.execute("INSERT INTO span_reviews(start, end, verdict, subtype, note, created, chat_message_id, own_call)"
                   " VALUES (?,?,?,?,?,?,?,?)", (start, end, verdict, subtype, note, time.time(), chat_message_id, own_call))
 

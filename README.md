@@ -469,8 +469,12 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
     (`span_reviews.own_call`, written since this change), so the count started at zero.
   * Which spans are asked is fixed by the span's start minute (`stats.span_check_due`), not drawn
     again on each load. A span whose start moves after a re-judgment may enter or leave the list.
-  * Disqualified spans are not in this list; they are still in the full span list after the
-    questions. Opening a chosen question, or carrying on after a card, skips the checks.
+  * Spans the app leaves out are asked about too (same day, 2026-11-22), since they might count or
+    be an exception. Each reason for leaving a span out ("task activity without a Toggl entry",
+    "no continuous block of 10 minutes", "reading without note-taking") has its own count and its
+    own share: agreement there is the verdict "not a focus span". A reason Eli keeps overruling
+    keeps being asked; one he always agrees with tapers. `own_call` holds "not_focus:<reason>".
+  * Opening a chosen question, or carrying on after a card, skips the checks.
   * The list costs about 1.4 s when the Review tab opens (three days of spans are computed).
 
 - **No spot checks on segments under 2 minutes (2026-11-22).** `questions.SPOT_MIN_S` is 120 (it
