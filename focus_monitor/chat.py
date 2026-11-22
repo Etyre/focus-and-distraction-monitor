@@ -446,8 +446,9 @@ span even though it did not follow the rule, because ...", or the reverse). Make
 rules do not outrank them. Pass exception_to_rule naming the rule, and put THEIR reason in the note; if they \
 gave no reason, make the ruling and ask once why (a later ruling on the same span or blocks adds it). The app \
 keeps a record of exceptions and drafts a general rule when several share a reason, so do not also \
-propose_rule for a single exception unless they ask for a rule. A verdict on a span that differs from the \
-app's own call is recorded as an exception automatically.
+propose_rule for a single exception unless they ask for a rule. Only what THEY call an exception is one: a \
+ruling that corrects a misjudgment (the app read the screen wrong, or applied a rule wrongly) is an ordinary \
+correction, so leave exception_to_rule null for it.
 How the app turns these labels into focus spans - you must work with this:
 - Every block has a focused/unfocused judgment (the QUALITY of attention in that block), separate from \
 which thread it belongs to. A focused block counts as focus; an unfocused one does not. Passive content is \
@@ -807,7 +808,8 @@ class DayChat:
                                         (args.get("note") or "").strip() or None, chat_message_id=mid)
                 from . import exceptions
                 eid = exceptions.record_span(conn, sp["start"], sp["end"], args["verdict"], args.get("subtype"),
-                                             sp.get("own_call"), reason=args.get("note"),
+                                             sp.get("own_call"), bool((args.get("exception_to_rule") or "").strip()),
+                                             reason=args.get("note"),
                                              rule=args.get("exception_to_rule"), chat_message_id=mid)
                 what = "not a focus span" if args["verdict"] == "not_focus" else f"focus span ({args.get('subtype') or 'subtype as judged'})"
                 applied.append({"kind": "span", "start": sp["start"], "end": sp["end"], "summary": what,

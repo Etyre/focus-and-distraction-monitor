@@ -468,10 +468,11 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * **Exceptions to the rules (2026-11-21).** A ruling that goes against the written rules takes
   effect like any ruling, and is also kept in `rule_exceptions` (`exceptions.py`): what was ruled,
   what the app had under the rules, the rule it departs from when a chat named it, and the reason.
-  A span verdict that differs from the app's own call is recorded automatically, from the card
-  (the note is the reason) or a chat; the chats can also mark a block ruling with
-  `exception_to_rule`. Undoing the verdict, or changing it to agree with the app, withdraws the
-  exception (rows are kept, `withdrawn_at` set). The rule drafter reads the record and may draft a
+  Only what Eli calls an exception is one. The usual way is telling a chat model, which passes
+  `exception_to_rule` on the span verdict or block ruling; by hand there is a checkbox beside the
+  span verdict buttons and a button in the block editor (both in the folded manual sections).
+  A ruling that merely differs from the app's call is a correction and is not recorded. Undoing
+  or reversing the verdict, or "not an exception", withdraws it (rows are kept, `withdrawn_at`). The rule drafter reads the record and may draft a
   rule resting on exceptions (three occasions, counting answers and exceptions together); three
   standing exceptions no draft has used start a drafting run without waiting for 8 new rulings.
   The Rules page lists them with an editable reason. The app's own call is taken from

@@ -470,6 +470,7 @@ class SpanReview(BaseModel):
     verdict: str
     subtype: str | None = None
     note: str | None = None
+    exception: bool = False       # the person ticked "this goes against my written rules"
 
 
 @app.post("/api/span/review")
@@ -482,9 +483,9 @@ def api_span_review(r: SpanReview):
         edits.write_span_review(c, r.start, r.end, r.verdict, r.subtype, r.note)
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
-    # A verdict against the app's call is a ruling against the rules as written: kept as an
-    # exception, with the note as the reason (exceptions.py).
-    eid = exceptions.record_span(c, r.start, r.end, r.verdict, r.subtype, sp.get("own_call") if sp else None, reason=r.note)
+    # Marked as an exception to the rules: kept on record, with the note as the reason (exceptions.py).
+    eid = exceptions.record_span(c, r.start, r.end, r.verdict, r.subtype, sp.get("own_call") if sp else None,
+                                 r.exception, reason=r.note if r.exception else None)
     return {"ok": True, "exception_id": eid}
 
 
@@ -1454,6 +1455,29 @@ def api_rule_exceptions():
     """The rulings made against the written rules that still stand (exceptions.py)."""
     from . import exceptions
     return exceptions.listing(conn())
+
+
+class ExceptionMark(BaseModel):
+    segment_id: int
+    reason: str | None = None
+
+
+@app.post("/api/rule-exceptions/mark-segment")
+def api_rule_exception_mark(body: ExceptionMark):
+    """Mark the ruling on one block as an exception to the rules, by hand."""
+    from . import exceptions
+    eid = exceptions.mark_segment(conn(), body.segment_id, body.reason)
+    if eid is None:
+        raise HTTPException(400, "rule on this block first: an exception is a ruling of yours")
+    return {"ok": True, "exception_id": eid}
+
+
+@app.delete("/api/rule-exceptions/{eid}")
+def api_rule_exception_unmark(eid: int):
+    from . import exceptions
+    if not exceptions.withdraw(conn(), eid):
+        raise HTTPException(404)
+    return {"ok": True}
 
 
 class ExceptionReason(BaseModel):

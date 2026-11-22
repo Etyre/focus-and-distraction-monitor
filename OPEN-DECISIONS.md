@@ -291,9 +291,8 @@ or the README where it belongs.
 
 - 2026-11-21: **exceptions to the rules** are implemented, recorded, and feed rule drafting
   (built; README Gotchas). Choices made while building, to confirm:
-  - Every span verdict that differs from the app's own call is recorded as an exception, whether
-    or not a reason is given. Some of those are corrections of a misjudged block underneath, not
-    exceptions to a rule. Alternative: record only when a reason is given or a chat marks it.
+  - Decided 2026-11-21: only what Eli marks is an exception: by telling a chat model (the usual
+    way) or by hand (checkbox on the span card, button in the block editor).
   - Three occasions (answers and exceptions together) are enough for a draft, as before.
   - An exception applies to its own span or blocks only. The span rules do not treat it as a
     precedent for similar spans until a rule is accepted, and an accepted rule changes what the

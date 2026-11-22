@@ -7,14 +7,12 @@ it: what was ruled, what the app had under the rules, the rule it departs from (
 the person's reason. The rule drafter (rule_drafts.py) reads the record and proposes a general
 rule once several exceptions made on different occasions share a reason.
 
-What counts as an exception:
-- a verdict on a span that differs from the app's own call on that span (the span rules are
-  code, so a verdict against the call is a ruling against the rules as written), whether it was
-  made on the card or through a chat;
-- a ruling a chat model was told is an exception (set_span_verdict / set_segment_judgment with
-  exception_to_rule).
-An exception stops counting (withdrawn_at) when its ruling is undone or changed to agree with
-the app. Rows are never deleted.
+What counts as an exception: only what the person says is one. Usually they tell a chat model
+(set_span_verdict / set_segment_judgment with exception_to_rule); they can also mark it by hand
+(a checkbox beside the span verdict buttons, a button in the block editor). A ruling that merely
+differs from the app's call is a correction, not an exception, and is not recorded here.
+An exception stops counting (withdrawn_at) when its ruling is undone or reversed, or when it is
+unmarked. Rows are never deleted.
 """
 import json
 import time
@@ -59,29 +57,33 @@ def _open_span_row(conn, start, end):
 
 
 def record_span(conn, start: float, end: float, verdict: str, subtype: str | None, own: dict | None,
-                reason: str | None = None, rule: str | None = None, chat_message_id: int | None = None) -> int | None:
+                is_exception: bool, reason: str | None = None, rule: str | None = None,
+                chat_message_id: int | None = None) -> int | None:
     """Called after a span verdict is written. `own` is the app's call on the span from BEFORE
-    the verdict. Records the exception, updates the one already on this span, or withdraws it
-    when the verdict now agrees with the app. Returns the exception id, or None."""
+    the verdict. `is_exception`: the person marked it (the card's checkbox) or told a chat model
+    so. Nothing is recorded on the app's own inference: a verdict against the app's call is
+    usually a correction of a misjudgment, not an exception to a rule (Eli, 2026-11-21).
+    A later unmarked verdict the same way leaves a standing exception alone; one the other way
+    withdraws it. Returns the standing exception's id, or None."""
     reason = " ".join((reason or "").split()) or None
     rule = " ".join((rule or "").split()) or None
-    differs = bool(rule) or (own is not None and (verdict == "focus") != bool(own.get("focus")))
     ruled = "not a focus span" if verdict == "not_focus" else f"a focus span ({subtype or 'kind as the app had it'})"
+    same_way = lambda row: row["ruled"].startswith("not") == (verdict == "not_focus")
     with db.tx(conn):
         row = _open_span_row(conn, start, end)
-        if not differs:
-            if row is not None:
+        if not is_exception:
+            if row is None:
+                return None
+            if not same_way(row):
                 conn.execute("UPDATE rule_exceptions SET withdrawn_at=? WHERE id=?", (time.time(), row["id"]))
-            return None
+                return None
+            conn.execute("UPDATE rule_exceptions SET ruled=? WHERE id=?", (ruled, row["id"]))
+            return row["id"]
         if row is not None:   # the same exception, ruled again: keep what it already says where nothing new is given
             conn.execute("UPDATE rule_exceptions SET ruled=?, reason=COALESCE(?, reason), rule=COALESCE(?, rule),"
                          " chat_message_id=COALESCE(?, chat_message_id) WHERE id=?",
                          (ruled, reason, rule, chat_message_id, row["id"]))
             return row["id"]
-        if reason is None:   # ruled again after an undo: the reason given the first time still holds
-            was = conn.execute("SELECT reason FROM rule_exceptions WHERE kind='span' AND ruled=? AND reason IS NOT NULL"
-                               " AND start >= ? AND end <= ? ORDER BY created DESC", (ruled, start - 60, end + 60)).fetchone()
-            reason = was["reason"] if was else None
         cur = conn.execute("INSERT INTO rule_exceptions(kind, start, end, ruled, app_call, rule, reason, created, chat_message_id)"
                            " VALUES ('span',?,?,?,?,?,?,?,?)",
                            (start, end, ruled, call_text(own), rule, reason, time.time(), chat_message_id))
@@ -89,20 +91,32 @@ def record_span(conn, start: float, end: float, verdict: str, subtype: str | Non
 
 
 def span_verdict_removed(conn, start: float, end: float) -> None:
-    """Called after a span verdict is withdrawn. The exception goes with it, unless an earlier
-    verdict came back (edits.delete_span_review puts back the one a chat had replaced) and that
-    one is itself against the app's call."""
-    from . import stats
+    """Called after a span verdict is withdrawn: the exception goes with it."""
     with db.tx(conn):
         conn.execute("UPDATE rule_exceptions SET withdrawn_at=? WHERE kind='span' AND withdrawn_at IS NULL AND start >= ? AND end <= ?",
                      (time.time(), start - 60, end + 60))
-    sp = find_span(conn, start, end)
-    if sp is None:
-        return
-    rv = stats._span_review_for(conn.execute("SELECT * FROM span_reviews").fetchall(), sp)
-    if rv is not None:
-        record_span(conn, rv["start"], rv["end"], rv["verdict"], rv["subtype"], sp.get("own_call"),
-                    reason=rv["note"], chat_message_id=rv["chat_message_id"])
+
+
+def withdraw(conn, eid: int) -> bool:
+    """"Not an exception after all": the ruling itself stays."""
+    with db.tx(conn):
+        return conn.execute("UPDATE rule_exceptions SET withdrawn_at=? WHERE id=? AND withdrawn_at IS NULL",
+                            (time.time(), eid)).rowcount > 0
+
+
+def mark_segment(conn, segment_id: int, reason: str | None) -> int | None:
+    """The person marks their ruling on one block as an exception, by hand."""
+    from .summaries import verdict_text
+    r = conn.execute("SELECT * FROM seg_reviews WHERE segment_id=?", (segment_id,)).fetchone()
+    if r is None:
+        return None
+    for x in active(conn):   # already marked: add the reason if one is given now
+        if x["kind"] == "segments" and segment_id in x["segment_ids"]:
+            if (reason or "").strip():
+                set_reason(conn, x["id"], reason)
+            return x["id"]
+    note = r["note"] if r["note"] and not r["note"].startswith("(") else None
+    return record_segments(conn, [segment_id], verdict_text(r) or "note only", reason or note, None)
 
 
 def record_segments(conn, segment_ids: list[int], ruled: str, reason: str | None, rule: str | None,

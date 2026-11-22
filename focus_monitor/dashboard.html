@@ -550,9 +550,19 @@ async function loadRuleExceptions(){
   const el=$('#ruleExceptions');
   el.innerHTML=r.length?`<div class="card"><b>Exceptions you have made</b> <span class="muted small">— rulings that go against the rules as written. Each stands on its own; when several share a reason, the app proposes a rule above.</span>
     ${r.map(x=>`<div style="padding:10px 0;border-top:1px solid var(--grid);margin-top:8px">${excHeadHtml(x)}
-      <div class="row" style="gap:6px;margin-top:6px;align-items:flex-start"><textarea id="excReason${x.id}" spellcheck="true" rows="2" style="flex:1;box-sizing:border-box" placeholder="why did this one count differently?">${esc(x.reason||'')}</textarea><button onclick="saveExcReason(${x.id})">save reason</button></div>
+      <div class="row" style="gap:6px;margin-top:6px;align-items:flex-start"><textarea id="excReason${x.id}" spellcheck="true" rows="2" style="flex:1;box-sizing:border-box" placeholder="why did this one count differently?">${esc(x.reason||'')}</textarea><button onclick="saveExcReason(${x.id})">save reason</button><button onclick="excUnmark(${x.id})" title="Your ruling stays; it just stops counting as an exception">not an exception</button></div>
       ${x.draft?`<div class="small muted" style="margin-top:4px">${x.draft.status==='open'?'Behind a proposed rule above':x.draft.status==='added'?'Led to a rule you added':'Was behind a proposed rule you rejected'}: ${esc(x.draft.rule)}</div>`:''}</div>`).join('')}</div>`:'';
   draftRestore(el);}
+async function excUnmark(id){
+  try{await api('/api/rule-exceptions/'+id,{method:'DELETE'});}catch(e){alert('could not save that: '+e.message);return;}
+  if((location.hash||'#day')==='#rules')loadRuleExceptions();else if(currentSpan&&CARD.kind==='span')spanRefresh(currentSpan);}
+// The block editor's "mark as an exception": the ruling on the block is already saved; this
+// puts it on the record of exceptions, with the note as the reason.
+async function segExcMark(btn){
+  const ed=segEd;if(!ed||ed.sid==null)return;const nEl=cardEl('#segNoteEv');
+  try{await api('/api/rule-exceptions/mark-segment',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({segment_id:ed.sid,reason:(nEl&&nEl.value)||null})});}
+  catch(e){alert(e.message);return;}
+  btn.textContent='✓ kept as an exception (see the Rules page)';btn.disabled=true;}
 async function saveExcReason(id){
   const el=$('#excReason'+id);if(!el)return;
   try{await api(`/api/rule-exceptions/${id}/reason`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({reason:el.value})});}
@@ -1070,7 +1080,7 @@ function renderSpanCard(sp,oneOff){
         <button onclick="spanUnfocused(false)" title="Those blocks become ordinary focus time, and this question goes away">No, I was still on it — count it as focus</button>
         <button style="border-color:var(--interrupted)" onclick="spanUnfocused(true)" title="Those blocks become time away from the span. A stretch of 5 minutes or more ends the span where it began, so the span may get shorter or split.">Yes, it was unfocused — treat it as time away</button>
       </div></div>`:''}
-    ${sp.exception?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px"><b>Kept as an exception to the rules.</b>${sp.exception.app_call?` The app had it as: ${esc(sp.exception.app_call)}.`:''} ${sp.exception.reason?`Your reason: ${esc(sp.exception.reason)}`:'No reason recorded yet: tell Claude why below, or add it on the <a href="#rules">Rules page</a>.'} <span class="muted">Several exceptions with a shared reason become a proposed rule.</span></div>`:''}
+    ${sp.exception?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px"><b>Kept as an exception to the rules.</b>${sp.exception.app_call?` The app had it as: ${esc(sp.exception.app_call)}.`:''} ${sp.exception.reason?`Your reason: ${esc(sp.exception.reason)}`:'No reason recorded yet: tell Claude why below, or add it on the <a href="#rules">Rules page</a>.'} <span class="muted">Several exceptions with a shared reason become a proposed rule.</span> <button class="small" onclick="excUnmark(${sp.exception.id})" title="The verdict stays; it just stops counting as an exception">not an exception</button></div>`:''}
     <div class="small" style="margin:4px 0">⏱ Toggl: ${sp.toggl.length?esc(sp.toggl.join(' · ')):'<span class="muted">no entries during this span</span>'}</div>
     <div class="muted small" style="margin:4px 0">Apps: ${esc(sp.apps.map(appName).join(', '))}</div>
 
@@ -1084,7 +1094,8 @@ function renderSpanCard(sp,oneOff){
         <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
         ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
       </div>
-      <textarea id="spanNote" data-draft="fm.draft.spanNote.${spKey}" spellcheck="true" rows="2" placeholder="optional note: what was really going on? If your verdict goes against the app's call, this is kept as the reason for the exception."></textarea></div></details>`;});
+      <textarea id="spanNote" data-draft="fm.draft.spanNote.${spKey}" spellcheck="true" rows="2" placeholder="optional note: what was really going on? For an exception, why this one counts differently."></textarea>
+      <label class="small" style="display:block;margin-top:4px"><input type="checkbox" id="spanExc"${sp.exception?' checked':''}> this goes against my written rules — keep it as an exception (tick before choosing the verdict)</label></div></details>`;});
   spanTLBind(sp);
   renderSpanChat();
   chatLoad('sp'+spanChatKey(),'span',spanChatKey(),renderSpanChat);
@@ -1183,7 +1194,7 @@ async function spanUnfocused(yes){
 }
 async function spanReview(verdict,subtype){
   const sp=currentSpan,nEl=cardEl('#spanNote'),key=nEl&&draftKey(nEl);
-  try{await api('/api/span/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:sp.start,end:sp.end,verdict:verdict,subtype:subtype,note:(nEl&&nEl.value)||null})});}
+  try{await api('/api/span/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({start:sp.start,end:sp.end,verdict:verdict,subtype:subtype,note:(nEl&&nEl.value)||null,exception:!!(cardEl('#spanExc')&&cardEl('#spanExc').checked)})});}
   catch(e){cardError(e,'save that verdict');return;}
   draftDrop(key);
   // Stay on the card and redraw it from the server, so the verdict shows on its timeline and
@@ -1353,6 +1364,7 @@ function segEditorRows(ev,evr,sid){return `
     <div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted" title="The quality of attention in this block, separate from which thread it belongs to. Ruling a block unfocused makes it time away from a span, even on the span's own thread.">attention:</span> ${[[true,'focused'],[false,'unfocused']].map(([v,n])=>`<button class="small" style="${segEvalSel.focused===v?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('focused',${v})">${n}</button>`).join(' ')} <span class="muted">${ev&&ev.focused!=null?'evaluator: '+(ev.focused?'focused':'unfocused'):'evaluator: no focus judgment (judged before 19 Nov 2026)'}${segEvalSel.focused==null?'':' · your ruling: '+(segEvalSel.focused?'focused':'unfocused')}</span></div>
     ${segEvalShow.switch_label==='interruption'?`<div class="row small" style="gap:4px;flex-wrap:wrap;margin:4px 0"><span class="muted">this shift was:</span> <button class="small" title="I sought out stimulation or distraction without a clear intent" style="${segEvalSel.self_distraction?'outline:2px solid var(--distracted);font-weight:600;':''}" onclick="segEditBool('self_distraction',true)">a self-distraction</button> <button class="small" title="The next task under the same task-processing intention: part of a focused task block" style="${segEvalSel.next_task?'outline:2px solid var(--focus);font-weight:600;':''}" onclick="segEditBool('next_task',true)">the next task in a task block</button> <span class="muted">${ev&&ev.focused!=null?'evaluator: '+((ev.self_distraction?'self-distraction':'')+(ev.next_task?' next task':'')||'neither'):''}</span></div>`:''}
     <div class="row" style="gap:6px;margin:6px 0 0;align-items:flex-start"><textarea id="segNoteEv" data-draft="fm.draft.segNoteEv.${sid??''}" spellcheck="true" rows="2" style="flex:1" placeholder="optional note — context the models should learn from (saved with your edit, used as a precedent)">${evr&&evr.note&&!evr.note.startsWith('(')?esc(evr.note):''}</textarea><button class="small" onclick="segEdit('note',null)">save note</button></div>
+    <div style="margin-top:4px"><button class="small" onclick="segExcMark(this)" title="For a ruling of yours that goes against your written rules. Several exceptions with a shared reason become a proposed rule.">mark my ruling as an exception to the rules</button></div>
     ${evr?`<div class="small" style="margin:4px 0"><button class="small" onclick="segEvalUndo()">undo my edits to this block</button></div>`:''}`;}
 async function renderSwitch(id){
   if(id==null)return;
