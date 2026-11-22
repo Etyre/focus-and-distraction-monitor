@@ -383,6 +383,8 @@ class SpanChat:
                             + (", through a chat" if r["chat_message_id"] else "") + ": "
                             + ("not a focus span" if r["verdict"] == "not_focus" else f"a focus span ({r['subtype'] or 'subtype as judged'})")
                             + (f"; their note: “{pp.one(r['note'])}”" if pp.one(r["note"]) else ""))
+        from . import exceptions
+        exc = exceptions.lines(conn)
         overview = "\n".join(
             f"  {_t(s2['start'])}-{_t(s2['end'])}: "
             + (f"DISQUALIFIED ({s2.get('disq_reason')})" if s2.get("disq_reason") else s2.get("subtype", "?"))
@@ -397,7 +399,9 @@ class SpanChat:
                 + (f"Its summary" + (f" (“{pp.one(row['title'])}”)" if row["title"] else "") + f": {pp.one(row['summary'])}\n"
                    + ("" if row["coherent"] else f"The summary's own check doubted that it is one object of attention: {pp.one(row['issue'])}\n")
                    if row else "Its summary: (none yet)\n")
-                + "The person's verdict on it: " + ("\n" + "\n".join(verdicts) if verdicts else "none yet") + "\n\n"
+                + "The person's verdict on it: " + ("\n" + "\n".join(verdicts) if verdicts else "none yet") + "\n"
+                + ("Exceptions to the written rules the person has made so far (any day; say so when this span "
+                   "resembles one):\n" + "\n".join("  " + x for x in exc) + "\n" if exc else "") + "\n"
                 + shots_note + " get_screenshots shows any block.\n\n"
                 f"All hypothesized spans this day:\n{overview}\n\n"
                 f"Toggl entries this day (all of them, times to the second):\n{tgtxt}\n\n"
@@ -437,6 +441,13 @@ You can also ACT, but only through the tools:
 - open_review_question: put a question in the person's review queue for later, with options that each map to \
   a concrete judgment - use this when a call needs their eyes and they do not want to settle it now.
 - propose_rule: suggest a general rule for their rules document (they approve it with a click).
+EXCEPTIONS to the written rules: the person may rule against what the rules say ("this should be a focus \
+span even though it did not follow the rule, because ...", or the reverse). Make the ruling they ask for; the \
+rules do not outrank them. Pass exception_to_rule naming the rule, and put THEIR reason in the note; if they \
+gave no reason, make the ruling and ask once why (a later ruling on the same span or blocks adds it). The app \
+keeps a record of exceptions and drafts a general rule when several share a reason, so do not also \
+propose_rule for a single exception unless they ask for a rule. A verdict on a span that differs from the \
+app's own call is recorded as an exception automatically.
 How the app turns these labels into focus spans - you must work with this:
 - Every block has a focused/unfocused judgment (the QUALITY of attention in that block), separate from \
 which thread it belongs to. A focused block counts as focus; an unfocused one does not. Passive content is \
@@ -506,6 +517,11 @@ _LABEL_DOC = ("content = what the block was: creative | task | correspondence | 
               "next_task (on a shift) = the next task under the same task-processing intention. "
               "hybrid = the activity was carried on inside a live discussion. null leaves a field as judged.")
 
+_EXC_DOC = ("Set ONLY when the person says this ruling goes against their written rules and should stand anyway "
+            "(\"I know the rule says otherwise, but this one counts\", or the reverse): the rule it departs from, quoted "
+            "or closely paraphrased from the rules document. The ruling is then also kept in the record of exceptions. "
+            "null for an ordinary correction of a misjudgment.")
+
 DAY_TOOLS = [
     {"name": "set_segment_judgment",
      "description": "Change the judgment of one or more activity blocks (their #ids from the log) to the SAME "
@@ -537,7 +553,8 @@ DAY_TOOLS = [
                                             "ruling; false withdraws an earlier ruling."},
          "note": {"type": "string", "description": "One sentence in the person's words: what was really going on and "
                                                    "why it is labelled this way. Stored as the precedent future "
-                                                   "judgments see."}},
+                                                   "judgments see."},
+         "exception_to_rule": {"type": ["string", "null"], "description": _EXC_DOC}},
          "required": ["segment_ids", "note"]}},
     {"name": "set_span_verdict",
      "description": "Rule on a hypothesized span from the span list, by its start and end times (HH:MM as listed): "
@@ -548,7 +565,9 @@ DAY_TOOLS = [
          "verdict": {"type": "string", "enum": ["focus", "not_focus"]},
          "subtype": {"type": ["string", "null"], "enum": ["creative_work", "focused_task", "reading", "planning",
                                                          "other_focused", "meeting", None]},
-         "note": {"type": "string"}},
+         "note": {"type": "string", "description": "The person's reason, in their words. For an exception this "
+                                                   "is the record a later general rule is drafted from."},
+         "exception_to_rule": {"type": ["string", "null"], "description": _EXC_DOC}},
          "required": ["start_hhmm", "end_hhmm", "verdict", "note"]}},
     {"name": "open_review_question",
      "description": "Put a question in the person's review queue to answer later. Each option maps to a concrete "
@@ -767,6 +786,11 @@ class DayChat:
                                     "when": _t(row["start"]), "app": row["app"],
                                     "summary": ", ".join(parts) or "note only", "note": note or ""})
                     done.append(f"#{sid} {_t(row['start'])}")
+                exc_rule = (args.get("exception_to_rule") or "").strip()
+                if exc_rule and done:
+                    from . import exceptions
+                    exceptions.record_segments(conn, [int(d.split()[0][1:]) for d in done],
+                                               ", ".join(parts) or "note only", note, exc_rule, chat_message_id=mid)
                 out = f"ok: {len(done)} block(s) now {', '.join(parts) or 'unchanged labels'}: {', '.join(done)}" if done else "nothing changed"
                 return out + (f"; errors: {'; '.join(errs)}" if errs else "")
             if name == "set_span_verdict":
@@ -781,10 +805,15 @@ class DayChat:
                     return "error: no hypothesized span with those times; use a span from the list exactly"
                 edits.write_span_review(conn, sp["start"], sp["end"], args["verdict"], args.get("subtype"),
                                         (args.get("note") or "").strip() or None, chat_message_id=mid)
+                from . import exceptions
+                eid = exceptions.record_span(conn, sp["start"], sp["end"], args["verdict"], args.get("subtype"),
+                                             sp.get("own_call"), reason=args.get("note"),
+                                             rule=args.get("exception_to_rule"), chat_message_id=mid)
                 what = "not a focus span" if args["verdict"] == "not_focus" else f"focus span ({args.get('subtype') or 'subtype as judged'})"
                 applied.append({"kind": "span", "start": sp["start"], "end": sp["end"], "summary": what,
                                 "note": (args.get("note") or "").strip()})
-                return f"ok: span {_t(sp['start'])}-{_t(sp['end'])} ruled {what}"
+                return (f"ok: span {_t(sp['start'])}-{_t(sp['end'])} ruled {what}"
+                        + (" (kept in the record of exceptions to the rules)" if eid else ""))
             if name == "open_review_question":
                 sid = int(args["segment_id"])
                 if not conn.execute("SELECT 1 FROM segments WHERE id=? AND start>=? AND start<?", (sid, t0, t1)).fetchone():

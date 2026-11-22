@@ -45,6 +45,17 @@ reword or contradict anything the document already says.
 costs more than no rule.
 - Do not repeat a draft from the "already drafted" list, whatever its status.
 
+EXCEPTIONS. Sometimes the person rules against what the document says, knowing it, and gives a \
+reason ("this should be a focus span even though it did not follow the rule, because ..."). Those \
+are listed separately, numbered X<id>, each with what they ruled, what the app had under the rules, \
+and their reason. One exception changes nothing in the document: it was a one-off. When three or \
+more exceptions, made on different occasions, share a reason, the rule is what needs changing: draft \
+the line that would have made them unnecessary (a carve-out or an amendment), and say in "why" \
+which existing rule it qualifies. Such a draft may qualify what the document says; that is its \
+purpose. Give the exceptions it rests on in exception_ids. A draft needs at least three occasions \
+in all, counting entries and exceptions together. Exceptions with no reason given, or whose \
+reasons do not match, are not a pattern.
+
 How the rulings are listed: one ENTRY per act of ruling. An entry that covers several segments \
 (one edit or one chat reply applied to a run of blocks, with one note) is ONE occasion, however \
 many segments it lists. Each segment shows what it was, what the person ruled (every field they \
@@ -62,7 +73,8 @@ Their rules document:
 class Draft(BaseModel):
     rule: str = Field(description="The line for the rules document, in the person's first-person voice.")
     why: str = Field(description="One sentence for the person: what their rulings had in common.")
-    segment_ids: list[int] = Field(description="The ids of the rulings (at least 3) that support it.")
+    segment_ids: list[int] = Field(default_factory=list, description="The segment ids of the rulings that support it.")
+    exception_ids: list[int] = Field(default_factory=list, description="The exceptions (the number after X) that support it.")
 
 
 class Drafts(BaseModel):
@@ -86,7 +98,10 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     from .config import local_dt
     cfg = cfg or load_config()
     new, last = _new_since_last(conn)
-    if not force and (new < MIN_NEW or time.time() - last < MIN_GAP_S):
+    from . import exceptions
+    # Exceptions to the rules are rare and each one is deliberate, so three standing ones that no
+    # draft has rested on are enough for a run, without waiting for MIN_NEW rulings (2026-11-21).
+    if not force and not exceptions.due(conn, last) and (new < MIN_NEW or time.time() - last < MIN_GAP_S):
         return 0
     if conn.execute("SELECT COUNT(*) FROM rule_drafts WHERE status='open'").fetchone()[0] >= MAX_OPEN:
         return 0
@@ -102,7 +117,8 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     # review question: <label>)" with the question itself not given.
     rows = conn.execute("""SELECT r.*, g.app, g.domain, g.title, g.url, g.start AS g_start, g.end AS g_end
                            FROM seg_reviews r JOIN segments g ON g.id = r.segment_id ORDER BY r.created""").fetchall()
-    if len(rows) < 3 and conn.execute("SELECT COUNT(*) FROM phone_reviews").fetchone()[0] < 3:
+    xlines = exceptions.lines(conn)
+    if len(rows) < 3 and conn.execute("SELECT COUNT(*) FROM phone_reviews").fetchone()[0] < 3 and len(xlines) < 3:
         return 0
     lines = _ruling_entries(conn, cfg, rows)
     # Their rulings on phone app use (Eli, 2026-11-21: the phone questions are there to surface the
@@ -129,6 +145,7 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     prior = conn.execute("SELECT * FROM rule_drafts ORDER BY created").fetchall()
     text = (f"Their rulings: {len(rows)} segments ruled on, in {len(lines)} entries, oldest first:\n\n" + "\n\n".join(lines)
             + ("\n\nTheir verdicts on whole spans the app had put together:\n" + "\n".join(slines) if slines else "")
+            + ("\n\nEXCEPTIONS they made to the written rules:\n" + "\n".join(xlines) if xlines else "")
             + ("\n\nTheir rulings on phone app use (only the app name and timing are known; a rule here "
                "says which use of which app is passive consumption and which is not):\n" + "\n".join(plines) if plines else "")
             + ("\n\nAlready drafted (do not repeat):\n" + "\n".join(
@@ -148,13 +165,16 @@ def run(conn, cfg: Config | None = None, force: bool = False) -> int:
     with db.tx(conn):
         if resp.parsed_output is not None:   # None: the model stopped (contact_eli) or returned nothing usable
             known = {r["segment_id"] for r in rows}
+            xknown = {x["id"] for x in exceptions.active(conn)} if xlines else set()
             for d in resp.parsed_output.drafts[:3]:
                 support = [i for i in d.segment_ids if i in known]
-                if not d.rule.strip() or len(support) < 3:
-                    log.warning("dropping a drafted rule with %d valid supporting ruling(s): %r", len(support), d.rule[:80])
+                exc = sorted({i for i in d.exception_ids if i in xknown})
+                if not d.rule.strip() or len(support) + len(exc) < 3:
+                    log.warning("dropping a drafted rule with %d valid supporting ruling(s) and %d exception(s): %r",
+                                len(support), len(exc), d.rule[:80])
                     continue
-                conn.execute("INSERT INTO rule_drafts(rule, why, support, created, status) VALUES (?,?,?,?,'open')",
-                             (d.rule.strip(), d.why.strip(), json.dumps(support), now))
+                conn.execute("INSERT INTO rule_drafts(rule, why, support, exceptions, created, status) VALUES (?,?,?,?,?,'open')",
+                             (d.rule.strip(), d.why.strip(), json.dumps(support), json.dumps(exc) if exc else None, now))
                 n += 1
         conn.execute("INSERT INTO rule_draft_runs(created, reviews_seen, n_drafts, cost_usd) VALUES (?,?,?,?)",
                      (now, len(rows), n, cost))
@@ -294,8 +314,11 @@ def drafts(conn, decided: int = 20) -> dict:
     def row(r, with_evidence):
         d = dict(r)
         d["support"] = json.loads(d["support"] or "[]")
+        d["exceptions"] = json.loads(d.get("exceptions") or "[]")
         if with_evidence:
             d["evidence"] = evidence(conn, d["support"])
+            d["exception_rows"] = [dict(x) for i in d["exceptions"]
+                                   for x in conn.execute("SELECT * FROM rule_exceptions WHERE id=?", (i,))]
         return d
     return {"open": [row(r, True) for r in conn.execute("SELECT * FROM rule_drafts WHERE status='open' ORDER BY created")],
             "decided": [row(r, False) for r in conn.execute(

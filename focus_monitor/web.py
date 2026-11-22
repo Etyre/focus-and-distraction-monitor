@@ -396,7 +396,10 @@ def _span_payload(c, sp, day: str, day_segs: list[dict] | None = None) -> dict:
         d = {k: s.get(k) for k in keys}
         d["in_span"] = id(s) in in_span_ids or (day_segs is None)
         segs.append(d)
-    return {"day": day, "start": sp["start"], "end": sp["end"], "duration": sp["duration"],
+    from . import exceptions
+    ex = exceptions._open_span_row(c, sp["start"], sp["end"])
+    return {"exception": {"id": ex["id"], "reason": ex["reason"], "app_call": ex["app_call"], "rule": ex["rule"]} if ex else None,
+            "day": day, "start": sp["start"], "end": sp["end"], "duration": sp["duration"],
             "focus_min": sp["focus_min"], "subtype": sp.get("subtype"), "hybrid": bool(sp.get("hybrid")),
             "disq_reason": sp.get("disq_reason"), "detours": len(sp.get("detours", [])),
             "detour_min": sp.get("detour_min", 0), "ended_by": sp.get("ended_by"),
@@ -472,11 +475,17 @@ class SpanReview(BaseModel):
 @app.post("/api/span/review")
 def api_span_review(r: SpanReview):
     _ts_arg(r.start, r.end)
+    from . import exceptions
+    c = conn()
+    sp = exceptions.find_span(c, r.start, r.end)   # the app's own call, read before the verdict changes the span
     try:
-        edits.write_span_review(conn(), r.start, r.end, r.verdict, r.subtype, r.note)
+        edits.write_span_review(c, r.start, r.end, r.verdict, r.subtype, r.note)
     except edits.BadEdit as e:
         raise HTTPException(400, str(e))
-    return {"ok": True}
+    # A verdict against the app's call is a ruling against the rules as written: kept as an
+    # exception, with the note as the reason (exceptions.py).
+    eid = exceptions.record_span(c, r.start, r.end, r.verdict, r.subtype, sp.get("own_call") if sp else None, reason=r.note)
+    return {"ok": True, "exception_id": eid}
 
 
 class SpanUnfocused(BaseModel):
@@ -506,7 +515,10 @@ def api_span_unfocused(r: SpanUnfocused):
 def api_span_unreview(start: float, end: float):
     """Withdraw the verdict on a span (the span goes back to the system's own call)."""
     _ts_arg(start, end)
-    return {"ok": True, "deleted": edits.delete_span_review(conn(), start, end)}
+    from . import exceptions
+    n = edits.delete_span_review(conn(), start, end)
+    exceptions.span_verdict_removed(conn(), start, end)
+    return {"ok": True, "deleted": n}
 
 
 @app.get("/api/efficiency")
@@ -1404,6 +1416,29 @@ def _append_rule(rule: str, origin: str) -> None:
     if heading not in text:
         text = text.rstrip("\n") + "\n\n" + heading + "\n\n"
     RULES_PATH.write_text(text.rstrip("\n") + "\n" + f"* {rule} (added {dt.date.today().isoformat()} {origin})\n")
+    _commit_rules(rule)
+
+
+def _commit_rules(rule: str) -> None:
+    """Commit the rules document after a rule is accepted (Eli, 2026-11-21), so its history is in
+    git. Only that file, whatever else is modified or staged; any edits of Eli's own that were
+    waiting in it go into the same commit. Never from a test run on a database copy, and a
+    failure only logs."""
+    import os
+    import subprocess
+    from .classifiers.claude_vision import RULES_PATH
+    if os.environ.get("FOCUS_MONITOR_DATA"):
+        return
+    try:
+        msg = "Rules: accepted from the dashboard: " + (rule if len(rule) <= 160 else rule[:157] + "...")
+        r = subprocess.run(["git", "commit", "-q", "-m", msg, "--", RULES_PATH.name], cwd=RULES_PATH.parent,
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode:
+            log.warning("could not commit the rules document: %s", (r.stderr or r.stdout).strip()[:300])
+        else:
+            log.info("committed the rules document")
+    except Exception:
+        log.exception("could not commit the rules document")
 
 
 @app.get("/api/rule-drafts")
@@ -1412,6 +1447,25 @@ def api_rule_drafts():
     and the recently decided ones (rule_drafts.py)."""
     from . import rule_drafts
     return rule_drafts.drafts(conn())
+
+
+@app.get("/api/rule-exceptions")
+def api_rule_exceptions():
+    """The rulings made against the written rules that still stand (exceptions.py)."""
+    from . import exceptions
+    return exceptions.listing(conn())
+
+
+class ExceptionReason(BaseModel):
+    reason: str
+
+
+@app.post("/api/rule-exceptions/{eid}/reason")
+def api_rule_exception_reason(eid: int, body: ExceptionReason):
+    from . import exceptions
+    if not exceptions.set_reason(conn(), eid, body.reason):
+        raise HTTPException(404)
+    return {"ok": True}
 
 
 @app.get("/api/rule-drafts/count")
@@ -1437,7 +1491,10 @@ def api_rule_draft_decide(did: int, body: RuleDecision):
         if not rule:
             raise HTTPException(400, "empty rule")
         import json as _json
-        _append_rule(rule, f"drafted from {len(_json.loads(d['support'] or '[]'))} of your review answers")
+        n_ans, n_exc = len(_json.loads(d['support'] or '[]')), len(_json.loads(d['exceptions'] or '[]'))
+        _append_rule(rule, "drafted from " + " and ".join(
+            x for x in (f"{n_ans} of your review answers" if n_ans else "",
+                        f"{n_exc} exception{'s' if n_exc != 1 else ''} you made" if n_exc else "") if x))
     with db.tx(c):
         c.execute("UPDATE rule_drafts SET status=?, decided_at=?, final_text=? WHERE id=?",
                   ("added" if body.action == "add" else "rejected", time.time(), rule if body.action == "add" else None, did))
@@ -1464,6 +1521,7 @@ def api_chat_apply_rule(mid: int):
         line = f"* {rule} (added {dt.date.today().isoformat()} from a review of segment {m['ref']})\n"
         text = text.rstrip("\n") + "\n" + line
         RULES_PATH.write_text(text)
+        _commit_rules(rule)
         applied["rule"] = {"at": time.time()}
         with db.tx(c):
             _save_proposal(c, mid, prop)

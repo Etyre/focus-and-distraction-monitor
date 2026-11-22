@@ -129,6 +129,7 @@ textarea{width:100%;font:inherit;padding:6px;border:1px solid var(--axis);border
 <section id="view-rules" class="hidden">
   <div class="muted small" style="margin-bottom:12px">Lines the app drafted for your rules document, each from several of your review answers that say the same thing. Below each one are the answers it rests on. Nothing is in the rules document until you click "add to my rules".</div>
   <div id="ruleDrafts"></div>
+  <div id="ruleExceptions"></div>
   <div id="ruleDecided"></div>
 </section>
 
@@ -172,6 +173,7 @@ function draftKey(el){
   else if(id==='qchatinput')rec=currentQSeg??'';
   else if(id.startsWith('qNote')){field='qNote';rec=id.slice(5);}
   else if(id.startsWith('ruleDraft')){field='ruleDraft';rec=id.slice(9);}
+  else if(id.startsWith('excReason')){field='excReason';rec=id.slice(9);}
   else if(id==='spanNote'||id==='spanchatinput')rec=(typeof spanChatKey==='function'&&spanChatKey())||'';
   else if(id==='segNoteEv')rec=(typeof segEd!=='undefined'&&segEd&&segEd.sid)||'';   // the block in the editor (capture page or question card)
   else if(id==='chatinput'||id==='note')rec=(typeof current!=='undefined'&&current)?current.switch.id:'';
@@ -525,15 +527,37 @@ function ruleEvidenceHtml(e){
 async function loadRuleBadge(){
   try{const n=(await api('/api/rule-drafts/count')).open;$('#rulesBadge').textContent=n?` (${n})`:'';}catch(e){}}
 async function loadRuleDrafts(){
+  loadRuleExceptions();
   let r={open:[],decided:[]};try{r=await api('/api/rule-drafts');}catch(e){}
   $('#rulesBadge').textContent=r.open.length?` (${r.open.length})`:'';
   $('#ruleDrafts').innerHTML=r.open.length?r.open.map(d=>`<div class="card"><b>Proposed rule</b> <span class="muted small">— ${esc(d.why||'')}</span>
     <textarea id="ruleDraft${d.id}" spellcheck="true" rows="3" style="width:100%;margin:6px 0;box-sizing:border-box">${esc(d.rule)}</textarea>
     <div class="row" style="gap:6px"><button class="primary" onclick="decideRule(${d.id},'add')">add to my rules</button><button onclick="decideRule(${d.id},'reject')">no, not a rule</button><span class="muted small">you can edit the wording first</span></div>
     <div style="margin-top:12px"><b class="small">The ${d.evidence.length} answer${d.evidence.length===1?'':'s'} it rests on</b>${d.evidence.length<d.support.length?` <span class="muted small">(${d.support.length-d.evidence.length} more since cleared)</span>`:''}</div>
-    ${d.evidence.map(ruleEvidenceHtml).join('')}</div>`).join('')
+    ${d.evidence.map(ruleEvidenceHtml).join('')}
+    ${(d.exception_rows||[]).length?`<div style="margin-top:12px"><b class="small">The ${d.exception_rows.length} exception${d.exception_rows.length===1?'':'s'} it rests on</b></div>${d.exception_rows.map(x=>`<div style="padding:8px 0;border-top:1px solid var(--grid)">${excHeadHtml(x)}${x.reason?`<div style="margin-top:4px"><span class="muted">Your reason:</span> ${esc(x.reason)}</div>`:''}</div>`).join('')}`:''}</div>`).join('')
     :'<div class="card muted">No proposed rules waiting. The app drafts one when several of your review answers agree on something the rules document does not say.</div>';
   $('#ruleDecided').innerHTML=r.decided.length?`<div class="card"><b>Decided</b>${r.decided.map(d=>`<div style="padding:8px 0;border-top:1px solid var(--grid);margin-top:8px"><span class="small muted">${d.status==='added'?'Added':'Rejected'} ${d.decided_at?new Date(d.decided_at*1000).toLocaleDateString([],{month:'short',day:'numeric'}):''}</span><br>${esc(d.final_text||d.rule)}</div>`).join('')}</div>`:'';}
+// Rulings made against the written rules (exceptions.py). Each keeps its reason; the reason can
+// be added or reworded here, and is what a general rule is later drafted from.
+function excHeadHtml(x){
+  const day=new Date(x.start*1000).toLocaleDateString([],{month:'short',day:'numeric'});
+  return `<div class="small muted">${day}, ${fmtT(x.start)}–${fmtT(x.end)} · ${x.kind==='span'?`<a href="#" onclick="openSpanReview(${(x.start+x.end)/2});return false">open the span</a>`:`${(x.segment_ids||[]).length} block${(x.segment_ids||[]).length===1?'':'s'}`}</div>
+    <div style="margin-top:4px"><span class="muted">You ruled:</span> <b>${esc(x.ruled)}</b>${x.app_call?` · <span class="muted">the app had it as:</span> ${esc(x.app_call)}`:''}</div>
+    ${x.rule?`<div style="margin-top:4px"><span class="muted">The rule it departs from:</span> ${esc(x.rule)}</div>`:''}`;}
+async function loadRuleExceptions(){
+  let r=[];try{r=await api('/api/rule-exceptions');}catch(e){}
+  const el=$('#ruleExceptions');
+  el.innerHTML=r.length?`<div class="card"><b>Exceptions you have made</b> <span class="muted small">— rulings that go against the rules as written. Each stands on its own; when several share a reason, the app proposes a rule above.</span>
+    ${r.map(x=>`<div style="padding:10px 0;border-top:1px solid var(--grid);margin-top:8px">${excHeadHtml(x)}
+      <div class="row" style="gap:6px;margin-top:6px;align-items:flex-start"><textarea id="excReason${x.id}" spellcheck="true" rows="2" style="flex:1;box-sizing:border-box" placeholder="why did this one count differently?">${esc(x.reason||'')}</textarea><button onclick="saveExcReason(${x.id})">save reason</button></div>
+      ${x.draft?`<div class="small muted" style="margin-top:4px">${x.draft.status==='open'?'Behind a proposed rule above':x.draft.status==='added'?'Led to a rule you added':'Was behind a proposed rule you rejected'}: ${esc(x.draft.rule)}</div>`:''}</div>`).join('')}</div>`:'';
+  draftRestore(el);}
+async function saveExcReason(id){
+  const el=$('#excReason'+id);if(!el)return;
+  try{await api(`/api/rule-exceptions/${id}/reason`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({reason:el.value})});}
+  catch(e){alert('could not save that: '+e.message);return;}
+  draftClear(el,false);loadRuleExceptions();}
 async function decideRule(id,action){
   const el=$('#ruleDraft'+id);
   try{await api(`/api/rule-drafts/${id}/decide`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,text:el?el.value:null})});}
@@ -1046,6 +1070,7 @@ function renderSpanCard(sp,oneOff){
         <button onclick="spanUnfocused(false)" title="Those blocks become ordinary focus time, and this question goes away">No, I was still on it — count it as focus</button>
         <button style="border-color:var(--interrupted)" onclick="spanUnfocused(true)" title="Those blocks become time away from the span. A stretch of 5 minutes or more ends the span where it began, so the span may get shorter or split.">Yes, it was unfocused — treat it as time away</button>
       </div></div>`:''}
+    ${sp.exception?`<div class="small" style="margin:6px 0;padding:8px;border:1px solid var(--grid);border-radius:6px"><b>Kept as an exception to the rules.</b>${sp.exception.app_call?` The app had it as: ${esc(sp.exception.app_call)}.`:''} ${sp.exception.reason?`Your reason: ${esc(sp.exception.reason)}`:'No reason recorded yet: tell Claude why below, or add it on the <a href="#rules">Rules page</a>.'} <span class="muted">Several exceptions with a shared reason become a proposed rule.</span></div>`:''}
     <div class="small" style="margin:4px 0">⏱ Toggl: ${sp.toggl.length?esc(sp.toggl.join(' · ')):'<span class="muted">no entries during this span</span>'}</div>
     <div class="muted small" style="margin:4px 0">Apps: ${esc(sp.apps.map(appName).join(', '))}</div>
 
@@ -1059,7 +1084,7 @@ function renderSpanCard(sp,oneOff){
         <button style="border-color:var(--distracted)" onclick="spanReview('not_focus',null)">✗ Not a focus span</button>
         ${subs.map(s=>`<button style="border-color:${subColor[s]};${sp.subtype===s?'outline:2px solid '+subColor[s]+';font-weight:600':''}" onclick="spanReview('focus','${s}')">✓ ${subName[s]}</button>`).join('')}
       </div>
-      <textarea id="spanNote" data-draft="fm.draft.spanNote.${spKey}" spellcheck="true" rows="2" placeholder="optional note (what was really going on?)"></textarea></div></details>`;});
+      <textarea id="spanNote" data-draft="fm.draft.spanNote.${spKey}" spellcheck="true" rows="2" placeholder="optional note: what was really going on? If your verdict goes against the app's call, this is kept as the reason for the exception."></textarea></div></details>`;});
   spanTLBind(sp);
   renderSpanChat();
   chatLoad('sp'+spanChatKey(),'span',spanChatKey(),renderSpanChat);

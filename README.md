@@ -335,6 +335,7 @@ backend has no tools, so no note tool there.
 | `focus_monitor/shots.py` | Picks which captures of a stretch a model is shown: one per capture moment, the display that held the active window, spread evenly. Used by the evaluator, audit, question generator, propagation, summaries and chat. |
 | `focus_monitor/questions.py` | Writes review questions for doubted segments; ranks the queue. Each question is about one dimension (thread, content, or hybrid); a doubt uncertain along two gets two questions on the same segment, and options that would land the same judgment (blank fields count as "as the model has it") are merged. Every question's options are the model's readings plus the app's own pass-through option ("just a window I passed through"), which is left out when the segment was plainly in use: held longer than `transit_seconds` and given under 10% chance of being a transition by the evaluator. |
 | `focus_monitor/prompt_parts.py` | Shared pieces of the non-evaluator prompts: log lines in the evaluator's form, the legend, a ruling compared with the judgment before it. |
+| `focus_monitor/exceptions.py` | The record of rulings made against the written rules, and its text for the rule drafter. |
 | `focus_monitor/chat_tools.py` | Read-only lookup tools for the chats (screenshots, an evaluation's transcript, a block's record, another day's log). |
 | `focus_monitor/propagation.py` | Applies a correction to similar recent segments (feedback propagation judge), and applies it again after a re-judgment. |
 | `focus_monitor/resolver.py` | Attention-thread resolver: which thread a switch continues. |
@@ -464,6 +465,25 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   reaches its packages through `.venv/lib/python3.12/site-packages`, so a missing environment
   means the app cannot start again after its next restart.
 
+* **Exceptions to the rules (2026-11-21).** A ruling that goes against the written rules takes
+  effect like any ruling, and is also kept in `rule_exceptions` (`exceptions.py`): what was ruled,
+  what the app had under the rules, the rule it departs from when a chat named it, and the reason.
+  A span verdict that differs from the app's own call is recorded automatically, from the card
+  (the note is the reason) or a chat; the chats can also mark a block ruling with
+  `exception_to_rule`. Undoing the verdict, or changing it to agree with the app, withdraws the
+  exception (rows are kept, `withdrawn_at` set). The rule drafter reads the record and may draft a
+  rule resting on exceptions (three occasions, counting answers and exceptions together); three
+  standing exceptions no draft has used start a drafting run without waiting for 8 new rulings.
+  The Rules page lists them with an editable reason. The app's own call is taken from
+  `own_call`, which `stats._apply_span_reviews` sets before applying a verdict. A verdict of
+  "focus" switches off the opening-10-minutes cut for that span, so `own_call` read after the
+  verdict can differ from before it: the callers read it before writing. Not covered: the 82 old
+  `focus_exception` block rulings are not copied into the record (the drafter sees them as
+  rulings), and an exception is not a precedent the span rules apply to other spans.
+* **Accepted rules go in one list at the bottom of the Rules doc** ("### Lessons from reviews"), on
+  purpose (Eli, 2026-11-21): he moves them into the body by hand, to rethink the abstractions.
+  Do not place them by section. Accepting a rule commits the Rules doc (that file only; any
+  edits of his waiting in it go into the same commit; skipped when `FOCUS_MONITOR_DATA` is set).
 * **Dashboard bug hunt, 2026-11-21 (25 bugs from a headless-browser test).**
   * *One card, one set of ids.* Question, span and capture cards are drawn into `#reviewCard` or
     `#segCard` and share element ids (`#segNoteEv`, `#afterShot`, `#scrubGrab`, `#qNote<id>`). A

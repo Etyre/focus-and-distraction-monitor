@@ -449,6 +449,19 @@ def connect() -> sqlite3.Connection:
         created REAL NOT NULL,
         status TEXT NOT NULL DEFAULT 'open',   -- open | added (in the Rules doc) | rejected
         decided_at REAL, final_text TEXT)""")  # final_text: the wording as added, if the person edited it
+    if "exceptions" not in {r[1] for r in conn.execute("PRAGMA table_info(rule_drafts)")}:
+        _alter(conn, "ALTER TABLE rule_drafts ADD COLUMN exceptions TEXT")   # JSON: rule_exceptions ids it rests on
+    conn.execute("""CREATE TABLE IF NOT EXISTS rule_exceptions (  -- rulings made against the written rules (exceptions.py)
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,               -- 'span' (a span verdict) | 'segments' (a ruling on blocks)
+        start REAL NOT NULL, end REAL NOT NULL,
+        segment_ids TEXT,                 -- JSON, kind='segments'
+        ruled TEXT NOT NULL,              -- what the person ruled, in words
+        app_call TEXT,                    -- what the app had under the rules, with its reason
+        rule TEXT,                        -- the written rule it departs from, when a chat named it
+        reason TEXT,                      -- the person's why
+        created REAL NOT NULL, chat_message_id INTEGER,
+        withdrawn_at REAL)""")            # set when the ruling was undone or now agrees with the app
     conn.execute("""CREATE TABLE IF NOT EXISTS rule_draft_runs (
         id INTEGER PRIMARY KEY, created REAL NOT NULL, reviews_seen INTEGER, n_drafts INTEGER,
         cost_usd REAL NOT NULL DEFAULT 0)""")

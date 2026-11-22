@@ -286,6 +286,22 @@ or the README where it belongs.
   - Does an absorbed sub-thread's time count as the parent's focus time, or as a contained
     diversion that does not break it?
 
+- 2026-11-21: **accepted rules** stay in one list at the bottom of the Rules doc; Eli refactors
+  them into the body by hand. The Rules doc is committed when a rule is accepted. (Built.)
+
+- 2026-11-21: **exceptions to the rules** are implemented, recorded, and feed rule drafting
+  (built; README Gotchas). Choices made while building, to confirm:
+  - Every span verdict that differs from the app's own call is recorded as an exception, whether
+    or not a reason is given. Some of those are corrections of a misjudged block underneath, not
+    exceptions to a rule. Alternative: record only when a reason is given or a chat marks it.
+  - Three occasions (answers and exceptions together) are enough for a draft, as before.
+  - An exception applies to its own span or blocks only. The span rules do not treat it as a
+    precedent for similar spans until a rule is accepted, and an accepted rule changes what the
+    models read, not the span code (a rule about span qualification still has to be built).
+  - A rule drafted from exceptions may contradict a line in the body of the doc until Eli
+    refactors the list; the models then read both.
+  - The 82 older "counts as focus anyway" block rulings are not in the exceptions list.
+
 - 2026-11-20: **a task span and Toggl.** One task is one attentional thread. Committed,
   consistent focused engagement on a single thread can be a focus span without a Toggl entry.
   Joining several task threads into one span needs a signal that the switching is held in an

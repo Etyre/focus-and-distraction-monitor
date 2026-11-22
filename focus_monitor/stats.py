@@ -815,6 +815,8 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
     rows = conn.execute("SELECT * FROM span_reviews").fetchall()
     keep_q, keep_d = [], []
     for sp in qualifying:
+        # the app's own call, before the person's verdict is applied (exceptions.py compares the two)
+        sp["own_call"] = {"focus": True, "subtype": sp.get("subtype")}
         r = _span_review_for(rows, sp)
         sp["review_chat_mid"] = r["chat_message_id"] if r is not None and "chat_message_id" in r.keys() else None
         if r is None:
@@ -832,6 +834,7 @@ def _apply_span_reviews(conn, qualifying: list[dict], disqualified: list[dict]) 
                                     and not sp.get("hybrid_min"))
             keep_q.append(sp)
     for sp in disqualified:
+        sp["own_call"] = {"focus": False, "reason": sp.get("disq_reason")}
         r = _span_review_for(rows, sp)
         sp["review_chat_mid"] = r["chat_message_id"] if r is not None and "chat_message_id" in r.keys() else None
         if r is not None and r["verdict"] == "focus":

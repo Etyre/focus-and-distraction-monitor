@@ -55,13 +55,6 @@ reads `toggl_id`, whose meaning changed).
 - Sub-threads (see "Decided" in `OPEN-DECISIONS.md`, 2026-11-21): Rules doc wording and code.
   Settle the four listed points with Eli first.
 
-## Offered to Eli on 2026-11-21, no answer yet
-
-- An accepted rule is always appended under "### Lessons from reviews". Proposal: the drafting
-  model names the section it belongs in, shown when accepting, and the line goes there.
-- The app writes the Rules doc and never commits it. Proposal: commit it whenever a rule is
-  accepted (and commit the dictation-fix rule accepted on 2026-11-20, now uncommitted).
-
 ## Decisions waiting for Eli
 
 `OPEN-DECISIONS.md`, one at a time. Item 26 (how much of the subscription the larger evaluator
