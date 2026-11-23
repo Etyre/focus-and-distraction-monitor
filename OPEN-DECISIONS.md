@@ -315,3 +315,20 @@ Efforts tab scores both against your rulings. Open:
   accurate. At 10% that is perhaps a few questions a day; the sample share sets the number.
 - The 10% share itself, and whether the low level should still be compared (it is not now).
 
+
+## Evaluator context: cut the context screenshots? (2026-11-23, tested, not decided)
+
+Replay of 50 stored evaluator calls (59 segments) with context screenshots cut from about 55
+to the nearest 8, everything else as sent, medium effort, on a database copy:
+
+- Trimmed call agreed with the original medium judgment on 52 of 59 segments (88%). The
+  full-context repeat at high agreed on 56 of 59 (95%), which is the run-to-run reference.
+- The extra disagreements are in the kind of activity (5 changed, against 1 for the repeat),
+  mostly "transition" against task or creative. Continuation-or-shift (2 against 2) and
+  focused (1 against 1) moved no more than the repeat did.
+- Only 4 ruled values among those segments; all three versions matched all 4.
+- Cost per call fell from $0.59 to $0.27 (API-equivalent).
+- Proposal: leave screenshots alone until a day of batched calls shows the new cost, then decide.
+  Options then: cut by default with a way for the model to ask for a screenshot; or cut only in
+  calls that judge one or two segments (phone re-evaluations, held segments).
+- Rulings: Eli, 2026-11-23: keep all rulings in the prompt for now; prune if and when it gets long.
