@@ -680,6 +680,17 @@ PHONE_Q_MIN = 10.0
 # pass-through "read the other way" is a 2-second shift, which can still unmake a span's opening
 # 10 unbroken minutes - the first live run asked about two of those (2026-11-19).
 PHONE_Q_MIN_S = 30.0
+PHONE_Q_NEAR_S = 2 * 3600.0   # no question while computer time this close to the phone use is still unjudged
+
+
+def _phone_call_text(p) -> str:
+    return ("a self-distraction" if p["away"] and p["self_distraction"] else
+            "a deliberate trip away from the work" if p["away"] else "part of what you were doing")
+
+
+def _phone_effect_text(k: str, delta: float) -> str:
+    what = "independent focus time" if k == "total_focus_min" else "longest focus span"
+    return f" Read the other way, the day's {what} would be {abs(delta):.0f} min {'longer' if delta > 0 else 'shorter'}."
 PHONE_OPTIONS = (
     ("Part of what I was doing on the computer", {"switch_label": "continuation", "away": 0, "focused": 1, "self_distraction": 0}),
     ("A deliberate break or errand", {"switch_label": "interruption", "away": 1, "self_distraction": 0}),
@@ -777,22 +788,76 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
     except Exception:   # no phone tables yet
         return 0
     n, base, stamps = 0, {}, {}
-    for p in rows:
-        day = logical_date(p["start"])
+
+    def stamp(day):
         if day not in stamps:
             d0, d1 = day_bounds(day)
             ps = conn.execute("SELECT MAX(created) FROM phone_evals WHERE start >= ? AND start < ?", (d0, d1)).fetchone()[0]
-            stamps[day] = max(_day_stamp(conn, d0, d1), float(ps or 0.0))
-        if _phone_checked.get(p["seg_key"]) == stamps[day]:
-            continue
-        _phone_checked[p["seg_key"]] = stamps[day]
+            pr = conn.execute("SELECT MAX(r.created) FROM phone_reviews r JOIN phone_evals p ON p.seg_key = r.seg_key"
+                              " WHERE p.start >= ? AND p.start < ?", (d0, d1)).fetchone()[0]
+            stamps[day] = max(_day_stamp(conn, d0, d1), float(ps or 0.0), float(pr or 0.0))
+        return stamps[day]
+
+    def effect(p):
+        """(metric, minutes) the day moves by when this phone time is read the other way."""
+        day = logical_date(p["start"])
         flip = ({"switch_label": "continuation", "away": 0, "focused": 1, "self_distraction": 0} if p["away"]
                 else {"switch_label": "interruption", "away": 1, "self_distraction": 0})
         if day not in base:
             base[day] = stats.daily_metrics(conn, day)
         m = stats.daily_metrics(conn, day, {"phone": {p["seg_key"]: flip}})
         moved = {k: m[k] - base[day][k] for k in ("total_focus_min", "longest_focus_min")}
-        k, delta = max(moved.items(), key=lambda kv: abs(kv[1]))
+        return max(moved.items(), key=lambda kv: abs(kv[1]))
+
+    # the evaluator only judges the current and the previous day (run_pending): a segment left
+    # unjudged from before that never will be, and must not hold a question back for good
+    still_judged = day_bounds(logical_date() - dt.timedelta(days=1))[0]
+
+    def unjudged_near(p) -> bool:
+        """Computer time around the phone use that the evaluator has not judged yet. The effect
+        is not known until it has: on 2026-11-23 a question said "26 min longer" about a 76 s
+        Oura check, because the phone data arrived (and was judged) a minute before the 40
+        minutes of computer work around it were; once they were judged it moved 1 minute."""
+        return conn.execute("""SELECT 1 FROM segments g LEFT JOIN seg_evals e ON e.segment_id = g.id
+            WHERE g.idle = 0 AND g.neutral = 0 AND e.segment_id IS NULL AND g.end - g.start >= 5   -- zero-length ones are never judged
+              AND g.start < ? AND g.end > ? AND g.start > ? LIMIT 1""",
+                            (p["end"] + PHONE_Q_NEAR_S, p["start"] - PHONE_Q_NEAR_S,
+                             max(p["start"] - PHONE_Q_NEAR_S - 86400, still_judged))).fetchone() is not None
+
+    # Open questions first: the figure in each was right when it was written and the day has
+    # since changed. One that no longer clears the bar is archived; the others get today's figure.
+    n_gone = 0
+    for q in conn.execute("""SELECT q.id, q.context, p.* FROM review_questions q JOIN phone_evals p ON p.seg_key = q.phone_key
+                             WHERE q.source = 'phone' AND q.status = 'open' AND p.start >= ?""", (time.time() - lookback_s,)).fetchall():
+        key = ("q", q["id"])
+        st = stamp(logical_date(q["start"]))
+        if _phone_checked.get(key) == st or unjudged_near(q):
+            continue
+        _phone_checked[key] = st
+        k, delta = effect(q)
+        if abs(delta) < PHONE_Q_MIN:
+            conn.execute("UPDATE review_questions SET status='archived', archived_at=? WHERE id=?", (time.time(), q["id"]))
+            n_gone += 1
+            continue
+        mark = "so its call is a low-confidence one: "
+        head = q["context"].split(" Read the other way,")[0]
+        if mark in head:   # the call itself may have been re-judged since
+            head = head.split(mark)[0] + mark + _phone_call_text(q) + "."
+        ctx = head + _phone_effect_text(k, delta)
+        if ctx != q["context"]:
+            conn.execute("UPDATE review_questions SET context=? WHERE id=?", (ctx, q["id"]))
+    if n_gone:
+        conn.commit()
+        log.info("archived %d phone question(s) that no longer move the day by %g minutes", n_gone, PHONE_Q_MIN)
+
+    for p in rows:
+        day = logical_date(p["start"])
+        if _phone_checked.get(p["seg_key"]) == stamp(day):
+            continue
+        if unjudged_near(p):
+            continue   # asked about once the computer time around it is judged (not cached: tried again next pass)
+        _phone_checked[p["seg_key"]] = stamp(day)
+        k, delta = effect(p)
         if abs(delta) < PHONE_Q_MIN:
             continue
         g = conn.execute("""SELECT id, app, title FROM segments WHERE start <= ? AND COALESCE(end, start) > ?
@@ -803,13 +868,10 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
         hhmm = local_dt(p["start"]).strftime("%H:%M")
         secs = p["end"] - p["start"]
         length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
-        call = ("a self-distraction" if p["away"] and p["self_distraction"] else
-                "a deliberate trip away from the work" if p["away"] else "part of what you were doing")
-        what = "independent focus time" if k == "total_focus_min" else "longest focus span"
+        call = _phone_call_text(p)
         ctx = (f"At {hhmm} your phone had {p['app']} open for {length}, while the computer was on {g['app']}"
                f"{' (' + g['title'][:60] + ')' if g['title'] else ''}. The app sees only which phone app was open and when, "
-               f"so its call is a low-confidence one: {call}. Read the other way, the day's {what} "
-               f"would be {abs(delta):.0f} min {'longer' if delta > 0 else 'shorter'}.")
+               f"so its call is a low-confidence one: {call}." + _phone_effect_text(k, delta))
         opts = [{"label": lab, "segment_id": g["id"], "phone_key": p["seg_key"], "phone": edit,
                  "switch_label": None, "antecedent_id": None, "interruption_kind": None, "content": None, "hybrid": None}
                 for lab, edit in PHONE_OPTIONS]
@@ -818,8 +880,8 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
                      (g["id"], "phone", ctx, f"What was the {p['app']} use on your phone at {hhmm}?", json.dumps(opts),
                       time.time(), p["seg_key"]))
         n += 1
+    conn.commit()
     if n:
-        conn.commit()
         log.info("wrote %d question(s) about load-bearing phone judgments", n)
     return n
 

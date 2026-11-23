@@ -457,6 +457,17 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 
 ## Gotchas learned
 
+- **A phone question's "N min longer" was computed too early and then frozen (2026-11-23).** A
+  question said a 76-second Oura check would make the day's focus time "26 min longer". It was
+  written one minute before the evaluator judged the 40 minutes of computer work around it
+  (phone data arrives late and is judged on arrival); afterwards the real effect was 1 minute.
+  The live priority line said 1 minute while the sentence above it still said 26.
+  * `questions.phone_questions` now waits while computer time within 2 hours of the phone use is
+    unjudged (only segments the evaluator will still judge: today and yesterday).
+  * Each pass re-checks open phone questions: one that no longer moves the day by
+    `PHONE_Q_MIN` minutes is archived, the others get the current figure and call.
+  * A question therefore appears up to about 2 hours after the phone use during continuous work.
+
 - **Whole focus spans are confirmed first, fewer as agreement grows (2026-11-22).** The Review tab
   opens on the focus spans to confirm (`/api/span/checks`, mode `check` in `dashboard.html`), then
   the questions. Spans of the last 3 days that the app counts as focus spans, finished and without
