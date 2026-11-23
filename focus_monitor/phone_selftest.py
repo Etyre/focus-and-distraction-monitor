@@ -5,6 +5,7 @@ built on it), on a throwaway phone database and picture folder. No phone, no mod
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import time
@@ -111,8 +112,11 @@ def main() -> None:
         assert n == len(q) >= 1 and all(r[0] == evaluator.PHONE_SHOT_REASON for r in q), (n, q)
         evaluator._phone_shots_checked = 0.0
         assert evaluator.queue_phone_capture_rejudge(app, cfg) == 0            # each pickup once
-        app.execute("""UPDATE eval_runs SET shots = '[{"path": "iphone~d~a.jpg", "label": "x"}]'""")
-        assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks)   # its run saw the phone's screen
+        k0 = with_pics[0]["segs"][0]["key"]
+        app.execute("UPDATE eval_runs SET shots = ?", (json.dumps([{"path": "iphone~d~a.jpg",
+                    "label": f"Screenshot - the iPhone's screen during PHONE id=P{k0} (taken 10:00:00, iPhone: Safari):"}]),))
+        assert not evaluator._phone_unseen(app, cfg, with_pics[0], have())             # its run saw ITS screen
+        assert all(evaluator._phone_unseen(app, cfg, p, have()) for p in with_pics[1:])  # another pickup's picture does not count
         app.execute("UPDATE eval_runs SET shots = '[]'")
         app.execute("INSERT INTO phone_reviews SELECT seg_key FROM phone_evals")
         assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks)   # the person has ruled

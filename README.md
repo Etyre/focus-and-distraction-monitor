@@ -217,7 +217,9 @@ first commit 2026-08-29, in continuous development since.
   A pickup that was judged without pictures although some can be shown now (judged before
   2026-11-23, or its pictures were released later) is queued once for a phone-only
   re-judgment (`evaluator.queue_phone_capture_rejudge`, reason "phone screen captures arrived",
-  checked every 30 minutes over the last 3 days); the new judgment replaces the old one. A
+  checked every 30 minutes over the last 3 days); the new judgment replaces the old one. "Once" means one
+  attempt: a pickup whose re-judgment is given up on (three empty answers) keeps its old judgment and
+  is not queued again. A line the model leaves out of a re-judgment also keeps its old judgment. A
   phone segment you have ruled on is left alone.
 * **Phone app segments are judged like computer segments** (since 2026-11-19; Eli: "The app
   should make the same segment judgements of open phone apps as it does of computer segments").

@@ -752,7 +752,7 @@ def phone_content_questions(conn, lookback_s: float = 7 * 86400) -> int:
         length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
         ctx = (f"On {when} your phone had {app} open for {length}"
                f"{', while the computer sat idle' if g['app'] == '__idle__' else ', while the computer was on ' + g['app']}. "
-               f"The app sees only which phone app was open and when; it guessed: {p['content'] or 'unknown'}. "
+               f"The app mostly sees only which phone app was open and when (pictures of the phone's screen, when there are any, are below); it guessed: {p['content'] or 'unknown'}. "
                f"This is not about whether it was a break or a distraction, only what the use was: your answers "
                f"about {app} become precedents for judging it, and once a pattern holds, a rule for your rules "
                f"document ({answered.get(app, 0)} of {PHONE_RULE_ANSWERS} answers about {app} so far).")
@@ -870,7 +870,7 @@ def phone_questions(conn, lookback_s: float = 3 * 86400) -> int:
         length = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
         call = _phone_call_text(p)
         ctx = (f"At {hhmm} your phone had {p['app']} open for {length}, while the computer was on {g['app']}"
-               f"{' (' + g['title'][:60] + ')' if g['title'] else ''}. The app sees only which phone app was open and when, "
+               f"{' (' + g['title'][:60] + ')' if g['title'] else ''}. The app mostly sees only which phone app was open and when (pictures of the phone's screen, when there are any, are below), "
                f"so its call is a low-confidence one: {call}." + _phone_effect_text(k, delta))
         opts = [{"label": lab, "segment_id": g["id"], "phone_key": p["seg_key"], "phone": edit,
                  "switch_label": None, "antecedent_id": None, "interruption_kind": None, "content": None, "hybrid": None}

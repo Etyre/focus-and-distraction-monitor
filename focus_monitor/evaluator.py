@@ -1257,7 +1257,13 @@ class ChunkEvaluator:
             # they are the only direct evidence of what the phone was used for.
             own, _ = _phone_images(self.cfg, p)
             if len(images) + len(own) > IMAGE_BUDGET:
+                if not target and kept_p:      # a phone-only call: this pickup waits for the next call, with its pictures
+                    picks = kept_p
+                    t1 = self.last_end = p["start"]
+                    break
                 own = []
+            if phone_again and not own and _phone_unseen(conn, self.cfg, p, pk_have):
+                continue                       # re-judging for the pictures' sake, and there is none to show: leave it
             ims += own
             for side, m in (("just before", _shots.nearest(conn, p["start"], True)), ("just after", _shots.nearest(conn, p["end"], False))):
                 if m is not None and not any(i["path"] == m["active"]["path"] for i in images + ims):
@@ -1515,6 +1521,13 @@ class ChunkEvaluator:
                     prev_away = False
                     for g in p["segs"]:
                         j = pj.get(g["key"])
+                        old = pk_have.get(g["key"])
+                        if j is None and old is not None and old["switch_label"]:
+                            # A re-judgment the model left this line out of: the judgment it has
+                            # stands; a "defaulted" row must never replace a real one.
+                            prev_away = bool(old["away"])
+                            away_of[g["key"]] = prev_away
+                            continue
                         psw = stored_switch(j.switch.strip().lower()) if j is not None else "continuation"
                         if psw not in SWITCHES:
                             psw = "continuation"
@@ -2295,9 +2308,16 @@ def _phone_unseen(conn, cfg, p: dict, pk_have: dict) -> bool:
     ims, _ = _phone_images(cfg, p)
     if not ims:
         return False
+    # Seen = the run that judged it was shown a picture labelled for one of ITS segments (another
+    # pickup's pictures in the same run do not count).
+    mine = tuple(f"PHONE id=P{k} " for k in keys)
     for run_id in {r["run_id"] for r in rows if r["run_id"]}:
         run = conn.execute("SELECT shots FROM eval_runs WHERE id=?", (run_id,)).fetchone()
-        if run is not None and PHONE_SHOT_PREFIX in (run["shots"] or ""):
+        try:
+            meta = json.loads(run["shots"] or "[]") if run is not None else []
+        except ValueError:
+            meta = []
+        if any(str(m.get("path", "")).startswith(PHONE_SHOT_PREFIX) and any(t in m.get("label", "") for t in mine) for m in meta):
             return False
     return True
 
@@ -2320,14 +2340,14 @@ def queue_phone_capture_rejudge(conn, cfg: Config | None = None) -> int:
     pk_have = {r["seg_key"]: r for r in conn.execute("SELECT * FROM phone_evals WHERE start >= ?",
                                                      (now - PHONE_LOOKBACK_S - 3600,))}
     windows: list[list[float]] = []
-    n = 0
+    # Found before the transaction opens: each check reads the phone database, and the write lock
+    # must not be held meanwhile.
+    todo = [p for p in phone.pickups(cfg, now - PHONE_LOOKBACK_S, now - LAZY_S)
+            if not db.kv_get(conn, f"phone.shots.queued.{p['key']}") and _phone_unseen(conn, cfg, p, pk_have)]
+    n = len(todo)
     with db.tx(conn):
-        for p in phone.pickups(cfg, now - PHONE_LOOKBACK_S, now - LAZY_S):
-            key = f"phone.shots.queued.{p['key']}"
-            if db.kv_get(conn, key) or not _phone_unseen(conn, cfg, p, pk_have):
-                continue
-            db.kv_set(conn, key, str(now))
-            n += 1
+        for p in todo:
+            db.kv_set(conn, f"phone.shots.queued.{p['key']}", str(now))
             a, b = p["start"] - 30, p["end"] + 30
             if windows and a - windows[-1][1] <= PHONE_MERGE_S and b - windows[-1][0] <= CHUNK_S:
                 windows[-1][1] = max(windows[-1][1], b)
