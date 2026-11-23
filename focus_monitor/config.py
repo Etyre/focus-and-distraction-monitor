@@ -239,10 +239,35 @@ def ensure_dirs() -> None:
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# A capture of the iPhone's screen (phone-unlock-logger's capture.py) is named
+# "iphone~<day>~<file>" here: no slash, so it passes through /shot/{name} and eval_runs.shots
+# like a Mac capture's name. See phone.captures, which is the only thing that hands them out.
+PHONE_SHOT_PREFIX = "iphone~"
+
+
+def _phone_shot_file(name: str) -> Path | None:
+    parts = name[len(PHONE_SHOT_PREFIX):].split("~")
+    if len(parts) != 2 or any(not p or p.startswith(".") or "/" in p for p in parts) or PRIVATE_MARK in name.lower():
+        return None           # never a private-app capture, never a path outside the folder
+    from . import phone
+    try:
+        cfg = load_config()
+        # Vetted on every resolve, not only when the name was handed out: a name kept in
+        # eval_runs.shots, or typed into /shot/, shows nothing phone.captures would withhold now.
+        if not phone.capture_allowed(cfg, name):
+            return None
+        p = phone.db_path(cfg).parent / "captures" / parts[0] / parts[1]
+    except Exception:
+        return None
+    return p if p.is_file() else None
+
+
 def screenshot_file(name: str | None) -> Path | None:
     """Where a capture lives now: the full-size file while it is retained, then the archive copy."""
     if not name:
         return None
+    if name.startswith(PHONE_SHOT_PREFIX):
+        return _phone_shot_file(name)
     base = Path(name).name
     for d in (SCREENSHOT_DIR, ARCHIVE_DIR):
         p = d / base

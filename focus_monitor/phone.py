@@ -20,6 +20,7 @@ evaluator.py and stats._carve_phone).
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import os
 import sqlite3
@@ -150,7 +151,7 @@ def through(cfg=None) -> float | None:
         c.close()
 
 
-def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
+def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0, shots: bool = True) -> dict:
     """Phone segments and unlocks overlapping [t0, t1): {segments, unlocks, through, autolock_s}.
 
     A segment carries `put_down` when the phone locked itself at the Auto-Lock interval: the app
@@ -186,6 +187,13 @@ def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
                    for r in c.execute("""SELECT ts, first_bundle_id, gap_s, notification FROM unlocks
                                          WHERE ts >= ? AND ts < ? AND excluded_reason IS NULL ORDER BY ts""", (t0, t1))]
         thr = c.execute("SELECT MAX(COALESCE(end_ts, start_ts)) FROM segments").fetchone()[0]
+        if shots:           # the lane's tooltip shows what was on the phone's screen, when a picture exists
+            caps = captures(cfg, t0 - 60, t1 + 60)
+            for sg in segs:
+                mine = captures_of(caps, sg["start"], sg["end"], sg["app"]) if caps else []
+                if len(mine) > 12:
+                    mine = [mine[round(j * (len(mine) - 1) / 11)] for j in range(12)]
+                sg["shots"] = [[k["name"], round(k["ts"], 1)] for k in mine]
         return {"segments": segs, "unlocks": unlocks, "through": float(thr) if thr else None, "available": True,
                 "autolock_s": L}
     except sqlite3.Error as e:
@@ -193,6 +201,127 @@ def window(cfg, t0: float, t1: float, open_cap_s: float = 900.0) -> dict:
         return {"segments": [], "unlocks": [], "through": None, "available": False, "autolock_s": None}
     finally:
         c.close()
+
+
+CAPTURE_PAD_S = 5.0        # the phone's clock (segments) and the Mac's (captures) differ a little
+CAPTURE_LATENCY_S = 3.0    # how long a screenshot took to come back, for rows that did not record it
+LOGGER_PRIVATE = ("org.whispersystems.signal",)   # the logger's own default private_bundles
+_warned_private: set = set()
+
+
+def _private_bundles(cfg, c) -> set:
+    """Bundle ids whose captures are never handed out: the logger's `private_bundles` (its
+    config.json beside the database, else its default) and every bundle that one of this app's
+    `private_apps` names. A name matches a bundle id, its display name (NAMES) or any dot-part of
+    the id; a name that matches nothing in the phone log is logged once, since it protects nothing."""
+    import json
+    out = {b.lower() for b in LOGGER_PRIVATE}
+    try:
+        user = json.loads((db_path(cfg).parent / "config.json").read_text())
+        pb = user.get("private_bundles") if isinstance(user, dict) else None
+        out |= {str(b).lower() for b in ([pb] if isinstance(pb, str) else pb or [])}
+    except (OSError, ValueError):
+        pass
+    names = {str(a).strip().lower() for a in (getattr(cfg, "private_apps", None) or []) if str(a).strip()}
+    if names:
+        hit = set()
+        for (bundle,) in c.execute("SELECT DISTINCT bundle_id FROM segments"):
+            keys = {bundle.lower(), app_name(bundle).lower(), *bundle.lower().split(".")}
+            if keys & names:
+                out.add(bundle.lower())
+                hit |= keys & names
+        for n in names - hit - _warned_private:
+            _warned_private.add(n)
+            log.warning("private_apps entry %r matches no app in the phone log: it withholds no phone capture", n)
+    return out
+
+
+def captures(cfg, t0: float, t1: float) -> list[dict]:
+    """Pictures of the iPhone's screen taken in [t0, t1) that may be shown:
+    [{ts, last_seen, name, bundle, app}].
+
+    The phone-unlock-logger's capture job (since 2026-11-23) photographs the screen while the
+    phone is on the cable or the Mac's Wi-Fi. A capture does not know which app it shows until
+    the phone's log syncs, and these pictures go to a model, so one is handed out only when ALL
+    of these hold; anything else is withheld:
+      - the logger has not flagged it private;
+      - it was taken wholly inside one recorded app segment (asked for after the segment's start
+        and back before its end, with a margin for the two clocks), and that segment has a real
+        end record. So nothing from a gap is shown - lock screen, notification centre, app
+        switcher, home screen - and nothing from the edge of an app change;
+      - that app is not private (_private_bundles), and no private app's segment comes within
+        the margin of it. A private segment whose end is missing or estimated counts as running
+        until the next segment starts.
+    What this cannot see: a notification banner of a private app drawn over another app.
+    `name` is what config.screenshot_file and /shot/ resolve (they vet through here again)."""
+    from .config import PHONE_SHOT_PREFIX, PRIVATE_MARK
+    c = _connect(cfg)
+    if c is None:
+        return []
+    try:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='captures'").fetchone():
+            return []
+        has_ret = "returned_ts" in [r[1] for r in c.execute("PRAGMA table_info(captures)")]
+        rows = c.execute(f"SELECT ts, {'returned_ts' if has_ret else 'NULL'} AS ret, last_seen_ts, file FROM captures"
+                         " WHERE private = 0 AND ts >= ? AND ts < ? ORDER BY ts", (t0, t1)).fetchall()
+        if not rows:
+            return []
+        private = _private_bundles(cfg, c)
+        segs = c.execute("""SELECT s.start_ts, s.end_ts, s.end_kind, s.bundle_id,
+                              (SELECT MIN(n.start_ts) FROM segments n WHERE n.start_ts > s.start_ts) AS next_start
+                            FROM segments s WHERE s.start_ts < ? AND COALESCE(s.end_ts, s.start_ts + 86400) > ?
+                            ORDER BY s.start_ts""", (t1 + 3600, t0 - 86400)).fetchall()
+        spans = []   # where a private app was, or may have been, in front
+        for g in segs:
+            if g["bundle_id"].lower() in private:
+                sure = g["end_ts"] is not None and g["end_kind"] in ("explicit", "implicit")
+                end = g["end_ts"] if sure else (g["next_start"] if g["next_start"] is not None else float("inf"))
+                spans.append((g["start_ts"] - CAPTURE_PAD_S, end + CAPTURE_PAD_S))
+        ok = [g for g in segs if g["end_ts"] is not None and g["end_kind"] == "explicit"
+              and g["bundle_id"] not in NOT_USE and g["bundle_id"].lower() not in private]
+        starts = [g["start_ts"] for g in ok]
+        out = []
+        for r in rows:
+            day, _, fn = r["file"].partition("/")
+            if not fn or "/" in fn or PRIVATE_MARK in fn.lower():
+                continue
+            a = r["ts"]
+            b = r["ret"] if r["ret"] is not None else a + CAPTURE_LATENCY_S
+            i = bisect.bisect_right(starts, a - 1.0) - 1      # the latest segment that had begun by then
+            g = ok[i] if i >= 0 and b + 1.0 <= ok[i]["end_ts"] else None
+            if g is None or any(lo <= b and hi >= a for lo, hi in spans):
+                continue
+            out.append({"ts": a, "last_seen": r["last_seen_ts"], "name": f"{PHONE_SHOT_PREFIX}{day}~{fn}",
+                        "bundle": g["bundle_id"], "app": app_name(g["bundle_id"])})
+        return out
+    except sqlite3.Error as e:
+        log.warning("phone db captures: %s", e)
+        return []
+    finally:
+        c.close()
+
+
+def capture_allowed(cfg, name: str) -> bool:
+    """Whether the capture with this `iphone~<day>~<file>` name may be shown NOW. Asked on every
+    resolve, so a name stored when it was allowed stops working if its app is made private."""
+    from .config import PHONE_SHOT_PREFIX
+    parts = name[len(PHONE_SHOT_PREFIX):].split("~")
+    c = _connect(cfg)
+    if c is None or len(parts) != 2:
+        return False
+    try:
+        r = c.execute("SELECT ts FROM captures WHERE file = ? AND private = 0", (parts[0] + "/" + parts[1],)).fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        c.close()
+    return r is not None and any(k["name"] == name for k in captures(cfg, r[0] - 1.0, r[0] + 1.0))
+
+
+def captures_of(caps: list[dict], start: float, end: float, app: str | None = None) -> list[dict]:
+    """Those of `caps` taken during [start, end]; with `app`, only that app's (a pickup's entry
+    can span a short gap between two stretches of one app, and nothing else belongs to it)."""
+    return [k for k in caps if start <= k["ts"] <= end and (app is None or k["app"] == app)]
 
 
 PICKUP_PAD_S = 1800.0      # look this far either side of a window so a pickup's key is stable
@@ -255,7 +384,7 @@ def pickups(cfg, t0: float, t1: float) -> list[dict]:
     pickup's start in whole seconds; it is computed from unclipped segments, so the same pickup
     gets the same key whichever window asks."""
     from .config import logical_date
-    w = window(cfg, t0 - PICKUP_PAD_S, t1 + PICKUP_PAD_S)
+    w = window(cfg, t0 - PICKUP_PAD_S, t1 + PICKUP_PAD_S, shots=False)
     out, cur, firsts = [], None, {}
     for sg in w["segments"]:
         end = min(sg["end"], sg["start"] + PUT_DOWN_USE_S) if sg["put_down"] else sg["end"]

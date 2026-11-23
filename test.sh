@@ -45,6 +45,9 @@ $PY -m focus_monitor.llm_selftest 2>/dev/null || fail=1
 echo "--- span rules on hand-built days (Rules doc redesign, 2026-11-19)"
 $PY -m focus_monitor.span_selftest || fail=1
 
+echo "--- phone captures: only vetted ones are handed out, resolved and attached (throwaway phone db)"
+$PY -m focus_monitor.phone_selftest 2>&1 | sed 's/^/  /' || fail=1
+
 echo "--- signals: click placement, Chrome transitions, the notes on a segment"
 $PY -m focus_monitor.signals_selftest || fail=1
 
