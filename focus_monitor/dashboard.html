@@ -697,6 +697,13 @@ function phoneShot(e,ev,rect){const sh=e.shots||[];if(!sh.length)return '';
   const t=e.start+f*(e.end-e.start);let best=sh[0];
   sh.forEach(k=>{if(Math.abs(k[1]-t)<Math.abs(best[1]-t))best=k;});
   return `<img src="/shot/${encodeURIComponent(best[0])}" style="height:260px;border-radius:5px;margin-bottom:5px;display:block"><div class="muted small">phone screen at ${fmtT(best[1])}</div>`;}
+document.addEventListener('mousemove',ev=>{const r=ev.target&&ev.target.closest?ev.target.closest('rect[data-phs]'):null;if(!r)return;
+  let d;try{d=JSON.parse(r.dataset.phs);}catch(e){return;}
+  showTT(ev,phoneShot({shots:d.s,start:d.a,end:d.b},ev,r)+d.t);});   // d.t was escaped when the tip was built
+document.addEventListener('mouseout',ev=>{if(ev.target&&ev.target.matches&&ev.target.matches('rect[data-phs]'))hideTT();});
+// A phone question's card: the pictures of the phone's screen during the phone segment it asks about.
+function qPhoneShots(q){const sh=q.phone_shots||[];if(!sh.length)return '';
+  return `<div style="margin:8px 0"><div class="muted small" style="margin-bottom:4px">📱 The phone's screen during this ${esc(q.phone_app||'phone')} use (${sh.length} capture${sh.length>1?'s':''}; none are taken of private apps or between apps)</div><div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">${sh.map(k=>`<div style="flex:none;text-align:center"><a href="/shot/${encodeURIComponent(k[0])}" target="_blank"><img src="/shot/${encodeURIComponent(k[0])}" style="height:360px;border:1px solid var(--grid);border-radius:6px;display:block"></a><span class="muted small">${fmtT(k[1])}</span></div>`).join('')}</div></div>`;}
 function phoneTrack(ph,x,t0,t1,L,yText,yBar,attr){
   // Phone lane under a timeline: which app was on the iPhone's screen (orange), with a tick for each
   // unlock. A segment the phone ended by locking itself (`put_down`) is drawn hollow: the app was
@@ -708,7 +715,10 @@ function phoneTrack(ph,x,t0,t1,L,yText,yBar,attr){
     const x0=x(Math.max(e.start,t0)),w=Math.max(2,x(Math.min(e.end,t1))-x0-1);
     const tip=`📱 ${esc(e.app)} — ${fmtT(e.start)}–${fmtT(e.end)} (${fmtMin((e.end-e.start)/60)})${e.how?' · opened from '+esc(e.how):''}${e.open?' · still open at last sync':''}${e.put_down?' · '+putDownNote(ph):''}`;
     const look=e.put_down?'fill="var(--m-heuristic)" fill-opacity="0.18" stroke="var(--m-heuristic)" stroke-width="1" stroke-dasharray="3,2"':'fill="var(--m-heuristic)" opacity="0.75"';
-    s+=`<rect ${attr?attr+'="'+i+'"':''} x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" ${look}>${attr?'':'<title>'+tip+'</title>'}</rect>`;
+    // A segment with pictures of the phone's screen gets the rich tooltip (one listener for every
+    // timeline, below) instead of a <title>; the Day view binds its own through `attr`.
+    const pic=!attr&&(e.shots||[]).length;
+    s+=`<rect ${attr?attr+'="'+i+'"':''}${pic?` data-phs="${esc(JSON.stringify({s:e.shots,a:e.start,b:e.end,t:tip}))}"`:''} x="${x0}" y="${yBar}" width="${w}" height="12" rx="2" ${look}>${attr||pic?'':'<title>'+tip+'</title>'}</rect>`;
     if(w>60)s+=`<text x="${x0+4}" y="${yBar+9}" font-size="9" fill="${e.put_down?'var(--m-heuristic)':'#fff'}" pointer-events="none">${esc(e.app.slice(0,Math.floor(w/6)))}</text>`;});
   ((ph&&ph.unlocks)||[]).forEach(u=>{if(u.ts<t0||u.ts>=t1)return;const xu=x(u.ts);
     s+=`<path d="M${xu-3},${yBar-2} L${xu+3},${yBar-2} L${xu},${yBar+3} Z" fill="var(--ink)" opacity="0.8"><title>unlock → ${esc(u.app)} at ${fmtT(u.ts)} after ${u.gap_min} min locked${u.notification!=='unknown'?' · notification: '+esc(u.notification):''}</title></path>`;});
@@ -891,11 +901,11 @@ async function qRefreshState(q){
   catch(e){}}
 // The captures for a question card: the last capture before the segment in question and the
 // segment's own first capture, plus a filmstrip of every capture inside it (click to view).
-function qShots(q){const tl=q.timeline||[],k=tl.findIndex(g=>g.id===q.segment_id);if(k<0)return '';
+function qShots(q){const tl=q.timeline||[],k=tl.findIndex(g=>g.id===q.segment_id);if(k<0)return qPhoneShots(q);
   const seg=tl[k],prev=k>0?tl[k-1]:null;
   const cap=g=>`<b>${esc(appName(g.app))}</b> <span class="muted">${fmtT(g.clip_start)} · ${fmtMin(g.duration/60)}</span>${g.title?'<br>'+esc(g.title.slice(0,90)):''}${g.url?'<br><span class="muted small">'+esc(g.url.slice(0,120))+'</span>':''}`;
   const first=SCRUB.moments.length?scrubShot():null;
-  return `<div class="shots" style="margin:8px 0">
+  return qPhoneShots(q)+`<div class="shots" style="margin:8px 0">
     <div><div class="cap">Before – ${prev?cap(prev):'<span class="muted">(nothing earlier in this window)</span>'}</div>${prev&&(prev.last_screenshot||prev.first_screenshot)?`<img src="/shot/${prev.last_screenshot||prev.first_screenshot}">`:'<div class="muted">no screenshot</div>'}</div>
     <div><div class="cap">The moment in question – ${cap(seg)}</div>${first||seg.first_screenshot?`<img id="afterShot" src="/shot/${first?first.path:seg.first_screenshot}">`:'<div class="muted">no screenshot</div>'}<div class="small" id="scrubCap" style="margin-top:2px"></div>${filmstripMarkup()}</div>
   </div>`;}

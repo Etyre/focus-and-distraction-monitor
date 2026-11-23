@@ -232,6 +232,7 @@ class ClassifierService:
             from . import evaluator
             evaluator.run_pending(self.conn, self.cfg)  # supersedes the per-switch thread resolver
             evaluator.queue_phone_rejudge(self.conn, self.cfg)  # stretches whose phone data arrived later
+            evaluator.queue_phone_capture_rejudge(self.conn, self.cfg)  # pickups judged before pictures of the phone's screen could be shown
             evaluator.run_reevaluations(self.conn, self.cfg)  # stretches whose Toggl entries changed later
             evaluator.daily_audit(self.conn, self.cfg)  # once a day; a fast no-op otherwise
             evaluator.refine_incoherent(self.conn, self.cfg)  # auto-correct model-vs-model findings

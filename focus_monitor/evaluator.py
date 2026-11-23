@@ -43,7 +43,8 @@ from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # si
 
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
-BATCH_S = 10 * 60         # ...and wait until this much is ready to judge, unless activity has stopped (run_pending)
+BATCH_S = 20 * 60         # ...and wait until this much is ready to judge, unless activity has stopped (run_pending;
+                          #  Eli, 2026-11-23: 15 or 20 minutes. Equal to CHUNK_S, so a call is a full chunk)
 CONTACT_HOLD_S = 24 * 3600   # after the evaluator asks for Eli, how long its chunk is left alone
 CTX_S = 10 * 60           # how far around a chunk phone pickups and their stored judgments are looked up
 # Context shown to the model (2026-11-20; it was 10 minutes each side). Of 513 segments judged a
@@ -1105,7 +1106,7 @@ class ChunkEvaluator:
         return [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}]
 
     def evaluate_chunk(self, conn, t0: float, t1: float, extra: str | None = None,
-                       phone_only: bool = False, history: bool = False) -> int:
+                       phone_only: bool = False, history: bool = False, phone_again: bool = False) -> int:
         """Evaluate all real segments starting in [t0, t1). Local models predict first (and are
         stored for track-record scoring); segments where the locals have EARNED confident
         deferral skip the LLM; the rest go into one LLM call, and the resolved judgment is the
@@ -1155,7 +1156,9 @@ class ChunkEvaluator:
         # A pickup is judged whole: every app segment in it, when any of them has no judgment.
         picks = [p for p in picks_all if t0 <= p["start"] < t1 and not p["lock_screen"]
                  and ((extra is not None and not phone_only) or any(
-                     g["key"] not in pk_have or pk_have[g["key"]]["switch_label"] is None for g in p["segs"]))]
+                     g["key"] not in pk_have or pk_have[g["key"]]["switch_label"] is None for g in p["segs"])
+                      # pictures of the phone's screen turned up after the pickup was judged without them
+                      or (phone_again and _phone_unseen(conn, self.cfg, p, pk_have)))]
         if not target and not picks:
             return 0
         # -- local models + deferral decision ---------------------------------------------
@@ -2273,6 +2276,69 @@ LOW_EFFORT_FIXED_AT = 1795163657.0   # 2026-11-20 03:34:17 Eastern, as an epoch:
 REEVAL_BACKOFF_S = 300.0         # after a re-evaluation call fails or comes back empty
 HISTORY_EVERY_S = 60.0           # at least this long between two history calls (kv rejudge.history.every_s overrides)
 PHONE_REASON = "phone data arrived"
+PHONE_SHOT_REASON = "phone screen captures arrived"
+_phone_shots_checked = 0.0
+
+
+def _phone_unseen(conn, cfg, p: dict, pk_have: dict) -> bool:
+    """True when pickup `p` is judged, has pictures of the phone's screen that may be shown, and
+    the run that judged it was shown none of them. Segments the person has ruled on are left."""
+    from .config import PHONE_SHOT_PREFIX
+    if p.get("lock_screen"):
+        return False
+    rows = [pk_have.get(g["key"]) for g in p["segs"]]
+    if any(r is None or r["switch_label"] is None for r in rows):
+        return False          # not judged yet: the ordinary path judges it, with its pictures
+    keys = [g["key"] for g in p["segs"]]
+    if conn.execute(f"SELECT 1 FROM phone_reviews WHERE seg_key IN ({','.join('?' * len(keys))}) LIMIT 1", keys).fetchone():
+        return False
+    ims, _ = _phone_images(cfg, p)
+    if not ims:
+        return False
+    for run_id in {r["run_id"] for r in rows if r["run_id"]}:
+        run = conn.execute("SELECT shots FROM eval_runs WHERE id=?", (run_id,)).fetchone()
+        if run is not None and PHONE_SHOT_PREFIX in (run["shots"] or ""):
+            return False
+    return True
+
+
+def queue_phone_capture_rejudge(conn, cfg: Config | None = None) -> int:
+    """A pickup is normally judged when the phone log arrives, with whatever pictures of its
+    screen exist. This catches the pickups judged WITHOUT them although some can be shown now
+    (judged before 2026-11-23, or the pictures were released later): each is queued once
+    (kv phone.shots.queued.<pickup>) for a phone-only re-judgment, which replaces its
+    phone_evals rows. Checked every 30 minutes over the phone lookback."""
+    global _phone_shots_checked
+    from . import phone
+    now = time.time()
+    if now - _phone_shots_checked < 1800:
+        return 0
+    _phone_shots_checked = now
+    cfg = cfg or load_config()
+    if not phone.captures(cfg, now - PHONE_LOOKBACK_S, now):
+        return 0
+    pk_have = {r["seg_key"]: r for r in conn.execute("SELECT * FROM phone_evals WHERE start >= ?",
+                                                     (now - PHONE_LOOKBACK_S - 3600,))}
+    windows: list[list[float]] = []
+    n = 0
+    with db.tx(conn):
+        for p in phone.pickups(cfg, now - PHONE_LOOKBACK_S, now - LAZY_S):
+            key = f"phone.shots.queued.{p['key']}"
+            if db.kv_get(conn, key) or not _phone_unseen(conn, cfg, p, pk_have):
+                continue
+            db.kv_set(conn, key, str(now))
+            n += 1
+            a, b = p["start"] - 30, p["end"] + 30
+            if windows and a - windows[-1][1] <= PHONE_MERGE_S and b - windows[-1][0] <= CHUNK_S:
+                windows[-1][1] = max(windows[-1][1], b)
+            else:
+                windows.append([a, b])
+        for a, b in windows:
+            conn.execute("INSERT INTO reeval_queue(t0, t1, reason, created) VALUES (?,?,?,?)",
+                         (a, b, PHONE_SHOT_REASON, now))
+    if windows:
+        log.info("pictures of the phone's screen for %d judged pickup(s): %d stretch(es) queued for re-judgment", n, len(windows))
+    return len(windows)
 PHONE_LOOKBACK_S = 3 * 86400     # the phone pushes its log hours to a day late
 PHONE_MERGE_S = 300.0            # pickups this close together are re-judged in one call
 _phone_seen = (None, 0.0)        # (phone.through, when last checked)
@@ -2513,6 +2579,11 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
             extra = ("the phone log for this window arrived AFTER the computer activity was judged: the "
                      "PHONE lines are new. Judge each one marked EVALUATE PHONE, in the context of the "
                      "activity around it. No computer segment is up for judgment in this call.")
+        elif q["reason"] == PHONE_SHOT_REASON:
+            extra = ("pictures of the iPhone's own screen during the phone use in this window became available "
+                     "AFTER it was judged from the app name and timing alone. Judge each line marked EVALUATE "
+                     "PHONE again, from the pictures attached for it. No computer segment is up for judgment "
+                     "in this call.")
         elif history:
             extra = ("your earlier judgment of this window was made in a quick pass at low effort. Judge "
                      "every segment marked EVALUATE again, carefully, from the log and the screenshots. "
@@ -2536,13 +2607,14 @@ def run_reevaluations(conn, cfg: Config | None = None, max_chunks: int = 1) -> i
                      f"state and must be ignored. Re-judge every segment against the listed entries; where "
                      f"your earlier judgment (including the notes after '// note:') relied on the old "
                      f"entries, change it." + _toggl_change_note(conn, q["id"]))
-        phone_q = q["reason"] == PHONE_REASON
+        phone_q = q["reason"] in (PHONE_REASON, PHONE_SHOT_REASON)
         ev = _get()
         ev.last_answer = "parsed"   # (a chunk with nothing to send returns before the call)
         try:
             llm.only_subscription(history)   # a history call that cannot run on the subscription fails; it never goes to the API key
             try:
-                n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q, history=history)
+                n = ev.evaluate_chunk(conn, start, c1, extra=extra, phone_only=phone_q, history=history,
+                                      phone_again=q["reason"] == PHONE_SHOT_REASON)
             finally:
                 llm.only_subscription(False)
             if ev.last_answer == "parsed" and start < ev.last_end < c1:

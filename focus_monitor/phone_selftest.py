@@ -83,6 +83,53 @@ def main() -> None:
         (Path(d) / "captures" / "d" / "a.jpg").unlink()       # a file gone since: not attached, so not counted
         assert len(evaluator._image_content(ims)[1]) == 4
 
+        # ---- a pickup judged without its pictures is queued for one re-judgment; others are not
+        (Path(d) / "captures" / "d" / "a.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        app = sqlite3.connect(":memory:", isolation_level=None)
+        app.row_factory = sqlite3.Row
+        app.executescript("""
+            CREATE TABLE phone_evals (seg_key INTEGER PRIMARY KEY, pickup_key INTEGER, start REAL, end REAL, app TEXT,
+                                      switch_label TEXT, run_id INTEGER);
+            CREATE TABLE phone_reviews (seg_key INTEGER PRIMARY KEY);
+            CREATE TABLE eval_runs (id INTEGER PRIMARY KEY, shots TEXT);
+            CREATE TABLE reeval_queue (id INTEGER PRIMARY KEY, t0 REAL, t1 REAL, reason TEXT, created REAL);
+            CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO eval_runs VALUES (1, '[{"path": "20261123_d0.jpg", "label": "x"}]');""")
+        picks = phone.pickups(cfg, T - 60, T + 2000)
+        assert len(picks) >= 2, len(picks)
+        for p in picks:
+            for g in p["segs"]:
+                app.execute("INSERT INTO phone_evals VALUES (?,?,?,?,?,?,?)",
+                            (g["key"], p["key"], g["start"], g["end"], g["app"], "interruption", 1))
+        have = lambda: {r["seg_key"]: r for r in app.execute("SELECT * FROM phone_evals")}
+        with_pics = [p for p in picks if evaluator._phone_images(cfg, p)[0]]
+        assert with_pics and all(evaluator._phone_unseen(app, cfg, p, have()) for p in with_pics)
+        assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks if p not in with_pics)
+        evaluator._phone_shots_checked = 0.0
+        n = evaluator.queue_phone_capture_rejudge(app, cfg)
+        q = app.execute("SELECT reason FROM reeval_queue").fetchall()
+        assert n == len(q) >= 1 and all(r[0] == evaluator.PHONE_SHOT_REASON for r in q), (n, q)
+        evaluator._phone_shots_checked = 0.0
+        assert evaluator.queue_phone_capture_rejudge(app, cfg) == 0            # each pickup once
+        app.execute("""UPDATE eval_runs SET shots = '[{"path": "iphone~d~a.jpg", "label": "x"}]'""")
+        assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks)   # its run saw the phone's screen
+        app.execute("UPDATE eval_runs SET shots = '[]'")
+        app.execute("INSERT INTO phone_reviews SELECT seg_key FROM phone_evals")
+        assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks)   # the person has ruled
+        app.execute("DELETE FROM phone_reviews")
+        app.execute("UPDATE phone_evals SET switch_label = NULL")
+        assert not any(evaluator._phone_unseen(app, cfg, p, have()) for p in picks)   # not judged yet: the ordinary path
+
+        # ---- the chat tool hands out the same vetted pictures, and says so when there are none
+        import datetime as _dt
+        from . import chat_tools
+        day = config.logical_date(T)
+        hm = lambda t: _dt.datetime.fromtimestamp(t).strftime("%H:%M:%S")
+        res = chat_tools._screenshots(app, cfg, {"which": "phone", "start_hhmm": hm(T - 30), "end_hhmm": hm(T + 1000)}, day)
+        assert isinstance(res, list) and sum(1 for b in res if b["type"] == "image") == 5, res if isinstance(res, str) else len(res)
+        res = chat_tools._screenshots(app, cfg, {"which": "phone", "start_hhmm": hm(T + 100), "end_hhmm": hm(T + 160)}, day)
+        assert isinstance(res, str) and res.startswith("no picture"), res
+
         # a phone database from before the capture job: no table, no pictures, no error
         c = sqlite3.connect(db)
         c.execute("DROP TABLE captures")

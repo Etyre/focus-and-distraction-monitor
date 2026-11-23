@@ -36,13 +36,16 @@ READ_TOOLS = [
                      f"were two. At most {SHOTS_PER_CALL} images per call, spread evenly; the result says how many captures "
                      "exist, so narrow the time range to see the rest. Use it before saying anything about what a block "
                      "showed that the log does not state. which='seen_by_evaluator' returns instead the images the "
-                     "evaluator was shown when it judged the block. Read-only."),
+                     "evaluator was shown when it judged the block. which='phone' with a time range returns "
+                     "pictures of the iPhone's own screen in that range (PHONE lines in the log): they exist only "
+                     "while the phone was near the Mac, and none are taken of private apps or between apps, so "
+                     "often there are none. Read-only."),
      "input_schema": {"type": "object", "properties": {
          "segment_id": {"type": ["integer", "null"], "description": "The block (#id / id=N in the log)."},
          "start_hhmm": {"type": ["string", "null"], "description": "Start of a time range, HH:MM or HH:MM:SS, in the log's own times."},
          "end_hhmm": {"type": ["string", "null"]},
          "day": _DAY,
-         "which": {"type": ["string", "null"], "enum": ["captures", "seen_by_evaluator", None]}},
+         "which": {"type": ["string", "null"], "enum": ["captures", "seen_by_evaluator", "phone", None]}},
          "required": []}},
     {"name": "get_evaluation",
      "description": ("The evaluation run behind a block's current judgment: when it was made and by which model, the "
@@ -244,6 +247,23 @@ def _screenshots(conn, cfg, args: dict, day: dt.date):
             if b:
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
         return blocks
+    if args.get("which") == "phone":
+        from . import phone
+        rng = _range(args, day)
+        if rng is None:
+            return "error: which='phone' needs start_hhmm and end_hhmm"
+        scope = f"{pp.t(rng[0], '%a %Y-%m-%d %H:%M:%S')} to {pp.t(rng[1])}"
+        caps = phone.captures(cfg, rng[0], rng[1])
+        if not caps:
+            return (f"no picture of the iPhone's screen is available between {scope}. That says nothing about the phone use: "
+                    "pictures exist only while the phone was near the Mac, and those of private apps or taken between apps are withheld.")
+        shown = shots.spread(caps, SHOTS_PER_CALL)
+        blocks, meta = pp.image_blocks([{"ts": k["ts"], "path": k["name"],
+                                         "label": f"Screenshot - the iPhone's screen (taken {pp.t(k['ts'], '%a %Y-%m-%d %H:%M:%S')}, iPhone: {k['app']}):"}
+                                        for k in shown])
+        return [{"type": "text", "text": f"{len(caps)} picture(s) of the iPhone's screen between {scope}, at "
+                 + ", ".join(pp.t(k["ts"]) for k in caps) + f". Attached: {len(meta)}"
+                 + (", spread evenly; ask for a narrower time range to see the others" if len(shown) < len(caps) else "") + "."}] + blocks
     if sid is not None:
         g = conn.execute("SELECT * FROM segments WHERE id=?", (int(sid),)).fetchone()
         if g is None:

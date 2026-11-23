@@ -210,8 +210,15 @@ first commit 2026-08-29, in continuous development since.
   the call that judges that pickup (inside the same 60-image budget; when the budget is short the
   Mac's before/after captures give way first), and the Day view's phone-lane tooltip shows the one
   nearest the cursor's time.
-  A pickup already judged is not judged again when a capture of it turns up. Review questions,
-  chats and the other timelines do not use them yet.
+  The same tooltip is on the phone lane of every other timeline (span, question and capture
+  views). A review question about phone use shows the pictures of that phone segment on its
+  card (`/api/questions/{id}/context` returns `phone_shots`). The chats can look for themselves:
+  `get_screenshots` with `which='phone'` and a time range returns the vetted pictures in it.
+  A pickup that was judged without pictures although some can be shown now (judged before
+  2026-11-23, or its pictures were released later) is queued once for a phone-only
+  re-judgment (`evaluator.queue_phone_capture_rejudge`, reason "phone screen captures arrived",
+  checked every 30 minutes over the last 3 days); the new judgment replaces the old one. A
+  phone segment you have ruled on is left alone.
 * **Phone app segments are judged like computer segments** (since 2026-11-19; Eli: "The app
   should make the same segment judgements of open phone apps as it does of computer segments").
   `phone.pickups` groups the phone log into pickups: one per stretch of use between locks
@@ -488,9 +495,9 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
   `run_pending` ran every cycle and judged each segment the moment it turned 15 minutes old, so
   the median call covered 1.2 minutes and one segment, about 600 calls a day, each carrying the
   full context (about 280,000 tokens: 165,000 of rules and rulings, cached, and 60 screenshots).
-  `CHUNK_S` (20 minutes per call) was never reached. Now it waits until `BATCH_S` (10 minutes) of
+  `CHUNK_S` (20 minutes per call) was never reached. Now it waits until `BATCH_S` (20 minutes, Eli's choice) of
   activity is ready, or until nothing has happened on the Mac since the 15-minute horizon.
-  * Judgments therefore arrive up to about 25 minutes after the activity, not 15.
+  * Judgments therefore arrive up to about 35 minutes after the activity, not 15.
   * Re-evaluations (phone data arrived, Toggl corrected) and held segments are still single calls.
   * The evaluator's cost is input, not effort: medium and high cost the same per call.
 

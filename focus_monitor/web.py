@@ -1154,16 +1154,29 @@ def _unapply_proposals(c, q, keep_index: int | None = None) -> None:
 def api_question_context(qid: int):
     """The timeline around one question's segment, fetched when its card is shown."""
     c = conn()
-    g = c.execute("""SELECT q.segment_id, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end
+    g = c.execute("""SELECT q.segment_id, q.phone_key, g.start AS seg_start, COALESCE(g.end, g.start) AS seg_end
                      FROM review_questions q JOIN segments g ON g.id = q.segment_id WHERE q.id=?""", (qid,)).fetchone()
     if not g:
         raise HTTPException(404)
+    # A question about phone use shows what was on the phone's screen, when a picture exists.
+    phone_shots, phone_app = [], None
+    if g["phone_key"] is not None:
+        try:
+            p = c.execute("SELECT start, end, app FROM phone_evals WHERE seg_key=?", (g["phone_key"],)).fetchone()
+            if p is not None:
+                phone_app = p["app"]
+                caps = phone.captures_of(phone.captures(cfg, p["start"] - 60, p["end"] + 60), p["start"], p["end"], p["app"])
+                if len(caps) > 12:
+                    caps = [caps[round(j * (len(caps) - 1) / 11)] for j in range(12)]
+                phone_shots = [[k["name"], round(k["ts"], 1)] for k in caps]
+        except Exception:
+            log.exception("phone captures for question %s", qid)
     t0, t1 = g["seg_start"] - QCTX_S, g["seg_end"] + QCTX_S
     keys = ("id", "clip_start", "clip_end", "duration", "state", "label", "focused", "switch", "self_distraction", "next_task", "sub_of", "sub_absorbed", "diversion", "app", "domain", "title",
             "content", "hybrid", "switch_id", "own_switch_id", "source", "first_screenshot", "last_screenshot", "url", "toggl_id", "toggl_desc")
     timeline = [{k: s.get(k) for k in keys} for s in _question_segments(c, g["segment_id"], t0, t1)]
     return {"timeline": timeline, "timeline_shots": _shots_for(c, timeline),
-            "phone": phone.window(cfg, t0, t1),
+            "phone": phone.window(cfg, t0, t1), "phone_shots": phone_shots, "phone_app": phone_app,
             "toggl_entries": [{"start": max(e["start"], t0), "end": min(e["stop"] or time.time(), t1),
                                "description": e["description"], "project": e["project"]}
                               for e in toggl.entries_between(c, t0, t1)]}
