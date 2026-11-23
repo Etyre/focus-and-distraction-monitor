@@ -187,6 +187,31 @@ first commit 2026-08-29, in continuous development since.
   interval is inferred from the data (`phone.autolock_s`: lock-ended durations spike in a
   15-second band above one of iOS's Auto-Lock options), so changing the setting needs no code
   change; it takes a couple of days of self-locks to show up.
+* **Phone screen captures** (since 2026-11-23). The phone-unlock-logger's capture job photographs
+  the iPhone's screen while the phone is on the cable or on the Mac's Wi-Fi (at most every 20 s,
+  only when the screen changed; nothing away from the Mac). This app only reads them
+  (`phone.captures`). These pictures go to a model, so one is handed out only when all of this
+  holds, and anything else is withheld: the logger has not flagged it private; it was taken
+  wholly inside one recorded app segment that has a real end record (so nothing from a gap: lock
+  screen, notification centre, app switcher, home screen; nothing from the moment of an app
+  change; and nothing newer than the phone log, which runs hours behind); that app is not
+  private; and no private app's segment comes within 5 s of it (a private segment whose end is
+  missing or estimated counts as running until the next app starts). Private apps are the
+  logger's `private_bundles` plus every app that a `private_apps` entry names (a bundle id, the
+  app's display name, or a part of its bundle id; an entry that matches nothing in the phone log
+  is logged as a warning, because it protects nothing). A capture is named `iphone~<day>~<file>`
+  here and resolved by `config.screenshot_file`, which runs the same test again on every
+  resolve: `/shot/`, the evaluator and the stored list of what a run was shown
+  (`eval_runs.shots`) treat it like a Mac capture, and a name stored earlier stops resolving
+  when its app is made private. **What this cannot catch: a notification banner of a private app
+  drawn over another app.** Turning off message previews for Signal on the phone (Signal >
+  Settings > Notifications > Show: "No name or content") closes that.
+  Where they are used: the evaluator attaches up to 3 per phone app segment and 8 per pickup to
+  the call that judges that pickup (inside the same 60-image budget; when the budget is short the
+  Mac's before/after captures give way first), and the Day view's phone-lane tooltip shows the one
+  nearest the cursor's time.
+  A pickup already judged is not judged again when a capture of it turns up. Review questions,
+  chats and the other timelines do not use them yet.
 * **Phone app segments are judged like computer segments** (since 2026-11-19; Eli: "The app
   should make the same segment judgements of open phone apps as it does of computer segments").
   `phone.pickups` groups the phone log into pickups: one per stretch of use between locks
@@ -195,8 +220,9 @@ first commit 2026-08-29, in continuous development since.
   segment as a `PHONE` line in the activity log, slotted in by time, marked "(phone unlocked)" on
   the first of a pickup and "(first Oura open today)" on an app's first use of the day, and judges
   it with the fields of a computer segment: content, focused, switch (continuation / shift /
-  return), and on a shift self-distraction and next-task. Only the app and the timing are known;
-  there are no phone screenshots. Judgments are stored in `phone_evals`, one row per app segment.
+  return), and on a shift self-distraction and next-task. Usually only the app and the timing are
+  known. Since 2026-11-23 a phone segment can also come with pictures of the iPhone's own screen
+  (see "Phone screen captures" below), and its log line then says how many. Judgments are stored in `phone_evals`, one row per app segment.
   When a row is stored the app works out `away`: a shift is time away from what was on the Mac,
   and so is a continuation of a phone segment that was away; a continuation of the Mac thread, or
   a pass-through (content `transition`: the few seconds on whatever app the phone unlocked onto),
@@ -213,7 +239,7 @@ first commit 2026-08-29, in continuous development since.
   the Mac went idle meanwhile that piece continues the last active segment instead of ending
   the span (`stats._phone_on_track`). Phone time that was a shift is always time away and never
   starts a span of its own; phone-only focus (meditation, cardio intervals) is tracked in Toggl.
-  Phone judgments are low confidence (the model sees an app name and timing, nothing else) and
+  Phone judgments are low confidence (the model mostly sees an app name and timing, nothing else) and
   the phone is secondary: a phone block's tooltip says so, and a phone judgment becomes a review
   question only when it is load-bearing (`questions.phone_questions`): reading that phone time
   the other way (away from the work, or part of it) would move the day's independent focus time
@@ -323,7 +349,7 @@ backend has no tools, so no note tool there.
 |---|---|
 | `focus_monitor/__main__.py` | Entry point: `collect`, `classify`, `web`, `app`, `run`, `stats`, `check`, `restart`. Sets up logging. |
 | `focus_monitor/config.py` | `Config` dataclass, `config.toml` loader, paths (data dir, log, Keychain lookup), pricing constants. |
-| `focus_monitor/phone.py` | Read-only view of the phone-unlock-logger's database: per-app phone segments and unlocks for a window, pickups (what the evaluator judges), app-name map, and how far the phone data reaches. |
+| `focus_monitor/phone.py` | Read-only view of the phone-unlock-logger's database: per-app phone segments and unlocks for a window, pickups (what the evaluator judges), app-name map, how far the phone data reaches, and the vetted captures of the phone's screen (`captures`). |
 | `focus_monitor/collector.py` | Active-window polling, screenshots, idle detection, segments and switches. |
 | `focus_monitor/classify.py` | Classifier service loop: waits the lookahead, runs the ensemble, flags uncertain switches. |
 | `focus_monitor/classifiers/` | `claude_vision.py` (Claude + screenshots), `heuristic.py` (rules), `learned.py` (logistic model), `base.py` (switch context). |
@@ -344,6 +370,7 @@ backend has no tools, so no note tool there.
 | `focus_monitor/edits.py`, `seg_models.py`, `stats.py`, `toggl.py`, `db.py` | Edits with provenance, label space, metrics/spans, Toggl sync, SQLite schema and helpers. |
 | `focus_monitor/signals.py` | Extra signals beside the captures: input counts, audio/mic/camera, what was clicked before a switch, notification banners, how Chrome reached each page (tables `activity_samples`, `ui_events`, `segment_arrivals`, `page_visits`). |
 | `focus_monitor/rule_drafts.py` | Drafts Rules-doc lines from repeated review rulings; you approve each (tables `rule_drafts`, `rule_draft_runs`). |
+| `focus_monitor/phone_selftest.py` | Self-test of the phone screen captures as this app reads them: which are withheld, name resolution, attachment to segments (`python -m focus_monitor.phone_selftest`; run by `test.sh`). |
 | `focus_monitor/span_selftest.py` | Self-test of the span rules on hand-built days (`python -m focus_monitor.span_selftest`; run by `test.sh`). |
 | `focus_monitor/web.py` | FastAPI server for the dashboard and its API (port 8790). |
 | `focus_monitor/dashboard.html` | The whole dashboard (Day, Captures, Trends, Review, Models, Efforts). Drafts in every text field persist in `localStorage`. |
@@ -437,7 +464,7 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 ## Settings that matter
 
 * **Phone lane**: needs the phone-unlock-logger installed and running (its launchd agent reads the
-  Biome stream every 2 hours) and, on the iPhone, Screen Time → Share Across Devices on.
+  Biome stream every 10 minutes; a second agent of it takes the phone screen captures) and, on the iPhone, Screen Time → Share Across Devices on.
 * **iPhone Auto-Lock** (Settings → Display & Brightness → Auto-Lock): 2 minutes, set 2026-11-11
   (it was 5 minutes before). Shorter is better for the phone lane: a phone left open on the desk
   shows as use for at most this long before it locks itself and the segment is flagged `put_down`.
@@ -456,6 +483,16 @@ Then edit `config.toml` - especially `about_me`, `distraction_domains`, and
 * Nightblock closes `api.anthropic.com` midnight-6am; model calls fail then and are retried later.
 
 ## Gotchas learned
+
+- **The evaluator judged one segment per call; it now waits for a batch (2026-11-23).**
+  `run_pending` ran every cycle and judged each segment the moment it turned 15 minutes old, so
+  the median call covered 1.2 minutes and one segment, about 600 calls a day, each carrying the
+  full context (about 280,000 tokens: 165,000 of rules and rulings, cached, and 60 screenshots).
+  `CHUNK_S` (20 minutes per call) was never reached. Now it waits until `BATCH_S` (10 minutes) of
+  activity is ready, or until nothing has happened on the Mac since the 15-minute horizon.
+  * Judgments therefore arrive up to about 25 minutes after the activity, not 15.
+  * Re-evaluations (phone data arrived, Toggl corrected) and held segments are still single calls.
+  * The evaluator's cost is input, not effort: medium and high cost the same per call.
 
 - **A phone question's "N min longer" was computed too early and then frozen (2026-11-23).** A
   question said a 76-second Oura check would make the day's focus time "26 min longer". It was

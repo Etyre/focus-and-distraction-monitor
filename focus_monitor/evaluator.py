@@ -43,6 +43,7 @@ from .seg_models import (CONTENTS, HEADS, KINDS, SHOWN_SWITCHES, SWITCHES,  # si
 
 LAZY_S = 15 * 60          # evaluate only segments at least this old (after-context exists)
 CHUNK_S = 20 * 60         # evaluate about this much activity per call
+BATCH_S = 10 * 60         # ...and wait until this much is ready to judge, unless activity has stopped (run_pending)
 CONTACT_HOLD_S = 24 * 3600   # after the evaluator asks for Eli, how long its chunk is left alone
 CTX_S = 10 * 60           # how far around a chunk phone pickups and their stored judgments are looked up
 # Context shown to the model (2026-11-20; it was 10 minutes each side). Of 513 segments judged a
@@ -296,10 +297,17 @@ person's iPhone for a stretch of time: a segment, like a computer segment, and j
 SAME RULES (sections 1-4) - content, focused, switch, and on a shift self_distraction and \
 next_task. For each line marked EVALUATE PHONE add an entry to `phone`. What is different is \
 only what you can see:
-   - You know the app and the timing, nothing else: not what was in the app, and there are no \
-phone screenshots. Lean on the app, the duration, how it was opened, what was happening on the \
-computer, and the person's notes about their apps in the rules below. The screenshots attached \
-for a pickup are of the Mac's screen just before and just after it.
+   - For most PHONE lines you know the app and the timing, nothing else: not what was in the \
+app. Lean on the app, the duration, how it was opened, what was happening on the computer, and \
+the person's notes about their apps in the rules below. The screenshots of the Mac's screen \
+attached for a pickup are from just before and just after it.
+   - Some PHONE lines come with screenshots of the iPhone's own screen, labelled "the iPhone's \
+screen during PHONE id=P..."; the line says how many ("[iPhone screenshots attached: N]"). They \
+exist only while the phone was on a cable to the Mac or on its Wi-Fi, are taken at most every \
+20 seconds and only when the screen changed, and are withheld for the apps the person marked \
+private and for anything between two apps. So most lines have none, a short segment can fall between two of them, and a missing \
+one says nothing about what the segment was. When a line has them, judge it by what they show, \
+as you would a computer segment.
    - "[Mac input during this: ...]" on a PHONE line says whether the Mac's keyboard, mouse or \
 trackpad were used while the phone app was on screen, and how long before and after the nearest \
 Mac input was. It is counted in 10-second steps and exists only from 2026-11-20. Mac input all \
@@ -727,7 +735,39 @@ def _log_lines(conn, segs: list[dict], marks: dict, entries: dict, history: bool
     return out
 
 
-def _phone_lines(conn, picks_all: list[dict], pick_keys: set, pk_have: dict) -> list[tuple[float, int, str]]:
+PHONE_SEG_SHOTS = 3        # iPhone captures shown per phone app segment: first, last, one between
+PHONE_PICKUP_SHOTS = 8     # and per pickup
+
+
+def _phone_images(cfg, p: dict) -> tuple[list[dict], dict]:
+    """(images, {seg key: count}) of the iPhone's own screen for one pickup to judge: the vetted
+    captures of each app segment (phone.captures), a few per segment."""
+    from . import phone as _phone
+    from . import shots as _shots
+    out, counts = [], {}
+    if p.get("lock_screen"):
+        return out, counts
+    try:
+        caps = _phone.captures(cfg, p["start"] - 60, p["end"] + 60)
+    except Exception:
+        log.exception("phone captures unavailable")
+        return out, counts
+    used: set = set()
+    for g in p["segs"]:
+        mine = [k for k in _phone.captures_of(caps, g["start"], g["end"], g["app"]) if k["name"] not in used]
+        for k in (_shots.spread(mine, PHONE_SEG_SHOTS) if len(mine) > PHONE_SEG_SHOTS else mine):
+            if len(out) >= PHONE_PICKUP_SHOTS:
+                break
+            used.add(k["name"])
+            counts[g["key"]] = counts.get(g["key"], 0) + 1
+            out.append({"ts": max(k["ts"], g["start"]) + 0.002, "path": k["name"],
+                        "label": f"Screenshot - the iPhone's screen during PHONE id=P{g['key']} "
+                                 f"(taken {_t(k['ts'])}, iPhone: {g['app']}):"})
+    return out, counts
+
+
+def _phone_lines(conn, picks_all: list[dict], pick_keys: set, pk_have: dict,
+                 pshots: dict | None = None) -> list[tuple[float, int, str]]:
     """PHONE lines, one per app segment of each pickup in view: [(start, 1, text)]. Those of a
     pickup in `pick_keys` are marked EVALUATE PHONE; the rest are context and carry the judgment
     they already have."""
@@ -763,6 +803,8 @@ def _phone_lines(conn, picks_all: list[dict], pick_keys: set, pk_have: dict) -> 
             used = "" if p["lock_screen"] else _signals.input_around(conn, g["start"], g["end"])
             if used:
                 bits.append(f"[{used}]")
+            if pshots and pshots.get(g["key"]):
+                bits.append(f"[iPhone screenshots attached: {pshots[g['key']]}]")
             out.append((g["start"], 1, (f"EVALUATE PHONE id=P{g['key']}: " if p["key"] in pick_keys and not p["lock_screen"]
                                          else "(context) PHONE ") + "  ".join(bits)))
     return out
@@ -962,7 +1004,7 @@ class ChunkEvaluator:
         except Exception:   # a database from before the phone tables
             ph = []
         if ph:
-            lines = ["Their rulings on PHONE segments (app on the iPhone's screen; nothing else is known of them):"]
+            lines = ["Their rulings on PHONE segments (app on the iPhone's screen):"]
             for v in ph:
                 bits = [f"switch={shown_switch(v['switch_label'])}" if v["switch_label"] else None,
                         f"content={v['content']}" if v["content"] else None,
@@ -1205,8 +1247,15 @@ class ChunkEvaluator:
         # calls used to spread 8 images over the whole Mac segment behind the pickup: in run
         # 13251 all 8 were from 01:28-01:35 and none bore on the 01:18 pickup.)
         kept_p: list[dict] = []
+        pshots: dict = {}
         for p in picks:
             ims = []
+            # The phone's own screen, when the capture job saw it (2026-11-23). These come first:
+            # they are the only direct evidence of what the phone was used for.
+            own, _ = _phone_images(self.cfg, p)
+            if len(images) + len(own) > IMAGE_BUDGET:
+                own = []
+            ims += own
             for side, m in (("just before", _shots.nearest(conn, p["start"], True)), ("just after", _shots.nearest(conn, p["end"], False))):
                 if m is not None and not any(i["path"] == m["active"]["path"] for i in images + ims):
                     for im in _moment_images(m, f"the Mac's screen {side} the phone pickup of {_t(p['start'])}, segment", app_of.get(m["segment_id"]) or "", both=not target):
@@ -1216,7 +1265,7 @@ class ChunkEvaluator:
                     picks = kept_p
                     t1 = self.last_end = p["start"]
                     break
-                ims = []                       # beside segments to judge, their own captures come first
+                ims = own                      # no room for the Mac's before/after: the phone's own screen stays
             kept_p.append(p)
             images += ims
         # Context segments: first and last capture each, nearest the stretch to judge first, as far
@@ -1237,6 +1286,12 @@ class ChunkEvaluator:
             images += ims
         content, shot_meta = _image_content(images)
         sent = {m["path"] for m in shot_meta}
+        # Counted from what was really attached (a file can be withheld or gone by now), so a
+        # PHONE line never claims a picture the model was not given.
+        for m in shot_meta:
+            pm = re.search(r"the iPhone's screen during PHONE id=P(\d+) ", m["label"])
+            if pm:
+                pshots[int(pm.group(1))] = pshots.get(int(pm.group(1)), 0) + 1
         with_img = {s["id"] for s in target if any(m["active"]["path"] in sent for m in mom.get(s["id"]) or [])}
         no_img = {s["id"]: _shots.why_none(conn, s["id"]) for s in target if s["id"] not in with_img}
         # -- the log ----------------------------------------------------------------------
@@ -1251,7 +1306,7 @@ class ChunkEvaluator:
                 if s["id"] in no_img else [])
         pick_keys = {p["key"] for p in picks}
         rows = (_log_lines(conn, segs, {i: f"EVALUATE id={i}: " for i in target_ids}, entries, history=history, notes=notes)
-                + _phone_lines(conn, picks_all, pick_keys, pk_have))
+                + _phone_lines(conn, picks_all, pick_keys, pk_have, pshots))
         lines = [x[2] for x in sorted(rows, key=lambda x: (x[0], x[1]))]   # phone lines slotted in by time
         all_ids = [s["id"] for s in segs if s["duration"] > 0]
         # Hold-off (Rules doc): only for first-time judgments of activity under an hour old.
@@ -2662,6 +2717,16 @@ def run_pending(conn, cfg: Config | None = None, max_chunks: int = 1, lookback_s
         # after it waits too, so spans are never assembled across an unjudged gap.
         hold = conn.execute("SELECT until FROM eval_holds WHERE segment_id=?", (row[1],)).fetchone()
         if hold and hold["until"] > time.time():
+            break
+        # Wait for a batch. Each call carries the same large context (rules, rulings, screenshots
+        # of the surroundings) however little it judges, and this loop runs every cycle: without
+        # the wait it judged each segment the moment it turned LAZY_S old, one or two per call
+        # (median chunk 1.2 minutes, about 600 calls a day; found 2026-11-23). So: go when BATCH_S
+        # of activity is ready, or when nothing has happened on the Mac since the horizon (the
+        # person has left, and what is pending is all there will be for now).
+        if row[0] > horizon - BATCH_S and conn.execute(
+                "SELECT 1 FROM segments WHERE idle = 0 AND neutral = 0 AND COALESCE(end, ?) > ? LIMIT 1",
+                (time.time(), horizon)).fetchone():
             break
         t0 = row[0] - 1
         t1 = min(t0 + CHUNK_S, horizon)
